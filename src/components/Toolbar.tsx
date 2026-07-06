@@ -11,7 +11,6 @@ export function Toolbar({ state, dispatch }: Props) {
   return (
     <header className="toolbar">
       <div className="toolbar-brand">
-        <span className="brand-mark">🎬</span>
         <span className="brand-name">Boardfish 3.0</span>
       </div>
       <div className="toolbar-project">

@@ -49,11 +49,15 @@ input, textarea, select {
 .toolbar-brand {
   display: flex;
   align-items: center;
-  gap: 8px;
   font-weight: 600;
 }
-.brand-mark { font-size: 20px; }
-.brand-name { letter-spacing: 0.02em; }
+.brand-name {
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  color: #eaeaea;
+  padding-right: 16px;
+  border-right: 1px solid #262629;
+}
 
 .toolbar-project { display: flex; }
 .project-name-input {
@@ -187,30 +191,35 @@ input, textarea, select {
 }
 .panel-fields {
   flex: 1 1 auto;
-  padding: 8px 10px;
+  padding: 6px 8px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
 }
-.panel-field label {
-  display: block;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  opacity: 0.6;
-  margin-bottom: 2px;
+.panel-field {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
 }
 .panel-field textarea {
   width: 100%;
-  border: 1px solid rgba(0,0,0,0.1);
-  background: rgba(255,255,255,0.6);
+  height: 100%;
+  flex: 1 1 auto;
+  border: 1px solid rgba(0,0,0,0.08);
+  background: rgba(255,255,255,0.55);
   border-radius: 3px;
-  padding: 4px 6px;
+  padding: 6px 8px;
   font-size: 12px;
-  resize: vertical;
-  min-height: 32px;
+  resize: none;
+  min-height: 24px;
+  font-family: inherit;
+  line-height: 1.35;
+}
+.panel-field textarea::placeholder {
+  opacity: 0.35;
+  font-style: italic;
 }
 .panel-empty-slot {
   border: 2px dashed rgba(0,0,0,0.1);

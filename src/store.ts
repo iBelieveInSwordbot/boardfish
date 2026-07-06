@@ -3,6 +3,19 @@ import { useEffect, useReducer } from 'react';
 import type { Panel, ProjectSettings } from './types';
 import { cryptoRandomId, defaultSettings } from './types';
 
+/** Normalize settings loaded from persistence to add any fields introduced after the file was saved. */
+function normalizeSettings(s: ProjectSettings): ProjectSettings {
+  const defaults = defaultSettings();
+  return {
+    ...defaults,
+    ...s,
+    colors: { ...defaults.colors, ...(s.colors ?? {}) },
+    labels: { ...defaults.labels, ...(s.labels ?? {}) },
+    footer: { ...defaults.footer, ...(s.footer ?? {}) },
+    pageSize: s.pageSize ?? defaults.pageSize,
+  };
+}
+
 export type BoardfishState = {
   settings: ProjectSettings;
   panels: Panel[]; // flat list; pages derived at render time
@@ -178,7 +191,7 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
     case 'SET_INSPECTOR_TAB':
       return { ...state, inspectorTab: action.tab };
     case 'LOAD_PROJECT':
-      return { ...initialState(), settings: action.state.settings, panels: action.state.panels };
+      return { ...initialState(), settings: normalizeSettings(action.state.settings), panels: action.state.panels };
     case 'RESET':
       return initialState();
     default:
@@ -204,7 +217,7 @@ export function useBoardfish() {
       if (raw) {
         const parsed = JSON.parse(raw) as { settings: ProjectSettings; panels: Panel[] };
         if (parsed?.settings && Array.isArray(parsed.panels)) {
-          return { ...initialState(), settings: parsed.settings, panels: parsed.panels };
+          return { ...initialState(), settings: normalizeSettings(parsed.settings), panels: parsed.panels };
         }
       }
     } catch {

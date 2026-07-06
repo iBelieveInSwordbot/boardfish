@@ -53,16 +53,16 @@ export function PanelView({ panel, selected, settings, dispatch }: Props) {
       <div className="panel-fields">
         {panel.fields.map((f) => (
           <div key={f.id} className="panel-field">
-            <label>{f.label}</label>
             <textarea
               value={f.value}
-              placeholder={`${f.label}…`}
+              placeholder={f.label}
               onClick={(e) => e.stopPropagation()}
               onPointerDown={(e) => e.stopPropagation()}
               onChange={(e) =>
                 dispatch({ type: 'UPDATE_FIELD', panelId: panel.id, fieldId: f.id, value: e.target.value })
               }
               rows={2}
+              style={{ color: settings.colors.fieldText, caretColor: settings.colors.fieldText }}
             />
           </div>
         ))}

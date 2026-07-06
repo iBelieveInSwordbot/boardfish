@@ -156,46 +156,15 @@ function PageTab({ state, dispatch }: Props) {
         <Row label="Panel BG">
           <input type="color" value={s.colors.panelBg} onChange={(e) => patchColors({ panelBg: e.target.value })} />
         </Row>
-        <Row label="Text">
+        <Row label="Footer text">
           <input type="color" value={s.colors.text} onChange={(e) => patchColors({ text: e.target.value })} />
+        </Row>
+        <Row label="Field text">
+          <input type="color" value={s.colors.fieldText} onChange={(e) => patchColors({ fieldText: e.target.value })} />
         </Row>
         <Row label="Accent">
           <input type="color" value={s.colors.accent} onChange={(e) => patchColors({ accent: e.target.value })} />
         </Row>
-      </Section>
-
-      <Section title="Field labels (global)">
-        <div className="label-list">
-          {s.labels.defaults.map((label) => (
-            <div className="label-row" key={label}>
-              <input
-                type="text"
-                value={label}
-                onChange={(e) => {
-                  const newLabel = e.target.value;
-                  if (newLabel && newLabel !== label) {
-                    dispatch({ type: 'RENAME_FIELD_LABEL_GLOBAL', oldLabel: label, newLabel });
-                  }
-                }}
-              />
-              <button
-                title="Remove field from all panels"
-                onClick={() => dispatch({ type: 'REMOVE_FIELD_GLOBAL', label })}
-              >
-                ✕
-              </button>
-            </div>
-          ))}
-          <button
-            className="add-label"
-            onClick={() => {
-              const label = prompt('New field label:');
-              if (label) dispatch({ type: 'ADD_FIELD_GLOBAL', label });
-            }}
-          >
-            + Add field
-          </button>
-        </div>
       </Section>
 
       <Section title="Footer">
@@ -229,15 +198,25 @@ function PageTab({ state, dispatch }: Props) {
                   r.onerror = () => reject(r.error);
                   r.readAsDataURL(file);
                 });
-                patch({ footer: { ...s.footer, logoDataUrl: dataUrl } });
+                patch({ footer: { ...s.footer, logoDataUrl: dataUrl, logoAutoTheme: false } });
                 if (logoRef.current) logoRef.current.value = '';
               }}
             />
             <button onClick={() => logoRef.current?.click()}>Choose…</button>
             {s.footer.logoDataUrl && (
-              <button onClick={() => patch({ footer: { ...s.footer, logoDataUrl: null } })}>Clear</button>
+              <button onClick={() => patch({ footer: { ...s.footer, logoDataUrl: null, logoAutoTheme: true } })}>
+                Reset to default
+              </button>
             )}
           </div>
+        </Row>
+        <Row label="Auto-switch logo">
+          <input
+            type="checkbox"
+            checked={s.footer.logoAutoTheme}
+            title="Automatically use black logo on light backgrounds and white logo on dark backgrounds"
+            onChange={(e) => patch({ footer: { ...s.footer, logoAutoTheme: e.target.checked } })}
+          />
         </Row>
       </Section>
     </div>
@@ -248,30 +227,33 @@ function PanelTab({ state, dispatch }: Props) {
   const panel = state.panels.find((p) => p.id === state.selectedPanelId);
   if (!panel) return <div className="tab-empty">Select a panel to edit its fields.</div>;
 
+  // Fields are global — all panels share the same set of labels. Editing here updates every panel.
+  const currentLabels = state.settings.labels.defaults;
+
   return (
     <div className="tab">
-      <Section title="Panel fields">
+      <Section title="Fields (applies to all panels)">
         <div className="label-list">
-          {panel.fields.map((f) => (
-            <div className="label-row" key={f.id}>
+          {currentLabels.map((label) => (
+            <div className="label-row" key={label}>
               <input
                 type="text"
-                value={f.label}
-                onChange={(e) => {
-                  const newLabel = e.target.value;
-                  // Rename this specific field's label (not global)
-                  dispatch({
-                    type: 'UPDATE_PANEL',
-                    id: panel.id,
-                    patch: {
-                      fields: panel.fields.map((x) => (x.id === f.id ? { ...x, label: newLabel } : x)),
-                    },
-                  });
+                defaultValue={label}
+                onBlur={(e) => {
+                  const newLabel = e.target.value.trim();
+                  if (newLabel && newLabel !== label) {
+                    dispatch({ type: 'RENAME_FIELD_LABEL_GLOBAL', oldLabel: label, newLabel });
+                  } else if (!newLabel) {
+                    e.target.value = label;
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
                 }}
               />
               <button
-                title="Remove field from this panel"
-                onClick={() => dispatch({ type: 'REMOVE_FIELD', panelId: panel.id, fieldId: f.id })}
+                title="Remove field from all panels"
+                onClick={() => dispatch({ type: 'REMOVE_FIELD_GLOBAL', label })}
               >
                 ✕
               </button>
@@ -281,10 +263,10 @@ function PanelTab({ state, dispatch }: Props) {
             className="add-label"
             onClick={() => {
               const label = prompt('New field label:');
-              if (label) dispatch({ type: 'ADD_FIELD', panelId: panel.id, label });
+              if (label && label.trim()) dispatch({ type: 'ADD_FIELD_GLOBAL', label: label.trim() });
             }}
           >
-            + Add field to this panel
+            + Add field
           </button>
         </div>
       </Section>

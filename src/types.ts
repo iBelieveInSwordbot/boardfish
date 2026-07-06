@@ -61,6 +61,7 @@ export type ProjectSettings = {
     pageBg: string;
     panelBg: string;
     text: string;
+    fieldText: string;
     accent: string;
   };
   labels: {
@@ -70,7 +71,8 @@ export type ProjectSettings = {
   footer: {
     showProjectName: boolean;
     showPageNumber: boolean;
-    logoDataUrl: string | null;
+    logoDataUrl: string | null; // user-uploaded logo; when null, the default Swordfish logo is used (auto light/dark)
+    logoAutoTheme: boolean; // when true, auto-pick black/white default logo based on page BG luminance
   };
 };
 
@@ -93,6 +95,7 @@ export function defaultSettings(): ProjectSettings {
       pageBg: '#ffffff',
       panelBg: '#f5f5f5',
       text: '#111111',
+      fieldText: '#111111',
       accent: '#4a9eff',
     },
     labels: {
@@ -102,6 +105,7 @@ export function defaultSettings(): ProjectSettings {
       showProjectName: true,
       showPageNumber: true,
       logoDataUrl: null,
+      logoAutoTheme: true,
     },
   };
 }

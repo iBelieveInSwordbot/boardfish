@@ -5,6 +5,24 @@ import type { Action, BoardfishState } from '../store';
 import { fileToPanelImage, panelsToPages } from '../store';
 import { newPanel, type Panel } from '../types';
 import { PanelView } from './Panel';
+import logoBlack from '../assets/logo-black.png';
+import logoWhite from '../assets/logo-white.png';
+
+/** Compute relative luminance of a hex color (0..1). Used to auto-pick logo variant. */
+function luminance(hex: string): number {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return 1; // assume light
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 0xff;
+  const g = (n >> 8) & 0xff;
+  const b = n & 0xff;
+  // sRGB relative luminance approximation
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+}
+
+function pickDefaultLogo(pageBg: string): string {
+  return luminance(pageBg) > 0.5 ? logoBlack : logoWhite;
+}
 
 type Props = {
   state: BoardfishState;
@@ -226,6 +244,14 @@ function PageFooter({
   totalPages: number;
   settings: BoardfishState['settings'];
 }) {
+  // Priority: user-uploaded logo > auto-picked default logo > (nothing if auto disabled and no upload)
+  let logoSrc: string | null = null;
+  if (settings.footer.logoDataUrl) {
+    logoSrc = settings.footer.logoDataUrl;
+  } else if (settings.footer.logoAutoTheme) {
+    logoSrc = pickDefaultLogo(settings.colors.pageBg);
+  }
+
   return (
     <div className="page-footer" style={{ color: settings.colors.text }}>
       <div className="footer-left">{settings.footer.showProjectName ? settings.projectName : ''}</div>
@@ -233,7 +259,7 @@ function PageFooter({
         {settings.footer.showPageNumber ? `${pageIndex + 1} / ${totalPages}` : ''}
       </div>
       <div className="footer-right">
-        {settings.footer.logoDataUrl ? <img src={settings.footer.logoDataUrl} alt="logo" /> : null}
+        {logoSrc ? <img src={logoSrc} alt="logo" /> : null}
       </div>
     </div>
   );
