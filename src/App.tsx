@@ -103,8 +103,16 @@ function App() {
         <PanelLightbox
           panel={selectedPanel}
           panelIndex={selectedPanelIndex}
+          totalPanels={state.panels.length}
           settings={state.settings}
+          dispatch={dispatch}
           onClose={() => setLightboxOpen(false)}
+          onNavigate={(dir) => {
+            const idx = state.panels.findIndex((p) => p.id === state.selectedPanelId);
+            if (idx < 0) return;
+            const next = (idx + dir + state.panels.length) % state.panels.length;
+            dispatch({ type: 'SELECT_PANEL', id: state.panels[next].id });
+          }}
         />
       )}
     </div>

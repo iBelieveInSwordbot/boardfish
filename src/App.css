@@ -145,6 +145,41 @@ input, textarea, select {
   line-height: 1.4;
 }
 .lightbox-field-value .dim { opacity: 0.3; }
+.lightbox-field-input {
+  width: 100%;
+  border: none;
+  outline: none;
+  padding: 0;
+  resize: vertical;
+  line-height: 1.4;
+  min-height: 60px;
+  font-family: inherit;
+}
+.lightbox-field-input::placeholder { opacity: 0.3; font-style: italic; }
+
+.lightbox-nav {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1001;
+  width: 56px;
+  height: 96px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(20, 20, 24, 0.55);
+  color: #fff;
+  font-size: 32px;
+  line-height: 1;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  transition: background 100ms ease, opacity 100ms ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.lightbox-nav:hover { background: rgba(20, 20, 24, 0.85); }
+.lightbox-nav:disabled { opacity: 0.25; cursor: not-allowed; }
+.lightbox-nav-prev { left: 24px; border-radius: 0 8px 8px 0; }
+.lightbox-nav-next { right: 24px; border-radius: 8px 0 0 8px; }
 .lightbox-hint {
   position: absolute;
   bottom: 20px;
