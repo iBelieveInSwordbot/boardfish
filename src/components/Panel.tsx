@@ -24,8 +24,9 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
     fontFamily: settings.fonts.family,
   };
 
-  const objectFit: 'contain' | 'cover' =
-    settings.imageFit === 'fill' || settings.imageFit === 'crop' ? 'cover' : 'contain';
+  // 'fit' = contain (letterbox), 'fill' = stretch non-proportionally, 'crop' = cover (proportional crop)
+  const objectFit: 'contain' | 'fill' | 'cover' =
+    settings.imageFit === 'fill' ? 'fill' : settings.imageFit === 'crop' ? 'cover' : 'contain';
 
   const badgeStyle: React.CSSProperties = {
     color: settings.colors.panelLabel,
@@ -90,6 +91,7 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
               style={{
                 color: settings.colors.fieldText,
                 caretColor: settings.colors.fieldText,
+                background: settings.colors.fieldBg,
                 fontSize: settings.fonts.fieldSizePx,
                 fontFamily: settings.fonts.family,
               }}

@@ -144,9 +144,9 @@ export function Inspector({ state, dispatch }: Props) {
           </Row>
           <Row label="Image fit">
             <select value={s.imageFit} onChange={(e) => patch({ imageFit: e.target.value as ImageFit })}>
-              <option value="fit">Fit (contain)</option>
-              <option value="fill">Fill</option>
-              <option value="crop">Crop</option>
+              <option value="fit">Fit (contain, letterbox)</option>
+              <option value="fill">Fill (stretch)</option>
+              <option value="crop">Crop (cover)</option>
             </select>
           </Row>
         </Section>
@@ -172,6 +172,9 @@ export function Inspector({ state, dispatch }: Props) {
           </Row>
           <Row label="Panel BG">
             <input type="color" value={s.colors.panelBg} onChange={(e) => patchColors({ panelBg: e.target.value })} />
+          </Row>
+          <Row label="Field BG">
+            <input type="color" value={s.colors.fieldBg} onChange={(e) => patchColors({ fieldBg: e.target.value })} />
           </Row>
           <Row label="Field text">
             <input type="color" value={s.colors.fieldText} onChange={(e) => patchColors({ fieldText: e.target.value })} />
@@ -201,25 +204,25 @@ export function Inspector({ state, dispatch }: Props) {
               ))}
             </select>
           </Row>
-          <Row label="Field size (px)">
+          <Row label="Caption Font Size">
             <input
               type="number"
               min={6}
               max={48}
               value={s.fonts.fieldSizePx}
-              onChange={(e) => patchFonts({ fieldSizePx: Math.max(6, Number(e.target.value) || 12) })}
+              onChange={(e) => patchFonts({ fieldSizePx: Math.max(6, Number(e.target.value) || 13) })}
             />
           </Row>
-          <Row label="Footer size (px)">
+          <Row label="Footer Font Size">
             <input
               type="number"
               min={6}
               max={48}
               value={s.fonts.footerSizePx}
-              onChange={(e) => patchFonts({ footerSizePx: Math.max(6, Number(e.target.value) || 12) })}
+              onChange={(e) => patchFonts({ footerSizePx: Math.max(6, Number(e.target.value) || 15) })}
             />
           </Row>
-          <Row label="Panel label size">
+          <Row label="Panel Label Font Size">
             <input
               type="number"
               min={6}

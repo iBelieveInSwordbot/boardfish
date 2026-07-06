@@ -260,9 +260,13 @@ function PageFooter({
     fontFamily: settings.fonts.family,
     fontSize: settings.fonts.footerSizePx,
   };
+  // Anchor logo to bottom-right: as logoScale grows, the logo expands toward the top-left,
+  // keeping its lower-right corner glued to the footer's bottom-right corner.
   const logoStyle: React.CSSProperties = {
     maxHeight: 28 * settings.footer.logoScale,
     maxWidth: 120 * settings.footer.logoScale,
+    display: 'block',
+    marginLeft: 'auto', // right-align
   };
 
   return (
@@ -272,7 +276,7 @@ function PageFooter({
         {settings.footer.showPageNumber ? `${pageIndex + 1} / ${totalPages}` : ''}
       </div>
       <div className="footer-right">
-        {logoSrc ? <img src={logoSrc} alt="logo" style={logoStyle} /> : null}
+        {logoSrc ? <img src={logoSrc} alt="logo" style={logoStyle} className="footer-logo" /> : null}
       </div>
     </div>
   );

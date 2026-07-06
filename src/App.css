@@ -262,8 +262,7 @@ input, textarea, select {
   width: 100%;
   height: 100%;
   flex: 1 1 auto;
-  border: 1px solid rgba(0,0,0,0.08);
-  background: rgba(255,255,255,0.55);
+  border: 1px solid rgba(128,128,128,0.15);
   border-radius: 3px;
   padding: 6px 8px;
   font-size: 12px;
@@ -271,6 +270,7 @@ input, textarea, select {
   min-height: 24px;
   font-family: inherit;
   line-height: 1.35;
+  /* background is set inline from settings.colors.fieldBg so both themes render correctly */
 }
 .panel-field textarea::placeholder {
   opacity: 0.35;
@@ -287,18 +287,26 @@ input, textarea, select {
   left: 0;
   right: 0;
   bottom: 0;
-  height: 40px;
-  padding: 0 20px;
+  padding: 0 20px 8px;
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
-  align-items: center;
+  align-items: end;
   font-size: 12px;
-  opacity: 0.8;
+  opacity: 0.9;
+  /* Auto-grow footer height as logo scales; use min-height so short-logo mode still has room */
+  min-height: 40px;
 }
 .footer-left { text-align: left; }
 .footer-center { text-align: center; }
-.footer-right { text-align: right; }
-.footer-right img { max-height: 28px; max-width: 120px; object-fit: contain; }
+.footer-right {
+  /* Right cell is already grid-aligned bottom (via .page-footer align-items:end).
+     margin-left:auto on the <img> right-aligns it inside its column.
+     Result: logo's bottom-right corner sits at the footer's bottom-right corner,
+     and growing logoScale expands the logo up + left. */
+  display: block;
+  text-align: right;
+}
+.footer-right .footer-logo { object-fit: contain; }
 
 /* --- Inspector --- */
 .inspector {

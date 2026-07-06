@@ -61,6 +61,7 @@ export type ProjectSettings = {
     canvasBg: string;
     pageBg: string;
     panelBg: string;
+    fieldBg: string; // textarea background behind field text
     text: string; // footer text
     fieldText: string; // panel field text
     panelLabel: string; // panel-number + corner-note text color
@@ -101,10 +102,12 @@ export const FONT_FAMILIES: { label: string; value: string }[] = [
 
 export function themeColors(theme: ThemePreset): ProjectSettings['colors'] {
   if (theme === 'dark') {
+    // Deeper, more contrasty dark theme so panels + field BGs are clearly darker than page
     return {
-      canvasBg: '#0f0f10',
-      pageBg: '#1c1c20',
-      panelBg: '#2a2a2f',
+      canvasBg: '#050506',
+      pageBg: '#0e0e11',
+      panelBg: '#161619',
+      fieldBg: '#050506',
       text: '#eaeaea',
       fieldText: '#eaeaea',
       panelLabel: '#c8c8c8',
@@ -115,6 +118,7 @@ export function themeColors(theme: ThemePreset): ProjectSettings['colors'] {
     canvasBg: '#1a1a1a',
     pageBg: '#ffffff',
     panelBg: '#f5f5f5',
+    fieldBg: '#ffffff',
     text: '#111111',
     fieldText: '#111111',
     panelLabel: '#555555',
@@ -142,8 +146,8 @@ export function defaultSettings(): ProjectSettings {
     colors: themeColors('light'),
     fonts: {
       family: FONT_FAMILIES[0].value,
-      fieldSizePx: 12,
-      footerSizePx: 12,
+      fieldSizePx: 13, // caption
+      footerSizePx: 15,
       panelLabelSizePx: 10,
     },
     labels: {
@@ -154,7 +158,7 @@ export function defaultSettings(): ProjectSettings {
       showPageNumber: true,
       logoDataUrl: null,
       logoAutoTheme: true,
-      logoScale: 1,
+      logoScale: 1.3,
     },
     panelBadges: {
       showNumber: true,

@@ -235,7 +235,7 @@ function deepClonePanel(p: Panel): Panel {
   };
 }
 
-const LS_KEY = 'boardfish3:autosave:v2'; // v2: new defaults (Tabloid, 19/21/31), font controls, themes
+const LS_KEY = 'boardfish3:autosave:v3'; // v3: field BG color, updated dark theme, font-size defaults 13/15, logo scale 1.3, Fill = stretch
 
 export function useBoardfish() {
   const [state, dispatch] = useReducer(reducer, undefined, () => {
