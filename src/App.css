@@ -404,6 +404,39 @@ input, textarea, select {
 .hint { font-size: 11px; color: #888; margin-top: 4px; }
 .section-hint { font-size: 11px; color: #888; margin-bottom: 6px; }
 
+.size-and-style {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  width: 100%;
+}
+.size-and-style input[type="number"] {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.style-chip {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 4px;
+  border: 1px solid #2f2f34;
+  background: #0f0f10;
+  color: #aaa;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.style-chip:hover { color: #eee; border-color: #4a4a50; }
+.style-chip.active {
+  background: #4a9eff;
+  color: #fff;
+  border-color: #4a9eff;
+}
+
 .row {
   display: grid;
   grid-template-columns: 130px 1fr;

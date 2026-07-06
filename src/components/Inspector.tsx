@@ -205,31 +205,79 @@ export function Inspector({ state, dispatch }: Props) {
             </select>
           </Row>
           <Row label="Caption Font Size">
-            <input
-              type="number"
-              min={6}
-              max={48}
-              value={s.fonts.fieldSizePx}
-              onChange={(e) => patchFonts({ fieldSizePx: Math.max(6, Number(e.target.value) || 13) })}
-            />
+            <div className="size-and-style">
+              <input
+                type="number"
+                min={6}
+                max={48}
+                value={s.fonts.fieldSizePx}
+                onChange={(e) => patchFonts({ fieldSizePx: Math.max(6, Number(e.target.value) || 13) })}
+              />
+              <button
+                className={`style-chip ${s.fonts.captionBold ? 'active' : ''}`}
+                onClick={() => patchFonts({ captionBold: !s.fonts.captionBold })}
+                title="Bold"
+              >
+                <b>B</b>
+              </button>
+              <button
+                className={`style-chip ${s.fonts.captionItalic ? 'active' : ''}`}
+                onClick={() => patchFonts({ captionItalic: !s.fonts.captionItalic })}
+                title="Italic"
+              >
+                <i>I</i>
+              </button>
+            </div>
           </Row>
           <Row label="Footer Font Size">
-            <input
-              type="number"
-              min={6}
-              max={48}
-              value={s.fonts.footerSizePx}
-              onChange={(e) => patchFonts({ footerSizePx: Math.max(6, Number(e.target.value) || 15) })}
-            />
+            <div className="size-and-style">
+              <input
+                type="number"
+                min={6}
+                max={48}
+                value={s.fonts.footerSizePx}
+                onChange={(e) => patchFonts({ footerSizePx: Math.max(6, Number(e.target.value) || 15) })}
+              />
+              <button
+                className={`style-chip ${s.fonts.footerBold ? 'active' : ''}`}
+                onClick={() => patchFonts({ footerBold: !s.fonts.footerBold })}
+                title="Bold"
+              >
+                <b>B</b>
+              </button>
+              <button
+                className={`style-chip ${s.fonts.footerItalic ? 'active' : ''}`}
+                onClick={() => patchFonts({ footerItalic: !s.fonts.footerItalic })}
+                title="Italic"
+              >
+                <i>I</i>
+              </button>
+            </div>
           </Row>
           <Row label="Panel Label Font Size">
-            <input
-              type="number"
-              min={6}
-              max={48}
-              value={s.fonts.panelLabelSizePx}
-              onChange={(e) => patchFonts({ panelLabelSizePx: Math.max(6, Number(e.target.value) || 10) })}
-            />
+            <div className="size-and-style">
+              <input
+                type="number"
+                min={6}
+                max={48}
+                value={s.fonts.panelLabelSizePx}
+                onChange={(e) => patchFonts({ panelLabelSizePx: Math.max(6, Number(e.target.value) || 10) })}
+              />
+              <button
+                className={`style-chip ${s.fonts.panelLabelBold ? 'active' : ''}`}
+                onClick={() => patchFonts({ panelLabelBold: !s.fonts.panelLabelBold })}
+                title="Bold"
+              >
+                <b>B</b>
+              </button>
+              <button
+                className={`style-chip ${s.fonts.panelLabelItalic ? 'active' : ''}`}
+                onClick={() => patchFonts({ panelLabelItalic: !s.fonts.panelLabelItalic })}
+                title="Italic"
+              >
+                <i>I</i>
+              </button>
+            </div>
           </Row>
         </Section>
 

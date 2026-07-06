@@ -39,6 +39,8 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
     color: settings.colors.panelLabel,
     fontSize: settings.fonts.panelLabelSizePx,
     fontFamily: settings.fonts.family,
+    fontWeight: settings.fonts.panelLabelBold ? 700 : 500,
+    fontStyle: settings.fonts.panelLabelItalic ? 'italic' : 'normal',
   };
 
   return (
@@ -64,7 +66,13 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
                 )}
                 <input
                   className="panel-header-note"
-                  style={{ color: settings.colors.panelLabel, fontSize: settings.fonts.panelLabelSizePx, fontFamily: settings.fonts.family }}
+                  style={{
+                  color: settings.colors.panelLabel,
+                  fontSize: settings.fonts.panelLabelSizePx,
+                  fontFamily: settings.fonts.family,
+                  fontWeight: settings.fonts.panelLabelBold ? 700 : 500,
+                  fontStyle: settings.fonts.panelLabelItalic ? 'italic' : 'normal',
+                }}
                   value={panel.cornerNote}
                   placeholder="note"
                   onClick={(e) => e.stopPropagation()}
@@ -108,6 +116,8 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
                 background: settings.colors.fieldBg,
                 fontSize: settings.fonts.fieldSizePx,
                 fontFamily: settings.fonts.family,
+                fontWeight: settings.fonts.captionBold ? 700 : 400,
+                fontStyle: settings.fonts.captionItalic ? 'italic' : 'normal',
               }}
             />
           </div>

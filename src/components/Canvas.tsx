@@ -256,6 +256,8 @@ function PageFooter({
     color: settings.colors.text,
     fontFamily: settings.fonts.family,
     fontSize: settings.fonts.footerSizePx,
+    fontWeight: settings.fonts.footerBold ? 700 : 400,
+    fontStyle: settings.fonts.footerItalic ? 'italic' : 'normal',
   };
   // Anchor logo to bottom-right: as logoScale grows, the logo expands toward the top-left,
   // keeping its lower-right corner glued to the footer's bottom-right corner.

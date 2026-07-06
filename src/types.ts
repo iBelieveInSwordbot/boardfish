@@ -72,6 +72,12 @@ export type ProjectSettings = {
     fieldSizePx: number;
     footerSizePx: number;
     panelLabelSizePx: number;
+    captionBold: boolean;
+    footerBold: boolean;
+    panelLabelBold: boolean;
+    captionItalic: boolean;
+    footerItalic: boolean;
+    panelLabelItalic: boolean;
   };
   labels: {
     // Global default field labels for new panels
@@ -153,6 +159,12 @@ export function defaultSettings(): ProjectSettings {
       fieldSizePx: 16, // caption
       footerSizePx: 18,
       panelLabelSizePx: 10,
+      captionBold: false,
+      footerBold: true,
+      panelLabelBold: false,
+      captionItalic: false,
+      footerItalic: false,
+      panelLabelItalic: false,
     },
     labels: {
       defaults: [...DEFAULT_FIELD_LABELS],
@@ -162,7 +174,7 @@ export function defaultSettings(): ProjectSettings {
       showPageNumber: true,
       logoDataUrl: null,
       logoAutoTheme: true,
-      logoScale: 1.3,
+      logoScale: 1.5,
     },
     panelBadges: {
       showNumber: true,
