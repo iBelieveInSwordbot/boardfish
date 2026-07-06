@@ -235,7 +235,7 @@ function deepClonePanel(p: Panel): Panel {
   };
 }
 
-const LS_KEY = 'boardfish3:autosave:v4'; // v4: panel labels moved above panel + prefix toggles
+const LS_KEY = 'boardfish3:autosave:v5'; // v5: new default fonts (Helvetica, caption 16, footer 18)
 
 export function useBoardfish() {
   const [state, dispatch] = useReducer(reducer, undefined, () => {

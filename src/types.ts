@@ -97,8 +97,8 @@ export type ProjectSettings = {
 export type ThemePreset = 'light' | 'dark';
 
 export const FONT_FAMILIES: { label: string; value: string }[] = [
-  { label: 'System Sans', value: '-apple-system, BlinkMacSystemFont, "Segoe UI", "SF Pro Text", sans-serif' },
   { label: 'Helvetica', value: 'Helvetica, Arial, sans-serif' },
+  { label: 'System Sans', value: '-apple-system, BlinkMacSystemFont, "Segoe UI", "SF Pro Text", sans-serif' },
   { label: 'Georgia (Serif)', value: 'Georgia, "Times New Roman", serif' },
   { label: 'Courier (Mono)', value: '"Courier New", Courier, monospace' },
   { label: 'Inter', value: 'Inter, -apple-system, sans-serif' },
@@ -149,9 +149,9 @@ export function defaultSettings(): ProjectSettings {
     gutterVerticalPx: 31,
     colors: themeColors('light'),
     fonts: {
-      family: FONT_FAMILIES[0].value,
-      fieldSizePx: 13, // caption
-      footerSizePx: 15,
+      family: FONT_FAMILIES[0].value, // Helvetica
+      fieldSizePx: 16, // caption
+      footerSizePx: 18,
       panelLabelSizePx: 10,
     },
     labels: {
