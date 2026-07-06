@@ -94,7 +94,16 @@ export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector, out
             if (addImagesRef.current) addImagesRef.current.value = '';
           }}
         />
-        <button onClick={() => void saveProject(state)}>Save Project</button>
+        <button
+          onClick={() =>
+            void saveProject(state, {
+              downscale: state.settings.storage.downscaleOnSave,
+              maxLongEdgePx: state.settings.storage.maxImageLongEdgePx,
+            })
+          }
+        >
+          Save Project
+        </button>
         <button
           className="toolbar-inspector-toggle"
           onClick={onToggleOutliner}

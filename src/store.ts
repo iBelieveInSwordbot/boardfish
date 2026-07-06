@@ -15,6 +15,7 @@ function normalizeSettings(s: Partial<ProjectSettings>): ProjectSettings {
     footer: { ...defaults.footer, ...(s.footer ?? {}) },
     panelBadges: { ...defaults.panelBadges, ...(s.panelBadges ?? {}) },
     panelNumbering: s.panelNumbering ?? defaults.panelNumbering,
+    storage: { ...defaults.storage, ...(s.storage ?? {}) },
     pageSize: s.pageSize ?? defaults.pageSize,
   };
 }

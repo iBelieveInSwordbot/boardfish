@@ -88,7 +88,10 @@ function App() {
         void (async () => {
           const { saveProject } = await import('./project-io');
           try {
-            await saveProject(state);
+            await saveProject(state, {
+              downscale: state.settings.storage.downscaleOnSave,
+              maxLongEdgePx: state.settings.storage.maxImageLongEdgePx,
+            });
           } catch (err) {
             console.error(err);
             alert(`Save failed: ${(err as Error).message}`);

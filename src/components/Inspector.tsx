@@ -19,6 +19,7 @@ const DEFAULT_OPEN_GLOBAL: OpenState = {
   fieldsGlobal: true,
   badges: true,
   footer: false,
+  storage: false,
 };
 const DEFAULT_OPEN_ITEM: OpenState = {
   gridItem: true,
@@ -346,6 +347,29 @@ function GlobalTab({
               onChange={(e) => patchBadges({ cornerNotePrefix: e.target.value })} />
           </Row>
         )}
+      </Section>
+
+      <Section title="Storage" openKey="storage" open={open} toggle={toggle}>
+        <div className="section-hint">Controls project file size when using Save Project (⌘S).</div>
+        <Row label="Downscale on save">
+          <input
+            type="checkbox"
+            checked={s.storage.downscaleOnSave}
+            onChange={(e) => patch({ storage: { ...s.storage, downscaleOnSave: e.target.checked } })}
+          />
+        </Row>
+        <Row label="Max long edge (px)">
+          <input
+            type="number"
+            min={800}
+            max={8000}
+            step={100}
+            value={s.storage.maxImageLongEdgePx}
+            onChange={(e) => patch({ storage: { ...s.storage, maxImageLongEdgePx: Math.max(400, Number(e.target.value) || 2400) } })}
+            disabled={!s.storage.downscaleOnSave}
+          />
+        </Row>
+        <div className="hint">2400– great for print at 200 DPI on Tabloid pages. 1600 saves more space if you’re digital-only.</div>
       </Section>
 
       <Section title="Footer & Logo" openKey="footer" open={open} toggle={toggle}>

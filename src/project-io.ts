@@ -77,6 +77,61 @@ function dataUrlToBlob(dataUrl: string): Blob {
   return new Blob([bytes], { type: mime });
 }
 
+/**
+ * Downscale an image data URL so its long edge is at most `maxLongEdgePx`.
+ * Preserves PNG (with alpha) or converts opaque images to JPEG at the given quality.
+ * Returns the original data URL if it already fits within bounds and format is fine.
+ */
+async function downscaleImageDataUrl(
+  dataUrl: string,
+  maxLongEdgePx: number,
+  jpegQuality = 0.9,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const { naturalWidth: w, naturalHeight: h } = img;
+      const longEdge = Math.max(w, h);
+      // If already small enough, don't touch it (avoid recompression artifacts on small assets)
+      if (longEdge <= maxLongEdgePx) {
+        resolve(dataUrl);
+        return;
+      }
+      const scale = maxLongEdgePx / longEdge;
+      const targetW = Math.round(w * scale);
+      const targetH = Math.round(h * scale);
+      const canvas = document.createElement('canvas');
+      canvas.width = targetW;
+      canvas.height = targetH;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(dataUrl); // fall back to original
+        return;
+      }
+      // High-quality resampling
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(img, 0, 0, targetW, targetH);
+      // Preserve PNG only if source was PNG (to keep transparency support). Otherwise JPEG for size.
+      const isPng = /^data:image\/png/i.test(dataUrl);
+      const out = isPng ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', jpegQuality);
+      resolve(out);
+    };
+    img.onerror = () => reject(new Error('Downscale failed to load image'));
+    img.src = dataUrl;
+  });
+}
+
+/** Optionally downscale a data URL; returns the possibly-shrunk data URL. */
+async function maybeDownscale(dataUrl: string | null, enabled: boolean, maxLongEdgePx: number): Promise<string | null> {
+  if (!dataUrl || !enabled) return dataUrl;
+  try {
+    return await downscaleImageDataUrl(dataUrl, maxLongEdgePx);
+  } catch {
+    return dataUrl;
+  }
+}
+
 function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
@@ -86,23 +141,32 @@ function blobToDataUrl(blob: Blob): Promise<string> {
   });
 }
 
-export async function saveProject(state: BoardfishState): Promise<void> {
+export async function saveProject(
+  state: BoardfishState,
+  options: { downscale?: boolean; maxLongEdgePx?: number } = {},
+): Promise<void> {
+  const downscale = options.downscale ?? true;
+  const maxLongEdgePx = options.maxLongEdgePx ?? 2400;
+
   const zip = new JSZip();
   const images = zip.folder('images')!;
 
   let panelSerial = 0;
   let slideSerial = 0;
 
-  const savedItems: SavedItemV2[] = state.items.map((it) => {
+  // Note: we process items sequentially to keep memory usage bounded (large data URLs)
+  const savedItems: SavedItemV2[] = [];
+  for (const it of state.items) {
     if (it.kind === 'slide') {
       let imagePath: string | null = null;
       if (it.slide.imageDataUrl) {
-        const ext = extForDataUrl(it.slide.imageDataUrl);
+        const dataUrl = (await maybeDownscale(it.slide.imageDataUrl, downscale, maxLongEdgePx)) as string;
+        const ext = extForDataUrl(dataUrl);
         imagePath = `images/slide-${slideSerial.toString().padStart(4, '0')}-${it.slide.id}.${ext}`;
-        images.file(imagePath.replace(/^images\//, ''), dataUrlToBlob(it.slide.imageDataUrl));
+        images.file(imagePath.replace(/^images\//, ''), dataUrlToBlob(dataUrl));
       }
       slideSerial += 1;
-      return {
+      savedItems.push({
         id: it.id,
         kind: 'slide',
         slide: {
@@ -113,33 +177,38 @@ export async function saveProject(state: BoardfishState): Promise<void> {
           subtitle: it.slide.subtitle,
           showFooter: it.slide.showFooter,
         },
-      };
+      });
+      continue;
     }
     // storyboard
-    const savedPanels: SavedPanelV1[] = it.panels.map((p) => {
+    const savedPanels: SavedPanelV1[] = [];
+    for (const p of it.panels) {
       let imagePath: string | null = null;
       if (p.imageDataUrl) {
-        const ext = extForDataUrl(p.imageDataUrl);
+        const dataUrl = (await maybeDownscale(p.imageDataUrl, downscale, maxLongEdgePx)) as string;
+        const ext = extForDataUrl(dataUrl);
         imagePath = `images/panel-${panelSerial.toString().padStart(4, '0')}-${p.id}.${ext}`;
-        images.file(imagePath.replace(/^images\//, ''), dataUrlToBlob(p.imageDataUrl));
+        images.file(imagePath.replace(/^images\//, ''), dataUrlToBlob(dataUrl));
       }
       panelSerial += 1;
-      return {
+      savedPanels.push({
         id: p.id,
         imageName: p.imageName,
         imagePath,
         cornerNote: p.cornerNote,
         fields: p.fields.map((f) => ({ id: f.id, label: f.label, value: f.value })),
-      };
-    });
-    return { id: it.id, kind: 'storyboard', panels: savedPanels, overrides: it.overrides };
-  });
+      });
+    }
+    savedItems.push({ id: it.id, kind: 'storyboard', panels: savedPanels, overrides: it.overrides });
+  }
 
   let logoPath: string | null = null;
   if (state.settings.footer.logoDataUrl) {
-    const ext = extForDataUrl(state.settings.footer.logoDataUrl);
+    // Logo generally small; downscale to a lower ceiling (600px long edge is plenty for print footer)
+    const logoUrl = (await maybeDownscale(state.settings.footer.logoDataUrl, downscale, Math.min(maxLongEdgePx, 600))) as string;
+    const ext = extForDataUrl(logoUrl);
     logoPath = `logo.${ext}`;
-    zip.file(logoPath, dataUrlToBlob(state.settings.footer.logoDataUrl));
+    zip.file(logoPath, dataUrlToBlob(logoUrl));
   }
 
   const settingsForSave: ProjectSettings = {
@@ -305,8 +374,30 @@ export async function exportPdf(settings: ProjectSettings): Promise<void> {
           // Kill inspector, toolbar, outliner, and controls in cloned DOM so nothing external bleeds in
           doc.querySelectorAll(
             '.toolbar, .inspector, .inspector-reopen, .outliner, .outliner-reopen, .page-label, .empty-hint, ' +
-              '.slide-image-replace, .slide-image-remove, .slide-image-placeholder, .zoom-hud',
+              '.slide-image-replace, .slide-image-remove, .slide-image-placeholder, .zoom-hud, ' +
+              '.fullscreen-exit',
           ).forEach((n) => ((n as HTMLElement).style.display = 'none'));
+
+          // html2canvas renders <input> elements as a single-line value at the input's declared width,
+          // which mangles slide titles/subtitles (and any other <input>-based editable text).
+          // Replace slide title + subtitle inputs with divs that preserve the same visual styling.
+          doc.querySelectorAll<HTMLInputElement>('.slide-title, .slide-subtitle').forEach((inp) => {
+            const div = doc.createElement('div');
+            div.textContent = inp.value;
+            div.className = inp.className + '-print';
+            div.style.cssText = inp.style.cssText;
+            div.style.width = '100%';
+            div.style.textAlign = 'center';
+            div.style.padding = '8px 20px';
+            div.style.wordWrap = 'break-word';
+            div.style.overflowWrap = 'break-word';
+            div.style.whiteSpace = 'normal';
+            div.style.background = 'transparent';
+            div.style.border = 'none';
+            div.style.outline = 'none';
+            div.style.boxSizing = 'border-box';
+            inp.replaceWith(div);
+          });
           // Strip the blue selection highlight from panels so it doesn't render in the PDF
           doc.querySelectorAll<HTMLElement>('.panel').forEach((n) => {
             n.style.borderColor = 'transparent';

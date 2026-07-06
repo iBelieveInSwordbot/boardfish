@@ -153,6 +153,10 @@ export type ProjectSettings = {
     useCornerNotePrefix: boolean;
   };
   panelNumbering: 'continuous' | 'per-storyboard'; // 'continuous' = 01…N across whole doc; 'per-storyboard' resets each storyboard
+  storage: {
+    downscaleOnSave: boolean; // resize embedded images to maxImageLongEdgePx on .boardfish save
+    maxImageLongEdgePx: number; // e.g. 2400
+  };
 };
 
 export type ThemePreset = 'light' | 'dark';
@@ -240,6 +244,10 @@ export function defaultSettings(): ProjectSettings {
       useCornerNotePrefix: false,
     },
     panelNumbering: 'continuous',
+    storage: {
+      downscaleOnSave: true,
+      maxImageLongEdgePx: 2400,
+    },
   };
 }
 
