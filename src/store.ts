@@ -1,19 +1,32 @@
 // Boardfish store — pure state + reducer. Zero deps.
 import { useEffect, useReducer } from 'react';
-import type { Panel, ProjectSettings } from './types';
-import { cryptoRandomId, defaultSettings } from './types';
+import type { Panel, ProjectSettings, ThemePreset } from './types';
+import { cryptoRandomId, defaultSettings, themeColors } from './types';
 
 /** Normalize settings loaded from persistence to add any fields introduced after the file was saved. */
-function normalizeSettings(s: ProjectSettings): ProjectSettings {
+function normalizeSettings(s: Partial<ProjectSettings>): ProjectSettings {
   const defaults = defaultSettings();
   return {
     ...defaults,
     ...s,
     colors: { ...defaults.colors, ...(s.colors ?? {}) },
+    fonts: { ...defaults.fonts, ...(s.fonts ?? {}) },
     labels: { ...defaults.labels, ...(s.labels ?? {}) },
     footer: { ...defaults.footer, ...(s.footer ?? {}) },
+    panelBadges: { ...defaults.panelBadges, ...(s.panelBadges ?? {}) },
     pageSize: s.pageSize ?? defaults.pageSize,
   };
+}
+
+/** Backfill any missing fields on loaded panels (e.g. older projects lack cornerNote). */
+function normalizePanels(panels: Partial<Panel>[]): Panel[] {
+  return panels.map((p) => ({
+    id: p.id ?? cryptoRandomId(),
+    imageDataUrl: p.imageDataUrl ?? null,
+    imageName: p.imageName ?? null,
+    cornerNote: p.cornerNote ?? '',
+    fields: (p.fields ?? []).map((f) => ({ id: f.id, label: f.label, value: f.value })),
+  }));
 }
 
 export type BoardfishState = {
@@ -41,6 +54,8 @@ export type Action =
   | { type: 'REMOVE_FIELD_GLOBAL'; label: string }
   | { type: 'UPDATE_SETTINGS'; patch: Partial<ProjectSettings> }
   | { type: 'SET_INSPECTOR_TAB'; tab: 'page' | 'panel' }
+  | { type: 'APPLY_THEME'; theme: ThemePreset }
+  | { type: 'SET_CORNER_NOTE'; panelId: string; value: string }
   | { type: 'LOAD_PROJECT'; state: Pick<BoardfishState, 'settings' | 'panels'> }
   | { type: 'RESET' };
 
@@ -190,8 +205,19 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
       return { ...state, settings: { ...state.settings, ...action.patch } };
     case 'SET_INSPECTOR_TAB':
       return { ...state, inspectorTab: action.tab };
+    case 'APPLY_THEME':
+      return { ...state, settings: { ...state.settings, colors: themeColors(action.theme) } };
+    case 'SET_CORNER_NOTE':
+      return {
+        ...state,
+        panels: state.panels.map((p) => (p.id === action.panelId ? { ...p, cornerNote: action.value } : p)),
+      };
     case 'LOAD_PROJECT':
-      return { ...initialState(), settings: normalizeSettings(action.state.settings), panels: action.state.panels };
+      return {
+        ...initialState(),
+        settings: normalizeSettings(action.state.settings),
+        panels: normalizePanels(action.state.panels),
+      };
     case 'RESET':
       return initialState();
     default:
@@ -204,6 +230,7 @@ function deepClonePanel(p: Panel): Panel {
     id: p.id,
     imageDataUrl: p.imageDataUrl,
     imageName: p.imageName,
+    cornerNote: p.cornerNote,
     fields: p.fields.map((f) => ({ ...f })),
   };
 }
@@ -217,7 +244,11 @@ export function useBoardfish() {
       if (raw) {
         const parsed = JSON.parse(raw) as { settings: ProjectSettings; panels: Panel[] };
         if (parsed?.settings && Array.isArray(parsed.panels)) {
-          return { ...initialState(), settings: normalizeSettings(parsed.settings), panels: parsed.panels };
+          return {
+            ...initialState(),
+            settings: normalizeSettings(parsed.settings),
+            panels: normalizePanels(parsed.panels),
+          };
         }
       }
     } catch {

@@ -42,9 +42,10 @@ export type Panel = {
   imageDataUrl: string | null;
   imageName: string | null;
   fields: TextField[];
+  cornerNote: string; // optional per-panel text shown in the top-right corner
 };
 
-// Project-level settings that live in the Inspector (Page tab)
+// Project-level settings that live in the Inspector
 export type ProjectSettings = {
   projectName: string;
   pageSize: PageSize;
@@ -60,9 +61,16 @@ export type ProjectSettings = {
     canvasBg: string;
     pageBg: string;
     panelBg: string;
-    text: string;
-    fieldText: string;
+    text: string; // footer text
+    fieldText: string; // panel field text
+    panelLabel: string; // panel-number + corner-note text color
     accent: string;
+  };
+  fonts: {
+    family: string; // CSS font-family stack
+    fieldSizePx: number;
+    footerSizePx: number;
+    panelLabelSizePx: number;
   };
   labels: {
     // Global default field labels for new panels
@@ -73,30 +81,70 @@ export type ProjectSettings = {
     showPageNumber: boolean;
     logoDataUrl: string | null; // user-uploaded logo; when null, the default Swordfish logo is used (auto light/dark)
     logoAutoTheme: boolean; // when true, auto-pick black/white default logo based on page BG luminance
+    logoScale: number; // 0.25..2 multiplier over base logo max height
+  };
+  panelBadges: {
+    showNumber: boolean; // small top-left panel number
+    showCornerNote: boolean; // enables top-right per-panel note
   };
 };
+
+export type ThemePreset = 'light' | 'dark';
+
+export const FONT_FAMILIES: { label: string; value: string }[] = [
+  { label: 'System Sans', value: '-apple-system, BlinkMacSystemFont, "Segoe UI", "SF Pro Text", sans-serif' },
+  { label: 'Helvetica', value: 'Helvetica, Arial, sans-serif' },
+  { label: 'Georgia (Serif)', value: 'Georgia, "Times New Roman", serif' },
+  { label: 'Courier (Mono)', value: '"Courier New", Courier, monospace' },
+  { label: 'Inter', value: 'Inter, -apple-system, sans-serif' },
+];
+
+export function themeColors(theme: ThemePreset): ProjectSettings['colors'] {
+  if (theme === 'dark') {
+    return {
+      canvasBg: '#0f0f10',
+      pageBg: '#1c1c20',
+      panelBg: '#2a2a2f',
+      text: '#eaeaea',
+      fieldText: '#eaeaea',
+      panelLabel: '#c8c8c8',
+      accent: '#4a9eff',
+    };
+  }
+  return {
+    canvasBg: '#1a1a1a',
+    pageBg: '#ffffff',
+    panelBg: '#f5f5f5',
+    text: '#111111',
+    fieldText: '#111111',
+    panelLabel: '#555555',
+    accent: '#4a9eff',
+  };
+}
 
 export const DEFAULT_FIELD_LABELS = ['Description', 'VO'];
 
 export function defaultSettings(): ProjectSettings {
+  // Default page = Tabloid 17×11 per Matt's request
+  const tabloid = PAGE_SIZES.find((p) => p.name.startsWith('Tabloid')) ?? PAGE_SIZES[0];
   return {
     projectName: 'Untitled Board',
-    pageSize: PAGE_SIZES[0],
+    pageSize: tabloid,
+    // Grid defaults (per Matt, top→bottom): 3, 2, 19, 21, 31
     panelsHorizontal: 3,
     panelsVertical: 2,
     panelAspectRatio: 16 / 9,
     panelAspectLocked: true,
     imageFit: 'fit',
-    marginPx: 40,
-    gutterHorizontalPx: 20,
-    gutterVerticalPx: 20,
-    colors: {
-      canvasBg: '#1a1a1a',
-      pageBg: '#ffffff',
-      panelBg: '#f5f5f5',
-      text: '#111111',
-      fieldText: '#111111',
-      accent: '#4a9eff',
+    marginPx: 19,
+    gutterHorizontalPx: 21,
+    gutterVerticalPx: 31,
+    colors: themeColors('light'),
+    fonts: {
+      family: FONT_FAMILIES[0].value,
+      fieldSizePx: 12,
+      footerSizePx: 12,
+      panelLabelSizePx: 10,
     },
     labels: {
       defaults: [...DEFAULT_FIELD_LABELS],
@@ -106,6 +154,11 @@ export function defaultSettings(): ProjectSettings {
       showPageNumber: true,
       logoDataUrl: null,
       logoAutoTheme: true,
+      logoScale: 1,
+    },
+    panelBadges: {
+      showNumber: true,
+      showCornerNote: true,
     },
   };
 }
@@ -115,6 +168,7 @@ export function newPanel(labels: string[] = DEFAULT_FIELD_LABELS): Panel {
     id: cryptoRandomId(),
     imageDataUrl: null,
     imageName: null,
+    cornerNote: '',
     fields: labels.map((label) => ({
       id: cryptoRandomId(),
       label,

@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Canvas } from './components/Canvas';
 import { Inspector } from './components/Inspector';
 import { Toolbar } from './components/Toolbar';
@@ -7,15 +7,38 @@ import './App.css';
 
 function App() {
   const { state, dispatch } = useBoardfish();
+  const [inspectorOpen, setInspectorOpen] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem('boardfish:inspectorOpen');
+      return raw === null ? true : raw === 'true';
+    } catch {
+      return true;
+    }
+  });
 
-  // Global keyboard shortcuts for cut/copy/paste/delete of selected panel
+  useEffect(() => {
+    try {
+      localStorage.setItem('boardfish:inspectorOpen', String(inspectorOpen));
+    } catch {
+      // ignore
+    }
+  }, [inspectorOpen]);
+
+  // Global keyboard shortcuts
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
-      // Don't hijack when user is typing in a field
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
 
       const meta = e.metaKey || e.ctrlKey;
+
+      // ⌘\ toggles inspector (Photoshop-ish; ⌘⌥I also common)
+      if (meta && (e.key === '\\' || e.key === '|')) {
+        e.preventDefault();
+        setInspectorOpen((v) => !v);
+        return;
+      }
+
       if (!state.selectedPanelId && !(meta && e.key.toLowerCase() === 'v')) return;
 
       if (meta && e.key.toLowerCase() === 'x' && state.selectedPanelId) {
@@ -39,12 +62,26 @@ function App() {
   }, [dispatch, state.selectedPanelId]);
 
   return (
-    <div className="app-root">
-      <Toolbar state={state} dispatch={dispatch} />
+    <div className={`app-root ${inspectorOpen ? 'inspector-visible' : 'inspector-hidden'}`}>
+      <Toolbar
+        state={state}
+        dispatch={dispatch}
+        inspectorOpen={inspectorOpen}
+        onToggleInspector={() => setInspectorOpen((v) => !v)}
+      />
       <div className="app-body">
         <Canvas state={state} dispatch={dispatch} />
-        <Inspector state={state} dispatch={dispatch} />
+        {inspectorOpen && <Inspector state={state} dispatch={dispatch} />}
       </div>
+      {!inspectorOpen && (
+        <button
+          className="inspector-reopen"
+          title="Show Inspector (⌘\)"
+          onClick={() => setInspectorOpen(true)}
+        >
+          ‹ Inspector
+        </button>
+      )}
     </div>
   );
 }

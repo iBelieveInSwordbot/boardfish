@@ -155,6 +155,7 @@ export function Canvas({ state, dispatch }: Props) {
                 pageIndex={pageIdx}
                 totalPages={pages.length}
                 pagePanels={pagePanels}
+                startIndex={pageIdx * perPage}
                 settings={state.settings}
                 selectedPanelId={selectedPanelId}
                 dispatch={dispatch}
@@ -178,12 +179,13 @@ type PageProps = {
   pageIndex: number;
   totalPages: number;
   pagePanels: Panel[];
+  startIndex: number;
   settings: BoardfishState['settings'];
   selectedPanelId: string | null;
   dispatch: React.Dispatch<Action>;
 };
 
-function PageView({ pageIndex, totalPages, pagePanels, settings, selectedPanelId, dispatch }: PageProps) {
+function PageView({ pageIndex, totalPages, pagePanels, startIndex, settings, selectedPanelId, dispatch }: PageProps) {
   const cols = settings.panelsHorizontal;
   const rows = settings.panelsVertical;
 
@@ -216,10 +218,11 @@ function PageView({ pageIndex, totalPages, pagePanels, settings, selectedPanelId
       </div>
       <div className="page" data-page-index={pageIndex} style={pageStyle}>
         <div style={gridStyle}>
-          {pagePanels.map((panel) => (
+          {pagePanels.map((panel, localIdx) => (
             <PanelView
               key={panel.id}
               panel={panel}
+              index={startIndex + localIdx + 1}
               selected={panel.id === selectedPanelId}
               settings={settings}
               dispatch={dispatch}
@@ -252,14 +255,24 @@ function PageFooter({
     logoSrc = pickDefaultLogo(settings.colors.pageBg);
   }
 
+  const footerStyle: React.CSSProperties = {
+    color: settings.colors.text,
+    fontFamily: settings.fonts.family,
+    fontSize: settings.fonts.footerSizePx,
+  };
+  const logoStyle: React.CSSProperties = {
+    maxHeight: 28 * settings.footer.logoScale,
+    maxWidth: 120 * settings.footer.logoScale,
+  };
+
   return (
-    <div className="page-footer" style={{ color: settings.colors.text }}>
+    <div className="page-footer" style={footerStyle}>
       <div className="footer-left">{settings.footer.showProjectName ? settings.projectName : ''}</div>
       <div className="footer-center">
         {settings.footer.showPageNumber ? `${pageIndex + 1} / ${totalPages}` : ''}
       </div>
       <div className="footer-right">
-        {logoSrc ? <img src={logoSrc} alt="logo" /> : null}
+        {logoSrc ? <img src={logoSrc} alt="logo" style={logoStyle} /> : null}
       </div>
     </div>
   );

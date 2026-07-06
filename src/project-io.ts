@@ -13,6 +13,7 @@ type SavedProjectV1 = {
     id: string;
     imageName: string | null;
     imagePath: string | null; // path inside zip
+    cornerNote?: string;
     fields: { id: string; label: string; value: string }[];
   }[];
   logoPath: string | null;
@@ -67,6 +68,7 @@ export async function saveProject(state: BoardfishState): Promise<void> {
       id: p.id,
       imageName: p.imageName,
       imagePath,
+      cornerNote: p.cornerNote,
       fields: p.fields.map((f) => ({ id: f.id, label: f.label, value: f.value })),
     };
   });
@@ -123,6 +125,7 @@ export async function loadProject(file: File): Promise<{ settings: ProjectSettin
         id: mp.id,
         imageDataUrl: dataUrl,
         imageName: mp.imageName,
+        cornerNote: mp.cornerNote ?? '',
         fields: mp.fields.map((f) => ({ ...f })),
       };
     }),

@@ -2,9 +2,14 @@ import { useRef } from 'react';
 import type { Action, BoardfishState } from '../store';
 import { exportPdf, loadProject, saveProject } from '../project-io';
 
-type Props = { state: BoardfishState; dispatch: React.Dispatch<Action> };
+type Props = {
+  state: BoardfishState;
+  dispatch: React.Dispatch<Action>;
+  inspectorOpen: boolean;
+  onToggleInspector: () => void;
+};
 
-export function Toolbar({ state, dispatch }: Props) {
+export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector }: Props) {
   const openRef = useRef<HTMLInputElement>(null);
   const addImagesRef = useRef<HTMLInputElement>(null);
 
@@ -85,6 +90,13 @@ export function Toolbar({ state, dispatch }: Props) {
           }}
         >
           New
+        </button>
+        <button
+          className="toolbar-inspector-toggle"
+          onClick={onToggleInspector}
+          title={inspectorOpen ? 'Hide Inspector (⌘\\)' : 'Show Inspector (⌘\\)'}
+        >
+          {inspectorOpen ? 'Hide Inspector' : 'Show Inspector'}
         </button>
       </div>
     </header>

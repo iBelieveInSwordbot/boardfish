@@ -30,9 +30,32 @@ input, textarea, select {
 
 .app-body {
   display: grid;
-  grid-template-columns: 1fr 320px;
   min-height: 0;
 }
+.inspector-visible .app-body {
+  grid-template-columns: 1fr 340px;
+}
+.inspector-hidden .app-body {
+  grid-template-columns: 1fr;
+}
+
+.inspector-reopen {
+  position: fixed;
+  top: 60px;
+  right: 0;
+  z-index: 20;
+  background: #232327;
+  color: #eee;
+  border: 1px solid #303035;
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  letter-spacing: 0.06em;
+}
+.inspector-reopen:hover { background: #2c2c31; }
 
 /* --- Toolbar --- */
 .toolbar {
@@ -79,6 +102,7 @@ input, textarea, select {
 .toolbar-actions {
   display: flex;
   gap: 6px;
+  align-items: center;
 }
 .toolbar-actions button {
   background: #232327;
@@ -89,6 +113,11 @@ input, textarea, select {
   font-size: 13px;
 }
 .toolbar-actions button:hover { background: #2c2c31; }
+.toolbar-inspector-toggle {
+  margin-left: 6px;
+  border-color: #4a9eff !important;
+  color: #cfe4ff !important;
+}
 
 /* --- Canvas area --- */
 .canvas-area {
@@ -162,7 +191,33 @@ input, textarea, select {
   user-select: none;
   transition: border-color 100ms ease;
   min-height: 0;
+  position: relative;
 }
+
+/* Panel corner badges (number top-left, per-panel note top-right) */
+.panel-badge {
+  position: absolute;
+  z-index: 2;
+  padding: 3px 6px;
+  border-radius: 3px;
+  background: rgba(0,0,0,0.35);
+  color: #fff;
+  pointer-events: auto;
+  letter-spacing: 0.05em;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+.panel-badge-tl { top: 6px; left: 6px; }
+.panel-badge-tr { top: 6px; right: 6px; text-align: right; }
+.panel-badge-input {
+  border: 1px solid rgba(255,255,255,0.15);
+  min-width: 60px;
+  max-width: 140px;
+  font-family: inherit;
+  outline: none;
+}
+.panel-badge-input::placeholder { opacity: 0.45; font-style: italic; }
+.panel-badge-input:focus { border-color: rgba(255,255,255,0.6); background: rgba(0,0,0,0.55); }
 .panel-selected {
   outline: none;
 }
@@ -253,40 +308,68 @@ input, textarea, select {
   flex-direction: column;
   min-height: 0;
 }
-.inspector-tabs {
-  display: flex;
+.inspector-header {
+  padding: 12px 14px 10px;
   border-bottom: 1px solid #262629;
 }
-.inspector-tabs button {
-  flex: 1;
-  background: transparent;
-  color: #aaa;
-  border: none;
-  padding: 10px 12px;
-  font-size: 13px;
-  font-weight: 500;
-  border-bottom: 2px solid transparent;
-}
-.inspector-tabs button.active {
+.inspector-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
   color: #eaeaea;
-  border-bottom-color: #4a9eff;
+  font-weight: 600;
 }
-.inspector-tabs button:disabled { color: #555; cursor: not-allowed; }
 .inspector-body {
   flex: 1;
   overflow: auto;
-  padding: 12px 0;
+  padding: 4px 0 40px;
 }
 
-.section { padding: 6px 14px 12px; border-bottom: 1px solid #202024; }
+.section {
+  border-bottom: 1px solid #202024;
+}
 .section-title {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  padding: 10px 14px;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: #888;
-  margin: 8px 0 8px;
+  color: #aaa;
+  cursor: pointer;
+  text-align: left;
+  font-weight: 600;
 }
-.section-body { display: flex; flex-direction: column; gap: 6px; }
+.section-title:hover { color: #eaeaea; background: #1c1c20; }
+.section-chevron { width: 12px; display: inline-block; color: #666; }
+.section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 14px 14px;
+}
+.section-closed .section-title { color: #777; }
+
+.theme-buttons { display: flex; gap: 6px; }
+.theme-btn {
+  flex: 1;
+  padding: 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid #303035;
+  cursor: pointer;
+}
+.theme-btn-light { background: #eee; color: #111; }
+.theme-btn-light:hover { background: #fff; }
+.theme-btn-dark { background: #17171a; color: #eee; }
+.theme-btn-dark:hover { background: #0f0f10; }
+.theme-hint { font-size: 11px; color: #777; margin-top: 4px; }
+.hint { font-size: 11px; color: #888; margin-top: 4px; }
 
 .row {
   display: grid;
@@ -314,6 +397,12 @@ input, textarea, select {
   border-radius: 4px;
   background: #0f0f10;
   padding: 0;
+}
+.row-control input[type="range"] {
+  width: 100%;
+}
+.row-control input[type="checkbox"] {
+  accent-color: #4a9eff;
 }
 
 .label-list { display: flex; flex-direction: column; gap: 4px; }
