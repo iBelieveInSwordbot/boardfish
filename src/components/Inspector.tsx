@@ -29,16 +29,17 @@ const DEFAULT_OPEN_ITEM: OpenState = {
 };
 
 export function Inspector({ state, dispatch }: Props) {
-  // Selected panel across all storyboard items
+  // Primary selection (first in multi-select) drives the Inspector item tab context
+  const primaryId = state.selectedPanelIds[0] ?? null;
+  const selectedCount = state.selectedPanelIds.length;
   const selectedPanel = state.items
     .flatMap((it) => (it.kind === 'storyboard' ? it.panels : []))
-    .find((p) => p.id === state.selectedPanelId);
+    .find((p) => p.id === primaryId);
   const selectedItem = state.items.find((it) => it.id === state.selectedItemId);
-  // Panel selection also implies its owning storyboard for the Item tab context
   const contextStoryboard = (() => {
-    if (state.selectedPanelId) {
+    if (primaryId) {
       for (const it of state.items) {
-        if (it.kind === 'storyboard' && it.panels.some((p) => p.id === state.selectedPanelId)) return it;
+        if (it.kind === 'storyboard' && it.panels.some((p) => p.id === primaryId)) return it;
       }
     }
     if (selectedItem && selectedItem.kind === 'storyboard') return selectedItem;
@@ -50,8 +51,8 @@ export function Inspector({ state, dispatch }: Props) {
   const [tab, setTab] = useState<'global' | 'item'>('global');
   useEffect(() => {
     // Auto-switch to Item tab when the user selects a panel; leave alone otherwise so global-editing flow isn't disrupted
-    if (state.selectedPanelId) setTab('item');
-  }, [state.selectedPanelId]);
+    if (primaryId) setTab('item');
+  }, [primaryId]);
   const [globalOpen, setGlobalOpen] = useState<OpenState>(DEFAULT_OPEN_GLOBAL);
   const [itemOpen, setItemOpen] = useState<OpenState>(DEFAULT_OPEN_ITEM);
   const toggleGlobal = (k: string) => setGlobalOpen((o) => ({ ...o, [k]: !o[k] }));
@@ -86,6 +87,7 @@ export function Inspector({ state, dispatch }: Props) {
             storyboard={contextStoryboard}
             slide={contextSlide}
             selectedPanel={selectedPanel}
+            selectedCount={selectedCount}
             open={itemOpen}
             toggle={toggleItem}
           />
@@ -397,6 +399,7 @@ function ItemTab({
   storyboard,
   slide,
   selectedPanel,
+  selectedCount,
   open,
   toggle,
 }: {
@@ -405,6 +408,7 @@ function ItemTab({
   storyboard: Extract<BoardfishState['items'][number], { kind: 'storyboard' }> | null;
   slide: Extract<BoardfishState['items'][number], { kind: 'slide' }> | null;
   selectedPanel: import('../types').Panel | undefined;
+  selectedCount: number;
   open: OpenState;
   toggle: (k: string) => void;
 }) {
@@ -425,14 +429,20 @@ function ItemTab({
         />
       )}
       {selectedPanel && (
-        <Section title="Selected panel" openKey="panel" open={open} toggle={toggle}>
+        <Section
+          title={selectedCount > 1 ? `Selected panels (${selectedCount})` : 'Selected panel'}
+          openKey="panel"
+          open={open}
+          toggle={toggle}
+        >
           <div className="button-row">
-            <button onClick={() => dispatch({ type: 'CUT_PANEL', id: selectedPanel.id })}>Cut</button>
-            <button onClick={() => dispatch({ type: 'COPY_PANEL', id: selectedPanel.id })}>Copy</button>
-            <button onClick={() => dispatch({ type: 'PASTE_PANEL' })} disabled={!state.clipboard}>Paste</button>
-            <button onClick={() => dispatch({ type: 'DELETE_PANEL', id: selectedPanel.id })}>Delete</button>
+            <button onClick={() => dispatch({ type: 'CUT_PANELS', ids: state.selectedPanelIds })}>Cut</button>
+            <button onClick={() => dispatch({ type: 'COPY_PANELS', ids: state.selectedPanelIds })}>Copy</button>
+            <button onClick={() => dispatch({ type: 'PASTE_PANELS' })} disabled={state.clipboard.length === 0}>Paste</button>
+            <button onClick={() => dispatch({ type: 'DUPLICATE_PANELS', ids: state.selectedPanelIds })}>Duplicate</button>
+            <button onClick={() => dispatch({ type: 'DELETE_PANELS', ids: state.selectedPanelIds })}>Delete</button>
           </div>
-          <div className="hint">⌘X / ⌘C / ⌘V / Del also work.</div>
+          <div className="hint">⌘X / ⌘C / ⌘V / ⌘D / Del also work. Click + ⌘-click / Shift-click / ⌘A for multi-select.</div>
         </Section>
       )}
     </div>

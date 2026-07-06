@@ -68,20 +68,29 @@ export type BoardfishState = {
   settings: ProjectSettings;
   items: DocItem[]; // ordered doc-level items (slides + storyboards)
   selectedItemId: string | null; // outliner selection
-  selectedPanelId: string | null; // storyboard-panel selection (within an item)
-  clipboard: Panel | null;
+  selectedPanelIds: string[]; // storyboard-panel selection (multi)
+  lastClickedPanelId: string | null; // anchor for shift-click range
+  clipboard: Panel[]; // multi-panel clipboard
   inspectorTab: 'page' | 'panel';
 };
+
+/** Back-compat helper: many callers still ask for the single selected id (first in selection). */
+export function primarySelectedPanelId(state: BoardfishState): string | null {
+  return state.selectedPanelIds[0] ?? null;
+}
 
 export type Action =
   | { type: 'ADD_PANELS_TO_ITEM'; itemId: string; panels: Panel[] }
   | { type: 'REORDER_PANELS_WITHIN_ITEM'; itemId: string; ids: string[] }
-  | { type: 'SELECT_PANEL'; id: string | null }
+  | { type: 'SELECT_PANEL'; id: string | null; modifier?: 'set' | 'toggle' | 'range' }
+  | { type: 'SELECT_ALL_PANELS' }
+  | { type: 'CLEAR_PANEL_SELECTION' }
   | { type: 'SELECT_ITEM'; id: string | null }
-  | { type: 'DELETE_PANEL'; id: string }
-  | { type: 'CUT_PANEL'; id: string }
-  | { type: 'COPY_PANEL'; id: string }
-  | { type: 'PASTE_PANEL' }
+  | { type: 'DELETE_PANELS'; ids: string[] }
+  | { type: 'CUT_PANELS'; ids: string[] }
+  | { type: 'COPY_PANELS'; ids: string[] }
+  | { type: 'PASTE_PANELS' }
+  | { type: 'DUPLICATE_PANELS'; ids: string[] }
   | { type: 'UPDATE_PANEL'; id: string; patch: Partial<Panel> }
   | { type: 'UPDATE_FIELD'; panelId: string; fieldId: string; value: string }
   | { type: 'ADD_FIELD'; panelId: string; label: string }
@@ -107,10 +116,22 @@ function initialState(): BoardfishState {
     settings: defaultSettings(),
     items: [newStoryboardItem()], // start with one empty storyboard
     selectedItemId: null,
-    selectedPanelId: null,
-    clipboard: null,
+    selectedPanelIds: [],
+    lastClickedPanelId: null,
+    clipboard: [],
     inspectorTab: 'page',
   };
+}
+
+/** Flatten all storyboard panels across items in document order (for range selection + ⌘A). */
+function flatPanelIds(items: DocItem[]): string[] {
+  const out: string[] = [];
+  for (const it of items) {
+    if (it.kind === 'storyboard') {
+      for (const p of it.panels) out.push(p.id);
+    }
+  }
+  return out;
 }
 
 function insertAfter<T>(arr: T[], afterIdx: number, item: T): T[] {
@@ -143,8 +164,9 @@ function updateStoryboardPanels(items: DocItem[], itemIdx: number, panels: Panel
 /** Get the item id targeted for panel operations (drop images, paste). */
 function nearestStoryboardItemId(state: BoardfishState): string | null {
   // Prefer the item containing the selected panel
-  if (state.selectedPanelId) {
-    const loc = findPanelLocation(state.items, state.selectedPanelId);
+  const primary = primarySelectedPanelId(state);
+  if (primary) {
+    const loc = findPanelLocation(state.items, primary);
     if (loc) return state.items[loc.itemIdx].id;
   }
   // Prefer the currently-selected item if it's a storyboard
@@ -164,10 +186,12 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
       if (idx < 0 || state.items[idx].kind !== 'storyboard') return state;
       const it = state.items[idx] as Extract<DocItem, { kind: 'storyboard' }>;
       const newPanels = [...it.panels, ...action.panels];
+      const firstAddedId = action.panels[0]?.id;
       return {
         ...state,
         items: updateStoryboardPanels(state.items, idx, newPanels),
-        selectedPanelId: action.panels[0]?.id ?? state.selectedPanelId,
+        selectedPanelIds: firstAddedId ? [firstAddedId] : state.selectedPanelIds,
+        lastClickedPanelId: firstAddedId ?? state.lastClickedPanelId,
         selectedItemId: state.items[idx].id,
       };
     }
@@ -184,76 +208,203 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
         items: updateStoryboardPanels(state.items, idx, [...reordered, ...leftover]),
       };
     }
-    case 'SELECT_PANEL':
+    case 'SELECT_PANEL': {
+      const mod = action.modifier ?? 'set';
+      if (!action.id) {
+        return {
+          ...state,
+          selectedPanelIds: [],
+          lastClickedPanelId: null,
+          inspectorTab: state.inspectorTab,
+        };
+      }
+      const id = action.id;
+      let nextIds: string[];
+      if (mod === 'toggle') {
+        // ⌘-click: add/remove from selection
+        nextIds = state.selectedPanelIds.includes(id)
+          ? state.selectedPanelIds.filter((x) => x !== id)
+          : [...state.selectedPanelIds, id];
+      } else if (mod === 'range') {
+        // Shift-click: select from anchor to id inclusive in document order
+        const flat = flatPanelIds(state.items);
+        const anchorId = state.lastClickedPanelId ?? primarySelectedPanelId(state) ?? id;
+        const a = flat.indexOf(anchorId);
+        const b = flat.indexOf(id);
+        if (a < 0 || b < 0) {
+          nextIds = [id];
+        } else {
+          const [lo, hi] = a <= b ? [a, b] : [b, a];
+          nextIds = flat.slice(lo, hi + 1);
+        }
+      } else {
+        // Plain click: replace selection
+        nextIds = [id];
+      }
       return {
         ...state,
-        selectedPanelId: action.id,
-        inspectorTab: action.id ? 'panel' : state.inspectorTab,
+        selectedPanelIds: nextIds,
+        lastClickedPanelId: id,
+        inspectorTab: 'panel',
       };
+    }
+    case 'SELECT_ALL_PANELS': {
+      const all = flatPanelIds(state.items);
+      return { ...state, selectedPanelIds: all, lastClickedPanelId: all[all.length - 1] ?? null };
+    }
+    case 'CLEAR_PANEL_SELECTION':
+      return { ...state, selectedPanelIds: [], lastClickedPanelId: null };
     case 'SELECT_ITEM':
-      return { ...state, selectedItemId: action.id, selectedPanelId: null };
-    case 'DELETE_PANEL': {
-      const loc = findPanelLocation(state.items, action.id);
-      if (!loc) return state;
-      const it = state.items[loc.itemIdx] as Extract<DocItem, { kind: 'storyboard' }>;
-      const nextPanels = it.panels.filter((p) => p.id !== action.id);
-      const newSelected =
-        nextPanels[loc.panelIdx]?.id ?? nextPanels[loc.panelIdx - 1]?.id ?? null;
+      return { ...state, selectedItemId: action.id, selectedPanelIds: [], lastClickedPanelId: null };
+    case 'DELETE_PANELS': {
+      const idsToRemove = new Set(action.ids);
+      if (idsToRemove.size === 0) return state;
+      // Track a next-selection candidate: the panel just after the last removed in doc order,
+      // or the one just before if we removed the tail.
+      const flat = flatPanelIds(state.items);
+      const lastRemoved = action.ids[action.ids.length - 1];
+      const lastIdx = flat.indexOf(lastRemoved);
+      const nextFocus =
+        (() => {
+          for (let i = lastIdx + 1; i < flat.length; i++) if (!idsToRemove.has(flat[i])) return flat[i];
+          for (let i = lastIdx - 1; i >= 0; i--) if (!idsToRemove.has(flat[i])) return flat[i];
+          return null;
+        })();
+      const items = state.items.map((it) => {
+        if (it.kind !== 'storyboard') return it;
+        const next = it.panels.filter((p) => !idsToRemove.has(p.id));
+        return next === it.panels ? it : { ...it, panels: next };
+      });
       return {
         ...state,
-        items: updateStoryboardPanels(state.items, loc.itemIdx, nextPanels),
-        selectedPanelId: newSelected,
+        items,
+        selectedPanelIds: nextFocus ? [nextFocus] : [],
+        lastClickedPanelId: nextFocus,
       };
     }
-    case 'CUT_PANEL': {
-      const loc = findPanelLocation(state.items, action.id);
-      if (!loc) return state;
-      const it = state.items[loc.itemIdx] as Extract<DocItem, { kind: 'storyboard' }>;
-      const nextPanels = it.panels.filter((p) => p.id !== action.id);
-      const newSelected =
-        nextPanels[loc.panelIdx]?.id ?? nextPanels[loc.panelIdx - 1]?.id ?? null;
+    case 'CUT_PANELS': {
+      if (action.ids.length === 0) return state;
+      const idsSet = new Set(action.ids);
+      // Clipboard: cloned panels in document order (matching action.ids order after sorting by doc pos)
+      const flat = flatPanelIds(state.items);
+      const orderedIds = flat.filter((id) => idsSet.has(id));
+      const clones: Panel[] = [];
+      for (const id of orderedIds) {
+        const loc = findPanelLocation(state.items, id);
+        if (loc) clones.push(deepClonePanel(loc.panel));
+      }
+      const flatAll = flatPanelIds(state.items);
+      const lastRemoved = orderedIds[orderedIds.length - 1];
+      const lastIdx = flatAll.indexOf(lastRemoved);
+      const nextFocus =
+        (() => {
+          for (let i = lastIdx + 1; i < flatAll.length; i++) if (!idsSet.has(flatAll[i])) return flatAll[i];
+          for (let i = lastIdx - 1; i >= 0; i--) if (!idsSet.has(flatAll[i])) return flatAll[i];
+          return null;
+        })();
+      const items = state.items.map((it) => {
+        if (it.kind !== 'storyboard') return it;
+        const next = it.panels.filter((p) => !idsSet.has(p.id));
+        return next === it.panels ? it : { ...it, panels: next };
+      });
       return {
         ...state,
-        items: updateStoryboardPanels(state.items, loc.itemIdx, nextPanels),
-        selectedPanelId: newSelected,
-        clipboard: deepClonePanel(loc.panel),
+        items,
+        selectedPanelIds: nextFocus ? [nextFocus] : [],
+        lastClickedPanelId: nextFocus,
+        clipboard: clones,
       };
     }
-    case 'COPY_PANEL': {
-      const loc = findPanelLocation(state.items, action.id);
-      if (!loc) return state;
-      return { ...state, clipboard: deepClonePanel(loc.panel) };
+    case 'COPY_PANELS': {
+      if (action.ids.length === 0) return state;
+      const idsSet = new Set(action.ids);
+      const flat = flatPanelIds(state.items);
+      const orderedIds = flat.filter((id) => idsSet.has(id));
+      const clones: Panel[] = [];
+      for (const id of orderedIds) {
+        const loc = findPanelLocation(state.items, id);
+        if (loc) clones.push(deepClonePanel(loc.panel));
+      }
+      return { ...state, clipboard: clones };
     }
-    case 'PASTE_PANEL': {
-      if (!state.clipboard) return state;
-      const clone = deepClonePanel(state.clipboard);
-      clone.id = cryptoRandomId();
-      clone.fields = clone.fields.map((f) => ({ ...f, id: cryptoRandomId() }));
-
-      // Paste destination: item containing currently selected panel, or nearest storyboard
+    case 'PASTE_PANELS': {
+      if (state.clipboard.length === 0) return state;
+      // Re-id every clipboard clone so pasted panels are independent
+      const clones = state.clipboard.map((p) => {
+        const c = deepClonePanel(p);
+        c.id = cryptoRandomId();
+        c.fields = c.fields.map((f) => ({ ...f, id: cryptoRandomId() }));
+        return c;
+      });
+      // Paste destination: item containing primary selection, or nearest storyboard
       let destItemIdx = -1;
       let destPanelIdx = -1;
-      if (state.selectedPanelId) {
-        const loc = findPanelLocation(state.items, state.selectedPanelId);
+      const primary = primarySelectedPanelId(state);
+      if (primary) {
+        const loc = findPanelLocation(state.items, primary);
         if (loc) {
           destItemIdx = loc.itemIdx;
           destPanelIdx = loc.panelIdx;
         }
       }
       if (destItemIdx < 0) {
-        // Fall back to selected item (if storyboard) or first storyboard
         const targetId = nearestStoryboardItemId(state);
         destItemIdx = state.items.findIndex((it) => it.id === targetId);
         if (destItemIdx < 0) return state;
         const it = state.items[destItemIdx] as Extract<DocItem, { kind: 'storyboard' }>;
-        destPanelIdx = it.panels.length - 1; // append at end
+        destPanelIdx = it.panels.length - 1;
       }
       const destItem = state.items[destItemIdx] as Extract<DocItem, { kind: 'storyboard' }>;
-      const nextPanels = insertAfter(destItem.panels, destPanelIdx, clone);
+      // Insert all clones after destPanelIdx, preserving clipboard order
+      const next = destItem.panels.slice();
+      next.splice(destPanelIdx + 1, 0, ...clones);
+      const items = state.items.map((it, i) =>
+        i === destItemIdx && it.kind === 'storyboard' ? { ...it, panels: next } : it,
+      );
+      const newIds = clones.map((c) => c.id);
       return {
         ...state,
-        items: updateStoryboardPanels(state.items, destItemIdx, nextPanels),
-        selectedPanelId: clone.id,
+        items,
+        selectedPanelIds: newIds,
+        lastClickedPanelId: newIds[newIds.length - 1] ?? null,
+      };
+    }
+    case 'DUPLICATE_PANELS': {
+      if (action.ids.length === 0) return state;
+      const idsSet = new Set(action.ids);
+      const flat = flatPanelIds(state.items);
+      const orderedIds = flat.filter((id) => idsSet.has(id));
+      // Group source panels by their owning storyboard, then insert clones after the last
+      // selected panel in each storyboard.
+      const byItem = new Map<string, { indices: number[]; clones: Panel[] }>();
+      for (const id of orderedIds) {
+        const loc = findPanelLocation(state.items, id);
+        if (!loc) continue;
+        const storyId = state.items[loc.itemIdx].id;
+        if (!byItem.has(storyId)) byItem.set(storyId, { indices: [], clones: [] });
+        const entry = byItem.get(storyId)!;
+        entry.indices.push(loc.panelIdx);
+        const clone = deepClonePanel(loc.panel);
+        clone.id = cryptoRandomId();
+        clone.fields = clone.fields.map((f) => ({ ...f, id: cryptoRandomId() }));
+        entry.clones.push(clone);
+      }
+      const items = state.items.map((it) => {
+        if (it.kind !== 'storyboard') return it;
+        const entry = byItem.get(it.id);
+        if (!entry) return it;
+        const insertAt = Math.max(...entry.indices) + 1;
+        const next = it.panels.slice();
+        next.splice(insertAt, 0, ...entry.clones);
+        return { ...it, panels: next };
+      });
+      const newIds: string[] = [];
+      for (const [, entry] of byItem) newIds.push(...entry.clones.map((c) => c.id));
+      return {
+        ...state,
+        items,
+        selectedPanelIds: newIds,
+        lastClickedPanelId: newIds[newIds.length - 1] ?? null,
       };
     }
     case 'UPDATE_PANEL': {
@@ -371,7 +522,7 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
         ? state.items.findIndex((it) => it.id === action.afterItemId)
         : state.items.length - 1;
       const items = insertAfter(state.items, afterIdx, newItem);
-      return { ...state, items, selectedItemId: newItem.id, selectedPanelId: null };
+      return { ...state, items, selectedItemId: newItem.id, selectedPanelIds: [], lastClickedPanelId: null };
     }
     case 'REMOVE_ITEM': {
       const items = state.items.filter((it) => it.id !== action.id);
@@ -381,7 +532,8 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
         ...state,
         items: nextItems,
         selectedItemId: state.selectedItemId === action.id ? null : state.selectedItemId,
-        selectedPanelId: null,
+        selectedPanelIds: [],
+        lastClickedPanelId: null,
       };
     }
     case 'REORDER_ITEMS': {
@@ -475,7 +627,7 @@ function deepClonePanel(p: Panel): Panel {
   };
 }
 
-const LS_KEY = 'boardfish3:autosave:v9'; // v9: per-storyboard overrides (grid, panel aspect, fields) + numbering mode
+const LS_KEY = 'boardfish3:autosave:v10'; // v10: multi-select (selectedPanelIds[] + Panel[] clipboard)
 
 export function useBoardfish() {
   const [state, dispatch] = useReducer(reducer, undefined, () => {

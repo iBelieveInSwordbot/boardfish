@@ -50,7 +50,9 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
       className={`panel ${selected ? 'panel-selected' : ''}`}
       onClick={(e) => {
         e.stopPropagation();
-        dispatch({ type: 'SELECT_PANEL', id: panel.id });
+        const modifier: 'set' | 'toggle' | 'range' =
+          e.shiftKey ? 'range' : (e.metaKey || e.ctrlKey) ? 'toggle' : 'set';
+        dispatch({ type: 'SELECT_PANEL', id: panel.id, modifier });
       }}
       {...attributes}
       {...listeners}

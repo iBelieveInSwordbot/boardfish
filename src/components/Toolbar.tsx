@@ -53,9 +53,10 @@ export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector, out
             const loaded = await Promise.all(Array.from(files).map((f) => fileToPanelImage(f)));
             // Find target storyboard: nearest to selection, or first storyboard
             let targetId: string | null = null;
-            if (state.selectedPanelId) {
+            const primary = state.selectedPanelIds[0];
+            if (primary) {
               for (const it of state.items) {
-                if (it.kind === 'storyboard' && it.panels.some((p) => p.id === state.selectedPanelId)) {
+                if (it.kind === 'storyboard' && it.panels.some((p) => p.id === primary)) {
                   targetId = it.id;
                   break;
                 }

@@ -22,15 +22,16 @@ type Props = {
 };
 
 export function Outliner({ state, dispatch, onClose }: Props) {
-  const { items, selectedItemId, selectedPanelId } = state;
+  const { items, selectedItemId, selectedPanelIds } = state;
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
-  // Track which item currently owns the selected panel, so its outliner row lights up too
+  // Track which item currently owns the primary selected panel, so its outliner row lights up too
+  const primaryPanelId = selectedPanelIds[0] ?? null;
   let owningItemId: string | null = null;
-  if (selectedPanelId) {
+  if (primaryPanelId) {
     for (const it of items) {
-      if (it.kind === 'storyboard' && it.panels.some((p) => p.id === selectedPanelId)) {
+      if (it.kind === 'storyboard' && it.panels.some((p) => p.id === primaryPanelId)) {
         owningItemId = it.id;
         break;
       }

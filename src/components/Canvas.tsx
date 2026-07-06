@@ -37,7 +37,8 @@ type Props = {
 };
 
 export function Canvas({ state, dispatch }: Props) {
-  const { settings, items, selectedPanelId } = state;
+  const { settings, items, selectedPanelIds } = state;
+  const selectedSet = new Set(selectedPanelIds);
   const pages = itemsToPages(items, settings);
   const numbers = panelNumberMap(items, settings.panelNumbering);
 
@@ -120,9 +121,10 @@ export function Canvas({ state, dispatch }: Props) {
 
       // Determine target storyboard: nearest to selection, or first storyboard, or create one
       let targetId: string | null = null;
-      if (state.selectedPanelId) {
+      const primary = state.selectedPanelIds[0];
+      if (primary) {
         for (const it of state.items) {
-          if (it.kind === 'storyboard' && it.panels.some((p) => p.id === state.selectedPanelId)) {
+          if (it.kind === 'storyboard' && it.panels.some((p) => p.id === primary)) {
             targetId = it.id;
             break;
           }
@@ -162,7 +164,7 @@ export function Canvas({ state, dispatch }: Props) {
       });
       dispatch({ type: 'ADD_PANELS_TO_ITEM', itemId: targetId, panels: newPanels });
     },
-    [dispatch, settings.labels.defaults, settings.panelAspectLocked, state.items, state.selectedItemId, state.selectedPanelId],
+    [dispatch, settings, state.items, state.selectedItemId, state.selectedPanelIds],
   );
 
   const onDragEnd = (evt: DragEndEvent) => {
@@ -200,7 +202,7 @@ export function Canvas({ state, dispatch }: Props) {
       ref={areaRef}
       className={`canvas-area ${isDropTarget ? 'canvas-drop' : ''}`}
       style={areaStyle}
-      onClick={() => dispatch({ type: 'SELECT_PANEL', id: null })}
+      onClick={() => dispatch({ type: 'CLEAR_PANEL_SELECTION' })}
       onDragEnter={(e) => {
         e.preventDefault();
         dragCounter.current += 1;
@@ -234,7 +236,7 @@ export function Canvas({ state, dispatch }: Props) {
                 numbers={numbers}
                 settings={settings}
                 items={items}
-                selectedPanelId={selectedPanelId}
+                selectedSet={selectedSet}
                 dispatch={dispatch}
               />
             ))}
@@ -265,7 +267,7 @@ type PageWrapperProps = {
   numbers: Map<string, number>;
   settings: BoardfishState['settings'];
   items: BoardfishState['items'];
-  selectedPanelId: string | null;
+  selectedSet: Set<string>;
   dispatch: React.Dispatch<Action>;
 };
 
@@ -276,7 +278,7 @@ function PageWrapper({
   numbers,
   settings,
   items,
-  selectedPanelId,
+  selectedSet,
   dispatch,
 }: PageWrapperProps) {
   if (page.kind === 'slide') {
@@ -303,7 +305,7 @@ function PageWrapper({
       numbers={numbers}
       settings={settings}
       effective={eff}
-      selectedPanelId={selectedPanelId}
+      selectedSet={selectedSet}
       dispatch={dispatch}
     />
   );
@@ -316,7 +318,7 @@ type StoryboardPageProps = {
   numbers: Map<string, number>;
   settings: BoardfishState['settings'];
   effective: ReturnType<typeof resolveStoryboardSettings> | null;
-  selectedPanelId: string | null;
+  selectedSet: Set<string>;
   dispatch: React.Dispatch<Action>;
 };
 
@@ -327,7 +329,7 @@ function StoryboardPageView({
   numbers,
   settings,
   effective,
-  selectedPanelId,
+  selectedSet,
   dispatch,
 }: StoryboardPageProps) {
   const eff = effective ?? {
@@ -380,7 +382,7 @@ function StoryboardPageView({
               key={panel.id}
               panel={panel}
               index={numbers.get(panel.id) ?? 1}
-              selected={panel.id === selectedPanelId}
+              selected={selectedSet.has(panel.id)}
               settings={panelViewSettings}
               dispatch={dispatch}
             />
