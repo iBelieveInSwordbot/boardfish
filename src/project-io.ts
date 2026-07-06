@@ -216,6 +216,28 @@ export async function exportPdf(settings: ProjectSettings): Promise<void> {
             n.style.borderColor = 'transparent';
             n.classList.remove('panel-selected');
           });
+          // html2canvas renders <textarea> values as a single line — line breaks + soft wraps get lost.
+          // Replace each textarea with a plain <div> that preserves whitespace so multi-line captions render.
+          doc.querySelectorAll<HTMLTextAreaElement>('.panel-field textarea').forEach((ta) => {
+            const div = doc.createElement('div');
+            div.className = 'panel-field-print';
+            div.textContent = ta.value;
+            // Copy computed visual styles onto the replacement div so it renders identically
+            const cs = ta.ownerDocument.defaultView?.getComputedStyle(ta);
+            div.style.cssText = ta.style.cssText; // inline (from React) first — color, background, fontSize, fontFamily, fontWeight, fontStyle
+            div.style.whiteSpace = 'pre-wrap';
+            div.style.wordWrap = 'break-word';
+            div.style.overflowWrap = 'break-word';
+            div.style.width = '100%';
+            div.style.height = '100%';
+            div.style.padding = cs?.padding ?? '6px 8px';
+            div.style.lineHeight = cs?.lineHeight ?? '1.35';
+            div.style.border = 'none';
+            div.style.outline = 'none';
+            div.style.boxSizing = 'border-box';
+            div.style.overflow = 'hidden';
+            ta.replaceWith(div);
+          });
           doc.querySelectorAll<HTMLElement>('.page-wrapper').forEach((w) => {
             w.style.transform = 'none';
             w.style.marginBottom = '0px';
