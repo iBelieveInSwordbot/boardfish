@@ -1,6 +1,6 @@
 // Boardfish store — pure state + reducer. Zero deps.
 import { useEffect, useReducer } from 'react';
-import type { DocItem, Panel, ProjectSettings, Slide, ThemePreset } from './types';
+import type { DocItem, Panel, ProjectSettings, Slide, StoryboardOverrides, ThemePreset } from './types';
 import { cryptoRandomId, defaultSettings, newSlideItem, newStoryboardItem, themeColors } from './types';
 
 /** Normalize settings loaded from persistence to add any fields introduced after the file was saved. */
@@ -14,6 +14,7 @@ function normalizeSettings(s: Partial<ProjectSettings>): ProjectSettings {
     labels: { ...defaults.labels, ...(s.labels ?? {}) },
     footer: { ...defaults.footer, ...(s.footer ?? {}) },
     panelBadges: { ...defaults.panelBadges, ...(s.panelBadges ?? {}) },
+    panelNumbering: s.panelNumbering ?? defaults.panelNumbering,
     pageSize: s.pageSize ?? defaults.pageSize,
   };
 }
@@ -53,6 +54,7 @@ function normalizeItems(items: unknown[]): DocItem[] {
       id: (raw.id as string) ?? cryptoRandomId(),
       kind: 'storyboard',
       panels: ((raw.panels as Partial<Panel>[]) ?? []).map(normalizePanel),
+      overrides: (raw.overrides as StoryboardOverrides | undefined) ?? {},
     };
   });
 }
@@ -95,6 +97,8 @@ export type Action =
   | { type: 'REMOVE_ITEM'; id: string }
   | { type: 'REORDER_ITEMS'; ids: string[] }
   | { type: 'UPDATE_SLIDE'; id: string; patch: Partial<Slide> }
+  | { type: 'UPDATE_STORYBOARD_OVERRIDES'; id: string; patch: StoryboardOverrides; merge?: boolean }
+  | { type: 'CLEAR_STORYBOARD_OVERRIDE'; id: string; section: 'grid' | 'panelAspect' | 'fields' | 'name' }
   | { type: 'LOAD_PROJECT'; state: { settings: ProjectSettings; items: DocItem[] } }
   | { type: 'RESET' };
 
@@ -395,6 +399,31 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
       );
       return { ...state, items };
     }
+    case 'UPDATE_STORYBOARD_OVERRIDES': {
+      const items = state.items.map((it) => {
+        if (it.kind !== 'storyboard' || it.id !== action.id) return it;
+        const prev = it.overrides ?? {};
+        // Deep merge each section that appears in the patch
+        const merged: StoryboardOverrides = { ...prev };
+        if (action.patch.name !== undefined) merged.name = action.patch.name;
+        if (action.patch.grid !== undefined) merged.grid = { ...(prev.grid ?? {}), ...action.patch.grid };
+        if (action.patch.panelAspect !== undefined)
+          merged.panelAspect = { ...(prev.panelAspect ?? {}), ...action.patch.panelAspect };
+        if (action.patch.fields !== undefined)
+          merged.fields = { ...(prev.fields ?? {}), ...action.patch.fields };
+        return { ...it, overrides: merged };
+      });
+      return { ...state, items };
+    }
+    case 'CLEAR_STORYBOARD_OVERRIDE': {
+      const items = state.items.map((it) => {
+        if (it.kind !== 'storyboard' || it.id !== action.id) return it;
+        const next = { ...(it.overrides ?? {}) };
+        delete next[action.section];
+        return { ...it, overrides: next };
+      });
+      return { ...state, items };
+    }
     case 'LOAD_PROJECT':
       return {
         ...initialState(),
@@ -418,7 +447,7 @@ function deepClonePanel(p: Panel): Panel {
   };
 }
 
-const LS_KEY = 'boardfish3:autosave:v8'; // v8: outliner (items[] with slide + storyboard kinds)
+const LS_KEY = 'boardfish3:autosave:v9'; // v9: per-storyboard overrides (grid, panel aspect, fields) + numbering mode
 
 export function useBoardfish() {
   const [state, dispatch] = useReducer(reducer, undefined, () => {
@@ -487,18 +516,60 @@ export function allStoryboardPanels(items: DocItem[]): Panel[] {
   return out;
 }
 
-/** Continuous 1-based panel number map across the whole document. */
-export function panelNumberMap(items: DocItem[]): Map<string, number> {
+/**
+ * Compute a 1-based panel number map. Mode 'continuous' numbers across the whole doc (default);
+ * 'per-storyboard' resets to 01 at the start of each storyboard item.
+ */
+export function panelNumberMap(
+  items: DocItem[],
+  mode: 'continuous' | 'per-storyboard' = 'continuous',
+): Map<string, number> {
   const map = new Map<string, number>();
   let n = 0;
   for (const it of items) {
     if (it.kind !== 'storyboard') continue;
+    if (mode === 'per-storyboard') n = 0;
     for (const p of it.panels) {
       n += 1;
       map.set(p.id, n);
     }
   }
   return map;
+}
+
+/**
+ * Resolve the effective grid + panel-aspect + fields settings for a specific storyboard item,
+ * merging global defaults with the item's overrides. Returns a partial ProjectSettings-shaped
+ * object with only the overridable keys populated.
+ */
+export type EffectiveStoryboardSettings = {
+  panelsHorizontal: number;
+  panelsVertical: number;
+  marginPx: number;
+  gutterHorizontalPx: number;
+  gutterVerticalPx: number;
+  panelAspectRatio: number;
+  panelAspectLocked: boolean;
+  imageFit: import('./types').ImageFit;
+  fieldLabels: string[];
+};
+
+export function resolveStoryboardSettings(
+  settings: ProjectSettings,
+  item: Extract<DocItem, { kind: 'storyboard' }>,
+): EffectiveStoryboardSettings {
+  const o = item.overrides ?? {};
+  return {
+    panelsHorizontal: o.grid?.panelsHorizontal ?? settings.panelsHorizontal,
+    panelsVertical: o.grid?.panelsVertical ?? settings.panelsVertical,
+    marginPx: o.grid?.marginPx ?? settings.marginPx,
+    gutterHorizontalPx: o.grid?.gutterHorizontalPx ?? settings.gutterHorizontalPx,
+    gutterVerticalPx: o.grid?.gutterVerticalPx ?? settings.gutterVerticalPx,
+    panelAspectRatio: o.panelAspect?.panelAspectRatio ?? settings.panelAspectRatio,
+    panelAspectLocked: o.panelAspect?.panelAspectLocked ?? settings.panelAspectLocked,
+    imageFit: o.panelAspect?.imageFit ?? settings.imageFit,
+    fieldLabels: o.fields?.defaults ?? settings.labels.defaults,
+  };
 }
 
 /**
@@ -509,15 +580,20 @@ export type LaidOutPage =
   | { kind: 'storyboard'; itemId: string; panels: Panel[]; startNumber: number }
   | { kind: 'slide'; itemId: string; slide: Slide };
 
-export function itemsToPages(items: DocItem[], perPage: number): LaidOutPage[] {
+/**
+ * Layout the doc into pages. Each storyboard uses its own effective grid (respecting overrides).
+ * Panel numbering follows settings.panelNumbering.
+ */
+export function itemsToPages(items: DocItem[], settings: ProjectSettings): LaidOutPage[] {
   const out: LaidOutPage[] = [];
-  const numbers = panelNumberMap(items);
+  const numbers = panelNumberMap(items, settings.panelNumbering);
   for (const it of items) {
     if (it.kind === 'slide') {
       out.push({ kind: 'slide', itemId: it.id, slide: it.slide });
       continue;
     }
-    // storyboard: chunk into pages of perPage
+    const eff = resolveStoryboardSettings(settings, it);
+    const perPage = Math.max(1, eff.panelsHorizontal * eff.panelsVertical);
     if (it.panels.length === 0) {
       out.push({ kind: 'storyboard', itemId: it.id, panels: [], startNumber: 1 });
       continue;

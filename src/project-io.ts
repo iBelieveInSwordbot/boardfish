@@ -24,7 +24,7 @@ type SavedProjectV1 = {
   logoPath: string | null;
 };
 
-// v2: outliner items[] (slides + storyboards)
+// v2: outliner items[] (slides + storyboards). v3 adds per-storyboard overrides.
 type SavedItemV2 =
   | {
       id: string;
@@ -42,9 +42,10 @@ type SavedItemV2 =
       id: string;
       kind: 'storyboard';
       panels: SavedPanelV1[];
+      overrides?: import('./types').StoryboardOverrides;
     };
 type SavedProjectV2 = {
-  version: 2;
+  version: 2 | 3;
   savedAt: string;
   settings: ProjectSettings;
   items: SavedItemV2[];
@@ -131,7 +132,7 @@ export async function saveProject(state: BoardfishState): Promise<void> {
         fields: p.fields.map((f) => ({ id: f.id, label: f.label, value: f.value })),
       };
     });
-    return { id: it.id, kind: 'storyboard', panels: savedPanels };
+    return { id: it.id, kind: 'storyboard', panels: savedPanels, overrides: it.overrides };
   });
 
   let logoPath: string | null = null;
@@ -147,7 +148,7 @@ export async function saveProject(state: BoardfishState): Promise<void> {
   };
 
   const manifest: SavedProjectV2 = {
-    version: 2,
+    version: 3, // v3 = v2 + storyboard overrides + settings.panelNumbering
     savedAt: new Date().toISOString(),
     settings: settingsForSave,
     items: savedItems,
@@ -182,7 +183,7 @@ export async function loadProject(
 
   let items: DocItem[];
 
-  if (manifestRaw.version === 2) {
+  if (manifestRaw.version === 2 || manifestRaw.version === 3) {
     items = await Promise.all(
       manifestRaw.items.map(async (it): Promise<DocItem> => {
         if (it.kind === 'slide') {
@@ -208,7 +209,7 @@ export async function loadProject(
             fields: mp.fields.map((f) => ({ ...f })),
           })),
         );
-        return { id: it.id, kind: 'storyboard', panels };
+        return { id: it.id, kind: 'storyboard', panels, overrides: it.overrides ?? {} };
       }),
     );
   } else if (manifestRaw.version === 1) {

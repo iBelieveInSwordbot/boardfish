@@ -55,10 +55,30 @@ export type Slide = {
   showFooter: boolean;
 };
 
+/** Per-storyboard overrides. Undefined fields fall back to global settings. */
+export type StoryboardOverrides = {
+  name?: string; // optional label shown in outliner + inspector
+  grid?: {
+    panelsHorizontal?: number;
+    panelsVertical?: number;
+    marginPx?: number;
+    gutterHorizontalPx?: number;
+    gutterVerticalPx?: number;
+  };
+  panelAspect?: {
+    panelAspectRatio?: number;
+    panelAspectLocked?: boolean;
+    imageFit?: ImageFit;
+  };
+  fields?: {
+    defaults?: string[];
+  };
+};
+
 /** Document-level item: either a slide, or a storyboard block that owns its own panels. */
 export type DocItem =
   | { id: string; kind: 'slide'; slide: Slide }
-  | { id: string; kind: 'storyboard'; panels: Panel[] };
+  | { id: string; kind: 'storyboard'; panels: Panel[]; overrides?: StoryboardOverrides };
 
 export function newSlide(): Slide {
   return {
@@ -76,7 +96,7 @@ export function newSlideItem(): DocItem {
 }
 
 export function newStoryboardItem(panels: Panel[] = []): DocItem {
-  return { id: cryptoRandomId(), kind: 'storyboard', panels };
+  return { id: cryptoRandomId(), kind: 'storyboard', panels, overrides: {} };
 }
 
 // Project-level settings that live in the Inspector
@@ -132,6 +152,7 @@ export type ProjectSettings = {
     useNumberPrefix: boolean;
     useCornerNotePrefix: boolean;
   };
+  panelNumbering: 'continuous' | 'per-storyboard'; // 'continuous' = 01…N across whole doc; 'per-storyboard' resets each storyboard
 };
 
 export type ThemePreset = 'light' | 'dark';
@@ -218,6 +239,7 @@ export function defaultSettings(): ProjectSettings {
       useNumberPrefix: true, // "Panel 01" by default
       useCornerNotePrefix: false,
     },
+    panelNumbering: 'continuous',
   };
 }
 

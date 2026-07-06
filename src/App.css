@@ -729,6 +729,42 @@ input, textarea, select {
   color: #eaeaea;
   font-weight: 600;
 }
+
+.inspector-tabs2 {
+  display: flex;
+  border-bottom: 1px solid #262629;
+  padding: 6px 8px 0;
+  gap: 4px;
+  background: #17171a;
+}
+.inspector-tabs2 button {
+  flex: 1;
+  background: transparent;
+  color: #888;
+  border: none;
+  padding: 10px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  font-family: inherit;
+}
+.inspector-tabs2 button:hover:not(:disabled) { color: #ccc; }
+.inspector-tabs2 button.active {
+  color: #eaeaea;
+  border-bottom-color: #4a9eff;
+}
+.inspector-tabs2 button:disabled { color: #444; cursor: not-allowed; }
+
+.tab-empty {
+  color: #888;
+  font-size: 13px;
+  padding: 24px 20px;
+  text-align: center;
+  line-height: 1.5;
+}
 .inspector-body {
   flex: 1;
   overflow: auto;

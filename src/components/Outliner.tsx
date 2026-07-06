@@ -117,7 +117,8 @@ function OutlinerRow({ item, index, selected, dispatch, canDelete }: RowProps) {
   const label =
     item.kind === 'slide'
       ? item.slide.title.trim() || 'Untitled Slide'
-      : `Storyboard · ${item.panels.length} panel${item.panels.length === 1 ? '' : 's'}`;
+      : (item.overrides?.name?.trim() ||
+          `Storyboard · ${item.panels.length} panel${item.panels.length === 1 ? '' : 's'}`);
 
   const icon = item.kind === 'slide' ? '▭' : '▦';
 

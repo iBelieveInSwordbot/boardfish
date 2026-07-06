@@ -9,7 +9,7 @@ import {
 import { SortableContext, rectSortingStrategy } from '@dnd-kit/sortable';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Action, BoardfishState, LaidOutPage } from '../store';
-import { fileToPanelImage, itemsToPages, panelNumberMap } from '../store';
+import { fileToPanelImage, itemsToPages, panelNumberMap, resolveStoryboardSettings } from '../store';
 import { newPanel, type Panel, type Slide } from '../types';
 import { PanelView } from './Panel';
 import { SlideView } from './Slide';
@@ -38,9 +38,8 @@ type Props = {
 
 export function Canvas({ state, dispatch }: Props) {
   const { settings, items, selectedPanelId } = state;
-  const perPage = Math.max(1, settings.panelsHorizontal * settings.panelsVertical);
-  const pages = itemsToPages(items, perPage);
-  const numbers = panelNumberMap(items);
+  const pages = itemsToPages(items, settings);
+  const numbers = panelNumberMap(items, settings.panelNumbering);
 
   const [isDropTarget, setIsDropTarget] = useState(false);
   const dragCounter = useRef(0);
@@ -139,12 +138,20 @@ export function Canvas({ state, dispatch }: Props) {
       }
       if (!targetId) return; // no storyboard to accept
 
-      // If aspect is locked-to-first and no storyboard-panel has an image yet, seed panelAspectRatio
-      const anyPanelWithImage = state.items.some(
-        (it) => it.kind === 'storyboard' && it.panels.some((p) => p.imageDataUrl),
-      );
-      if (!anyPanelWithImage && settings.panelAspectLocked && loaded.length > 0) {
-        dispatch({ type: 'UPDATE_SETTINGS', patch: { panelAspectRatio: loaded[0].aspect } });
+      // If this storyboard's effective aspect is locked-to-first and it has no images yet, seed its aspect override
+      const targetItem = state.items.find((it) => it.id === targetId);
+      if (targetItem && targetItem.kind === 'storyboard') {
+        const eff = resolveStoryboardSettings(settings, targetItem);
+        const hasAnyImage = targetItem.panels.some((p) => p.imageDataUrl);
+        if (!hasAnyImage && eff.panelAspectLocked && loaded.length > 0) {
+          const seededAspect = loaded[0].aspect;
+          // Write into the item's overrides so we don't stomp the global default
+          dispatch({
+            type: 'UPDATE_STORYBOARD_OVERRIDES',
+            id: targetItem.id,
+            patch: { panelAspect: { panelAspectRatio: seededAspect } },
+          });
+        }
       }
 
       const newPanels: Panel[] = loaded.map(({ dataUrl, name }) => {
@@ -226,6 +233,7 @@ export function Canvas({ state, dispatch }: Props) {
                 totalPages={pages.length}
                 numbers={numbers}
                 settings={settings}
+                items={items}
                 selectedPanelId={selectedPanelId}
                 dispatch={dispatch}
               />
@@ -237,7 +245,7 @@ export function Canvas({ state, dispatch }: Props) {
           items.length > 0 && (
             <div className="empty-hint">
               <div className="empty-hint-title">Drop Images Here</div>
-              <div className="empty-hint-sub">JPEG or PNG. Auto-arranged into pages of {perPage}.</div>
+              <div className="empty-hint-sub">JPEG or PNG. Auto-arranged into a grid.</div>
             </div>
           )}
       </div>
@@ -256,11 +264,21 @@ type PageWrapperProps = {
   totalPages: number;
   numbers: Map<string, number>;
   settings: BoardfishState['settings'];
+  items: BoardfishState['items'];
   selectedPanelId: string | null;
   dispatch: React.Dispatch<Action>;
 };
 
-function PageWrapper({ page, pageIndex, totalPages, numbers, settings, selectedPanelId, dispatch }: PageWrapperProps) {
+function PageWrapper({
+  page,
+  pageIndex,
+  totalPages,
+  numbers,
+  settings,
+  items,
+  selectedPanelId,
+  dispatch,
+}: PageWrapperProps) {
   if (page.kind === 'slide') {
     return (
       <SlidePageView
@@ -273,6 +291,10 @@ function PageWrapper({ page, pageIndex, totalPages, numbers, settings, selectedP
       />
     );
   }
+  // Resolve per-item effective settings so overrides win over global
+  const item = items.find((it) => it.id === page.itemId);
+  const eff =
+    item && item.kind === 'storyboard' ? resolveStoryboardSettings(settings, item) : null;
   return (
     <StoryboardPageView
       panels={page.panels}
@@ -280,6 +302,7 @@ function PageWrapper({ page, pageIndex, totalPages, numbers, settings, selectedP
       totalPages={totalPages}
       numbers={numbers}
       settings={settings}
+      effective={eff}
       selectedPanelId={selectedPanelId}
       dispatch={dispatch}
     />
@@ -292,20 +315,41 @@ type StoryboardPageProps = {
   totalPages: number;
   numbers: Map<string, number>;
   settings: BoardfishState['settings'];
+  effective: ReturnType<typeof resolveStoryboardSettings> | null;
   selectedPanelId: string | null;
   dispatch: React.Dispatch<Action>;
 };
 
-function StoryboardPageView({ panels, pageIndex, totalPages, numbers, settings, selectedPanelId, dispatch }: StoryboardPageProps) {
-  const cols = settings.panelsHorizontal;
-  const rows = settings.panelsVertical;
+function StoryboardPageView({
+  panels,
+  pageIndex,
+  totalPages,
+  numbers,
+  settings,
+  effective,
+  selectedPanelId,
+  dispatch,
+}: StoryboardPageProps) {
+  const eff = effective ?? {
+    panelsHorizontal: settings.panelsHorizontal,
+    panelsVertical: settings.panelsVertical,
+    marginPx: settings.marginPx,
+    gutterHorizontalPx: settings.gutterHorizontalPx,
+    gutterVerticalPx: settings.gutterVerticalPx,
+    panelAspectRatio: settings.panelAspectRatio,
+    panelAspectLocked: settings.panelAspectLocked,
+    imageFit: settings.imageFit,
+    fieldLabels: settings.labels.defaults,
+  };
+  const cols = eff.panelsHorizontal;
+  const rows = eff.panelsVertical;
 
   const pageStyle: React.CSSProperties = {
     width: settings.pageSize.widthPx,
     height: settings.pageSize.heightPx,
     background: settings.colors.pageBg,
     color: settings.colors.text,
-    padding: settings.marginPx,
+    padding: eff.marginPx,
     boxSizing: 'border-box',
     position: 'relative',
   };
@@ -314,10 +358,17 @@ function StoryboardPageView({ panels, pageIndex, totalPages, numbers, settings, 
     display: 'grid',
     gridTemplateColumns: `repeat(${cols}, 1fr)`,
     gridTemplateRows: `repeat(${rows}, 1fr)`,
-    columnGap: settings.gutterHorizontalPx,
-    rowGap: settings.gutterVerticalPx,
+    columnGap: eff.gutterHorizontalPx,
+    rowGap: eff.gutterVerticalPx,
     width: '100%',
     height: `calc(100% - 40px)`,
+  };
+
+  // Panel needs its own view of aspect + fit so per-storyboard overrides render right
+  const panelViewSettings = {
+    ...settings,
+    panelAspectRatio: eff.panelAspectRatio,
+    imageFit: eff.imageFit,
   };
 
   return (
@@ -330,7 +381,7 @@ function StoryboardPageView({ panels, pageIndex, totalPages, numbers, settings, 
               panel={panel}
               index={numbers.get(panel.id) ?? 1}
               selected={panel.id === selectedPanelId}
-              settings={settings}
+              settings={panelViewSettings}
               dispatch={dispatch}
             />
           ))}

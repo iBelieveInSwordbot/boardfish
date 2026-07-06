@@ -70,11 +70,18 @@ export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector, out
               if (first) targetId = first.id;
             }
             if (!targetId) return;
-            const anyPanelWithImage = state.items.some(
-              (it) => it.kind === 'storyboard' && it.panels.some((p) => p.imageDataUrl),
-            );
-            if (!anyPanelWithImage && state.settings.panelAspectLocked && loaded.length > 0) {
-              dispatch({ type: 'UPDATE_SETTINGS', patch: { panelAspectRatio: loaded[0].aspect } });
+            const targetItem = state.items.find((it) => it.id === targetId);
+            if (targetItem && targetItem.kind === 'storyboard') {
+              const { resolveStoryboardSettings } = await import('../store');
+              const eff = resolveStoryboardSettings(state.settings, targetItem);
+              const hasAnyImage = targetItem.panels.some((p) => p.imageDataUrl);
+              if (!hasAnyImage && eff.panelAspectLocked && loaded.length > 0) {
+                dispatch({
+                  type: 'UPDATE_STORYBOARD_OVERRIDES',
+                  id: targetItem.id,
+                  patch: { panelAspect: { panelAspectRatio: loaded[0].aspect } },
+                });
+              }
             }
             const newPanels = loaded.map(({ dataUrl, name }) => {
               const p = newPanel(state.settings.labels.defaults);
