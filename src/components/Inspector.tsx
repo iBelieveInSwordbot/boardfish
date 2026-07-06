@@ -16,7 +16,7 @@ const DEFAULT_OPEN: OpenState = {
   colors: false,
   fonts: false,
   fields: true,
-  badges: false,
+  badges: true,
   footer: false,
   selected: true,
 };
@@ -272,21 +272,56 @@ export function Inspector({ state, dispatch }: Props) {
           </div>
         </Section>
 
-        <Section title="Panel badges" openKey="badges" open={open} toggle={toggle}>
-          <Row label="Show panel number (top-left)">
+        <Section title="Panel labels" openKey="badges" open={open} toggle={toggle}>
+          <div className="section-hint">Small text shown above each panel image.</div>
+          <Row label="Show panel number (left)">
             <input
               type="checkbox"
               checked={s.panelBadges.showNumber}
               onChange={(e) => patchBadges({ showNumber: e.target.checked })}
             />
           </Row>
-          <Row label="Show corner note (top-right)">
+          <Row label="Prefix panel number">
+            <input
+              type="checkbox"
+              checked={s.panelBadges.useNumberPrefix}
+              onChange={(e) => patchBadges({ useNumberPrefix: e.target.checked })}
+            />
+          </Row>
+          {s.panelBadges.useNumberPrefix && (
+            <Row label="Number prefix text">
+              <input
+                type="text"
+                value={s.panelBadges.numberPrefix}
+                placeholder="Panel "
+                onChange={(e) => patchBadges({ numberPrefix: e.target.value })}
+              />
+            </Row>
+          )}
+          <Row label="Show corner note (right)">
             <input
               type="checkbox"
               checked={s.panelBadges.showCornerNote}
               onChange={(e) => patchBadges({ showCornerNote: e.target.checked })}
             />
           </Row>
+          <Row label="Prefix corner note">
+            <input
+              type="checkbox"
+              checked={s.panelBadges.useCornerNotePrefix}
+              onChange={(e) => patchBadges({ useCornerNotePrefix: e.target.checked })}
+            />
+          </Row>
+          {s.panelBadges.useCornerNotePrefix && (
+            <Row label="Note prefix text">
+              <input
+                type="text"
+                value={s.panelBadges.cornerNotePrefix}
+                placeholder="e.g. Note: "
+                onChange={(e) => patchBadges({ cornerNotePrefix: e.target.value })}
+              />
+            </Row>
+          )}
         </Section>
 
         <Section title="Footer & Logo" openKey="footer" open={open} toggle={toggle}>

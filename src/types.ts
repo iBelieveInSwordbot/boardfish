@@ -85,8 +85,12 @@ export type ProjectSettings = {
     logoScale: number; // 0.25..2 multiplier over base logo max height
   };
   panelBadges: {
-    showNumber: boolean; // small top-left panel number
-    showCornerNote: boolean; // enables top-right per-panel note
+    showNumber: boolean; // small panel number above the panel image (top-left)
+    showCornerNote: boolean; // enables per-panel note above the panel image (top-right)
+    numberPrefix: string; // e.g. "Panel " → "Panel 01"; empty = just the number
+    cornerNotePrefix: string; // e.g. "Note: " prepended to each corner note
+    useNumberPrefix: boolean;
+    useCornerNotePrefix: boolean;
   };
 };
 
@@ -163,6 +167,10 @@ export function defaultSettings(): ProjectSettings {
     panelBadges: {
       showNumber: true,
       showCornerNote: true,
+      numberPrefix: 'Panel ',
+      cornerNotePrefix: '',
+      useNumberPrefix: false,
+      useCornerNotePrefix: false,
     },
   };
 }

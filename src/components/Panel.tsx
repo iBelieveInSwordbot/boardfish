@@ -24,11 +24,18 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
     fontFamily: settings.fonts.family,
   };
 
-  // 'fit' = contain (letterbox), 'fill' = stretch non-proportionally, 'crop' = cover (proportional crop)
+  // 'fit' = contain (letterbox), 'fill' = stretch non-proportionally, 'crop' = cover
   const objectFit: 'contain' | 'fill' | 'cover' =
     settings.imageFit === 'fill' ? 'fill' : settings.imageFit === 'crop' ? 'cover' : 'contain';
 
-  const badgeStyle: React.CSSProperties = {
+  const badges = settings.panelBadges;
+  const showHeader = badges.showNumber || badges.showCornerNote;
+
+  const numberText = badges.useNumberPrefix
+    ? `${badges.numberPrefix}${String(index).padStart(2, '0')}`
+    : String(index).padStart(2, '0');
+
+  const headerStyle: React.CSSProperties = {
     color: settings.colors.panelLabel,
     fontSize: settings.fonts.panelLabelSizePx,
     fontFamily: settings.fonts.family,
@@ -46,6 +53,30 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
       {...attributes}
       {...listeners}
     >
+      {showHeader && (
+        <div className="panel-header" style={headerStyle}>
+          <div className="panel-header-left">{badges.showNumber ? numberText : ''}</div>
+          <div className="panel-header-right">
+            {badges.showCornerNote ? (
+              <div className="panel-header-note-wrap">
+                {badges.useCornerNotePrefix && badges.cornerNotePrefix && (
+                  <span className="panel-header-note-prefix">{badges.cornerNotePrefix}</span>
+                )}
+                <input
+                  className="panel-header-note"
+                  style={{ color: settings.colors.panelLabel, fontSize: settings.fonts.panelLabelSizePx, fontFamily: settings.fonts.family }}
+                  value={panel.cornerNote}
+                  placeholder="note"
+                  onClick={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onChange={(e) => dispatch({ type: 'SET_CORNER_NOTE', panelId: panel.id, value: e.target.value })}
+                  spellCheck={false}
+                />
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
       <div
         className="panel-image"
         style={{
@@ -57,23 +88,6 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
           <img src={panel.imageDataUrl} alt={panel.imageName ?? ''} style={{ objectFit }} draggable={false} />
         ) : (
           <div className="panel-image-placeholder">no image</div>
-        )}
-        {settings.panelBadges.showNumber && (
-          <div className="panel-badge panel-badge-tl" style={badgeStyle}>
-            {String(index).padStart(2, '0')}
-          </div>
-        )}
-        {settings.panelBadges.showCornerNote && (
-          <input
-            className="panel-badge panel-badge-tr panel-badge-input"
-            style={badgeStyle}
-            value={panel.cornerNote}
-            placeholder="note"
-            onClick={(e) => e.stopPropagation()}
-            onPointerDown={(e) => e.stopPropagation()}
-            onChange={(e) => dispatch({ type: 'SET_CORNER_NOTE', panelId: panel.id, value: e.target.value })}
-            spellCheck={false}
-          />
         )}
       </div>
       <div className="panel-fields">

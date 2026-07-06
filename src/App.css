@@ -194,30 +194,60 @@ input, textarea, select {
   position: relative;
 }
 
-/* Panel corner badges (number top-left, per-panel note top-right) */
-.panel-badge {
-  position: absolute;
-  z-index: 2;
-  padding: 3px 6px;
-  border-radius: 3px;
-  background: rgba(0,0,0,0.35);
-  color: #fff;
-  pointer-events: auto;
-  letter-spacing: 0.05em;
-  font-weight: 500;
-  text-transform: uppercase;
-}
-.panel-badge-tl { top: 6px; left: 6px; }
-.panel-badge-tr { top: 6px; right: 6px; text-align: right; }
-.panel-badge-input {
-  border: 1px solid rgba(255,255,255,0.15);
-  min-width: 60px;
-  max-width: 140px;
+/* Panel header row (panel number left / corner note right) — sits above the image */
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px 4px;
   font-family: inherit;
-  outline: none;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 500;
+  min-height: 18px;
 }
-.panel-badge-input::placeholder { opacity: 0.45; font-style: italic; }
-.panel-badge-input:focus { border-color: rgba(255,255,255,0.6); background: rgba(0,0,0,0.55); }
+.panel-header-left {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.panel-header-right {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 65%;
+}
+.panel-header-note-wrap {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  width: 100%;
+  justify-content: flex-end;
+}
+.panel-header-note-prefix {
+  opacity: 0.75;
+  white-space: nowrap;
+}
+.panel-header-note {
+  background: transparent;
+  border: none;
+  border-bottom: 1px dashed transparent;
+  padding: 0;
+  font-family: inherit;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 500;
+  outline: none;
+  min-width: 40px;
+  text-align: right;
+  width: 100%;
+  max-width: 220px;
+}
+.panel-header-note::placeholder { opacity: 0.35; font-style: italic; text-transform: none; letter-spacing: 0; }
+.panel-header-note:hover { border-bottom-color: rgba(128,128,128,0.35); }
+.panel-header-note:focus { border-bottom-color: rgba(128,128,128,0.7); }
 .panel-selected {
   outline: none;
 }
@@ -378,6 +408,7 @@ input, textarea, select {
 .theme-btn-dark:hover { background: #0f0f10; }
 .theme-hint { font-size: 11px; color: #777; margin-top: 4px; }
 .hint { font-size: 11px; color: #888; margin-top: 4px; }
+.section-hint { font-size: 11px; color: #888; margin-bottom: 6px; }
 
 .row {
   display: grid;
