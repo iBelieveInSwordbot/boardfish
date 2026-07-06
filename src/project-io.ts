@@ -153,34 +153,105 @@ export async function loadProject(file: File): Promise<{ settings: ProjectSettin
  * (in pixels) so the print output preserves the exact aspect ratio and layout. The user picks
  * "Save as PDF" in the destination dropdown.
  *
- * This is intentionally simple: it uses the same DOM we already render, so what-you-see-is-what-you-print.
+ * The trick to make Chromium paginate transformed pages correctly: zero out the on-screen
+ * scale transform in print media, force the .page element back to its logical pixel size,
+ * and use `break-after: page` on every .page-wrapper. Also honor the theme (page BG color)
+ * instead of forcing white.
  */
 export function exportPdf(settings: ProjectSettings): void {
   const styleId = 'boardfish-print-style';
   document.getElementById(styleId)?.remove();
 
+  const { widthPx: W, heightPx: H } = settings.pageSize;
+  const pageBg = settings.colors.pageBg;
+  const canvasBg = settings.colors.canvasBg;
+
   const style = document.createElement('style');
   style.id = styleId;
-  // Page dimensions in px: browsers accept `size: <w>px <h>px` in @page. Landscape/portrait implied by dims.
   style.textContent = `
     @page {
-      size: ${settings.pageSize.widthPx}px ${settings.pageSize.heightPx}px;
+      size: ${W}px ${H}px;
       margin: 0;
     }
     @media print {
-      html, body { background: #fff !important; margin: 0 !important; }
-      body * { visibility: hidden !important; }
-      .canvas-area, .canvas-area * { visibility: visible !important; }
-      .canvas-area { position: absolute !important; inset: 0 !important; background: #fff !important; overflow: visible !important; }
-      .canvas-scroll { transform: none !important; padding: 0 !important; gap: 0 !important; }
-      .page-label { display: none !important; }
-      .page-wrapper { break-after: page; page-break-after: always; margin: 0 !important; box-shadow: none !important; }
-      .page-wrapper:last-child { break-after: auto; page-break-after: auto; }
-      .empty-hint { display: none !important; }
+      /* Preserve dark backgrounds in PDF output */
+      html, body {
+        margin: 0 !important;
+        padding: 0 !important;
+        background: ${canvasBg} !important;
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+        color-adjust: exact !important;
+      }
+      * {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
+
+      /* Hide chrome (toolbar, inspector, empty-state text) */
+      .toolbar, .inspector, .inspector-reopen, .page-label, .empty-hint { display: none !important; }
+
+      /* Reset app layout so only pages remain */
+      .app-root { display: block !important; height: auto !important; width: auto !important; }
+      .app-body { display: block !important; }
+      .canvas-area { display: block !important; position: static !important; background: ${canvasBg} !important; overflow: visible !important; width: auto !important; height: auto !important; }
+      .canvas-scroll { display: block !important; padding: 0 !important; gap: 0 !important; overflow: visible !important; width: auto !important; height: auto !important; }
+
+      /* CRITICAL: kill the on-screen scale transform so each page prints at its logical size,
+         and give each page its own physical page break. */
+      .page-wrapper {
+        display: block !important;
+        transform: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        box-shadow: none !important;
+        page-break-after: always;
+        break-after: page;
+        page-break-inside: avoid;
+        break-inside: avoid;
+        width: ${W}px !important;
+        height: ${H}px !important;
+        overflow: hidden !important;
+      }
+      .page-wrapper:last-child {
+        page-break-after: auto;
+        break-after: auto;
+      }
+
+      /* Lock .page to exact logical pixel dims, keep it at origin, keep its background from theme */
+      .page {
+        width: ${W}px !important;
+        height: ${H}px !important;
+        box-shadow: none !important;
+        border-radius: 0 !important;
+        margin: 0 !important;
+        position: relative !important;
+        overflow: hidden !important;
+        background: ${pageBg} !important;
+      }
+
+      /* Footer + logo must stay visible; they were being hidden by the old visibility-hack approach */
+      .page-footer { display: grid !important; opacity: 1 !important; }
+      .footer-right img { display: block !important; }
+
+      /* Textareas keep their fieldBg color (set inline via React), just kill borders/outlines for print */
+      .panel-field textarea {
+        border: none !important;
+        outline: none !important;
+        resize: none !important;
+      }
+      .panel-header-note {
+        border-bottom: none !important;
+        background: transparent !important;
+      }
     }
   `;
   document.head.appendChild(style);
 
-  // Give the browser a tick to apply, then invoke print
-  setTimeout(() => window.print(), 50);
+  // Give the browser a tick to apply layout, then invoke print
+  setTimeout(() => {
+    window.print();
+    // Clean up the injected style after print dialog closes (~1s buffer)
+    setTimeout(() => document.getElementById(styleId)?.remove(), 2000);
+  }, 100);
 }
