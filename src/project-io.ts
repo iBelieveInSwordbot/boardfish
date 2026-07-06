@@ -211,6 +211,11 @@ export async function exportPdf(settings: ProjectSettings): Promise<void> {
           doc.querySelectorAll('.toolbar, .inspector, .inspector-reopen, .page-label, .empty-hint').forEach(
             (n) => ((n as HTMLElement).style.display = 'none'),
           );
+          // Strip the blue selection highlight from panels so it doesn't render in the PDF
+          doc.querySelectorAll<HTMLElement>('.panel').forEach((n) => {
+            n.style.borderColor = 'transparent';
+            n.classList.remove('panel-selected');
+          });
           doc.querySelectorAll<HTMLElement>('.page-wrapper').forEach((w) => {
             w.style.transform = 'none';
             w.style.marginBottom = '0px';
