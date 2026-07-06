@@ -15,9 +15,13 @@ import { useEffect } from 'react';
 import type { Action, BoardfishState } from '../store';
 import type { DocItem } from '../types';
 
-type Props = { state: BoardfishState; dispatch: React.Dispatch<Action> };
+type Props = {
+  state: BoardfishState;
+  dispatch: React.Dispatch<Action>;
+  onClose?: () => void;
+};
 
-export function Outliner({ state, dispatch }: Props) {
+export function Outliner({ state, dispatch, onClose }: Props) {
   const { items, selectedItemId, selectedPanelId } = state;
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
@@ -58,6 +62,11 @@ export function Outliner({ state, dispatch }: Props) {
     <aside className="outliner">
       <div className="outliner-header">
         <div className="outliner-title">Outline</div>
+        {onClose && (
+          <button className="outliner-close" title="Hide Outline (⌘⇧O)" onClick={onClose}>
+            ×
+          </button>
+        )}
       </div>
       <div className="outliner-body">
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>

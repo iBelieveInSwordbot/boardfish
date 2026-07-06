@@ -27,6 +27,7 @@ function App() {
     }
   });
   const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
 
   useEffect(() => {
     try {
@@ -64,6 +65,12 @@ function App() {
         setOutlinerOpen((v) => !v);
         return;
       }
+      // F toggles full-screen storyboard view (only when no modifier)
+      if (!meta && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        setFullscreen((v) => !v);
+        return;
+      }
 
       const isArrowNav = (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && flatPanels.length > 0;
       if (!state.selectedPanelId && !(meta && e.key.toLowerCase() === 'v') && !isArrowNav) return;
@@ -97,12 +104,13 @@ function App() {
         dispatch({ type: 'SELECT_PANEL', id: flatPanels[next].id });
       } else if (e.key === 'Escape') {
         if (lightboxOpen) setLightboxOpen(false);
+        else if (fullscreen) setFullscreen(false);
         else dispatch({ type: 'SELECT_PANEL', id: null });
       }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [dispatch, state.selectedPanelId, lightboxOpen, flatPanels]);
+  }, [dispatch, state.selectedPanelId, lightboxOpen, fullscreen, flatPanels]);
 
   useEffect(() => {
     if (!state.selectedPanelId && lightboxOpen) setLightboxOpen(false);
@@ -113,34 +121,52 @@ function App() {
     ? flatPanels.findIndex((p) => p.id === selectedPanel.id) + 1
     : 0;
 
+  // Full-screen mode implicitly hides toolbar + inspector + outliner
+  const effectiveOutlinerOpen = outlinerOpen && !fullscreen;
+  const effectiveInspectorOpen = inspectorOpen && !fullscreen;
+
   const bodyClasses = [
-    outlinerOpen ? 'outliner-visible' : 'outliner-hidden',
-    inspectorOpen ? 'inspector-visible' : 'inspector-hidden',
-  ].join(' ');
+    effectiveOutlinerOpen ? 'outliner-visible' : 'outliner-hidden',
+    effectiveInspectorOpen ? 'inspector-visible' : 'inspector-hidden',
+    fullscreen ? 'fullscreen' : '',
+  ].filter(Boolean).join(' ');
 
   return (
     <div className={`app-root ${bodyClasses}`}>
-      <Toolbar
-        state={state}
-        dispatch={dispatch}
-        inspectorOpen={inspectorOpen}
-        onToggleInspector={() => setInspectorOpen((v) => !v)}
-        outlinerOpen={outlinerOpen}
-        onToggleOutliner={() => setOutlinerOpen((v) => !v)}
-      />
+      {!fullscreen && (
+        <Toolbar
+          state={state}
+          dispatch={dispatch}
+          inspectorOpen={inspectorOpen}
+          onToggleInspector={() => setInspectorOpen((v) => !v)}
+          outlinerOpen={outlinerOpen}
+          onToggleOutliner={() => setOutlinerOpen((v) => !v)}
+        />
+      )}
       <div className="app-body">
-        {outlinerOpen && <Outliner state={state} dispatch={dispatch} />}
+        {effectiveOutlinerOpen && (
+          <Outliner state={state} dispatch={dispatch} onClose={() => setOutlinerOpen(false)} />
+        )}
         <Canvas state={state} dispatch={dispatch} />
-        {inspectorOpen && <Inspector state={state} dispatch={dispatch} />}
+        {effectiveInspectorOpen && <Inspector state={state} dispatch={dispatch} />}
       </div>
-      {!outlinerOpen && (
+      {!effectiveOutlinerOpen && !fullscreen && (
         <button className="outliner-reopen" title="Show Outline (⌘⇧O)" onClick={() => setOutlinerOpen(true)}>
           Outline ›
         </button>
       )}
-      {!inspectorOpen && (
+      {!effectiveInspectorOpen && !fullscreen && (
         <button className="inspector-reopen" title="Show Inspector (⌘\)" onClick={() => setInspectorOpen(true)}>
           ‹ Inspector
+        </button>
+      )}
+      {fullscreen && (
+        <button
+          className="fullscreen-exit"
+          title="Exit full screen (F or Esc)"
+          onClick={() => setFullscreen(false)}
+        >
+          Exit Full Screen  ·  F
         </button>
       )}
       {lightboxOpen && selectedPanel && (
