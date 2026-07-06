@@ -169,12 +169,6 @@ input, textarea, select {
   /* Compensate for scale so pages don't leave huge whitespace */
   margin-bottom: calc(-1 * var(--page-height-px, 1080px) * (1 - var(--page-scale, 0.5)));
 }
-.page-label {
-  font-size: 12px;
-  color: #999;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-}
 .page {
   box-shadow: 0 12px 40px rgba(0,0,0,0.5), 0 0 0 1px #2a2a2e;
   border-radius: 4px;
@@ -320,7 +314,7 @@ input, textarea, select {
   padding: 0 20px 8px;
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
-  align-items: end;
+  align-items: center;
   font-size: 12px;
   opacity: 0.9;
   /* Auto-grow footer height as logo scales; use min-height so short-logo mode still has room */

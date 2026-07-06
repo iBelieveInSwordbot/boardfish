@@ -213,9 +213,6 @@ function PageView({ pageIndex, totalPages, pagePanels, startIndex, settings, sel
 
   return (
     <div className="page-wrapper">
-      <div className="page-label">
-        Page {pageIndex + 1} of {totalPages}
-      </div>
       <div className="page" data-page-index={pageIndex} style={pageStyle}>
         <div style={gridStyle}>
           {pagePanels.map((panel, localIdx) => (
@@ -273,7 +270,7 @@ function PageFooter({
     <div className="page-footer" style={footerStyle}>
       <div className="footer-left">{settings.footer.showProjectName ? settings.projectName : ''}</div>
       <div className="footer-center">
-        {settings.footer.showPageNumber ? `${pageIndex + 1} / ${totalPages}` : ''}
+        {settings.footer.showPageNumber ? `Page ${pageIndex + 1} / ${totalPages}` : ''}
       </div>
       <div className="footer-right">
         {logoSrc ? <img src={logoSrc} alt="logo" style={logoStyle} className="footer-logo" /> : null}

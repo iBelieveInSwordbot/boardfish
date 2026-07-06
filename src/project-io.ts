@@ -191,31 +191,63 @@ export function exportPdf(settings: ProjectSettings): void {
       /* Hide chrome (toolbar, inspector, empty-state text) */
       .toolbar, .inspector, .inspector-reopen, .page-label, .empty-hint { display: none !important; }
 
-      /* Reset app layout so only pages remain */
-      .app-root { display: block !important; height: auto !important; width: auto !important; }
-      .app-body { display: block !important; }
-      .canvas-area { display: block !important; position: static !important; background: ${canvasBg} !important; overflow: visible !important; width: auto !important; height: auto !important; }
-      .canvas-scroll { display: block !important; padding: 0 !important; gap: 0 !important; overflow: visible !important; width: auto !important; height: auto !important; }
+      /* Hide the corner-note input if the user hasn't typed anything (don't print the placeholder "note") */
+      .panel-header-note:placeholder-shown { visibility: hidden !important; }
+      /* And hide the whole note-wrapper if the note is empty AND no visible prefix */
+      .panel-header-note-wrap:has(.panel-header-note:placeholder-shown):not(:has(.panel-header-note-prefix)) {
+        display: none !important;
+      }
+
+      /* Reset app layout so only pages remain. Everything above .page-wrapper becomes a plain block
+         so Chromium's print pagination can see each .page-wrapper as a top-level printable block. */
+      .app-root { display: block !important; height: auto !important; width: auto !important; position: static !important; }
+      .app-body { display: block !important; grid-template-columns: none !important; }
+      .canvas-area {
+        display: block !important;
+        position: static !important;
+        background: ${canvasBg} !important;
+        overflow: visible !important;
+        width: auto !important;
+        height: auto !important;
+        box-shadow: none !important;
+      }
+      .canvas-scroll {
+        display: block !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        gap: 0 !important;
+        overflow: visible !important;
+        width: auto !important;
+        height: auto !important;
+        align-items: initial !important;
+        flex-direction: initial !important;
+      }
 
       /* CRITICAL: kill the on-screen scale transform so each page prints at its logical size,
          and give each page its own physical page break. */
       .page-wrapper {
         display: block !important;
         transform: none !important;
+        transform-origin: 0 0 !important;
         margin: 0 !important;
         padding: 0 !important;
         box-shadow: none !important;
-        page-break-after: always;
-        break-after: page;
-        page-break-inside: avoid;
-        break-inside: avoid;
+        page-break-after: always !important;
+        break-after: page !important;
+        page-break-inside: avoid !important;
+        break-inside: avoid !important;
         width: ${W}px !important;
         height: ${H}px !important;
+        max-width: none !important;
+        max-height: none !important;
+        min-width: 0 !important;
+        min-height: 0 !important;
         overflow: hidden !important;
+        position: relative !important;
       }
       .page-wrapper:last-child {
-        page-break-after: auto;
-        break-after: auto;
+        page-break-after: auto !important;
+        break-after: auto !important;
       }
 
       /* Lock .page to exact logical pixel dims, keep it at origin, keep its background from theme */
