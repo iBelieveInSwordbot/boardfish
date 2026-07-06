@@ -314,31 +314,43 @@ input, textarea, select {
 .lightbox-panel {
   display: flex;
   flex-direction: column;
+  align-items: center;
   border-radius: 8px;
   overflow: hidden;
   box-shadow: 0 40px 100px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.06);
-  /* Sized to fill viewport minus lightbox padding (5vh top/bottom, 5vw sides) */
   max-width: 90vw;
   max-height: 90vh;
+  background: transparent;
 }
-/* Captions-off: no chrome, image alone. Let CSS aspect-ratio drive width so image renders 1:1 at its panel ratio,
-   constrained to viewport dims. */
+
+/* KEY: images render at a fixed vertical height regardless of aspect ratio so navigating panels feels stable.
+   Width auto-computes from panel aspect ratio (set inline via aspect-ratio). Max-width caps at 90vw so
+   ultra-wide panels don't overflow. Two heights: taller when captions are closed, shorter when open. */
 .lightbox-panel.no-captions {
   box-shadow: none;
   background: transparent !important;
+  width: auto;
+  max-width: 90vw;
 }
 .lightbox-panel.no-captions .lightbox-image {
+  height: 82vh;
   width: auto;
-  height: auto;
   max-width: 90vw;
-  max-height: 90vh;
-  /* aspect-ratio is set inline on .lightbox-image; combine with max-w/h to fit viewport */
+}
+.lightbox-panel.with-captions {
+  width: auto;
+  max-width: 90vw;
+}
+.lightbox-panel.with-captions .lightbox-image {
+  height: 55vh;
+  width: auto;
+  max-width: 90vw;
 }
 .lightbox-image {
   overflow: hidden;
   min-height: 0;
-  width: 100%;
-  /* aspect-ratio applied inline from settings.panelAspectRatio */
+  /* aspect-ratio applied inline from settings.panelAspectRatio;
+     with fixed height + auto width, width computes from aspect → same vertical size across all panels */
 }
 .lightbox-image img {
   width: 100%;

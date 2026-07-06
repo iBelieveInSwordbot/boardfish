@@ -34,10 +34,11 @@ export function PanelLightbox({
     ? `${badges.numberPrefix}${String(panelIndex).padStart(2, '0')}`
     : String(panelIndex).padStart(2, '0');
 
-  // Local UI state: whether captions are visible in the lightbox
+  // Local UI state: whether captions are visible in the lightbox.
+  // Storage key bumped to :v2 so anyone with a stale 'true' from an older build gets the correct off default.
   const [showCaptions, setShowCaptions] = useState<boolean>(() => {
     try {
-      const raw = localStorage.getItem('boardfish:lightboxCaptions');
+      const raw = localStorage.getItem('boardfish:lightboxCaptions:v2');
       // Default OFF — lightbox is a closeup preview by default; caption editing on demand.
       return raw === null ? false : raw === 'true';
     } catch {
@@ -46,7 +47,7 @@ export function PanelLightbox({
   });
   useEffect(() => {
     try {
-      localStorage.setItem('boardfish:lightboxCaptions', String(showCaptions));
+      localStorage.setItem('boardfish:lightboxCaptions:v2', String(showCaptions));
     } catch {
       // ignore
     }
