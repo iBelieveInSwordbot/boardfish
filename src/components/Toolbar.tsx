@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import type { Action, BoardfishState } from '../store';
 import { exportPdf, loadProject, saveProject } from '../project-io';
 
@@ -12,6 +12,7 @@ type Props = {
 export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector }: Props) {
   const openRef = useRef<HTMLInputElement>(null);
   const addImagesRef = useRef<HTMLInputElement>(null);
+  const [exporting, setExporting] = useState(false);
 
   return (
     <header className="toolbar">
@@ -81,7 +82,23 @@ export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector }: P
             if (openRef.current) openRef.current.value = '';
           }}
         />
-        <button onClick={() => exportPdf(state.settings)}>Export PDF</button>
+        <button
+          onClick={async () => {
+            if (exporting) return;
+            setExporting(true);
+            try {
+              await exportPdf(state.settings);
+            } catch (err) {
+              console.error(err);
+              alert(`PDF export failed: ${(err as Error).message}`);
+            } finally {
+              setExporting(false);
+            }
+          }}
+          disabled={exporting}
+        >
+          {exporting ? 'Exporting…' : 'Export PDF'}
+        </button>
         <button
           onClick={() => {
             if (state.panels.length === 0 || confirm('Start a new project? Current work will be cleared.')) {

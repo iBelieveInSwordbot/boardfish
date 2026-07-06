@@ -1,7 +1,9 @@
-// Save/load .boardfish files (zipped JSON + images) and PDF export via window.print()
+// Save/load .boardfish files (zipped JSON + images) and PDF export via html2canvas + jsPDF
 
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
+import html2canvas from 'html2canvas';
+import jsPDF from 'jspdf';
 import type { BoardfishState } from './store';
 import type { Panel, ProjectSettings } from './types';
 
@@ -149,141 +151,100 @@ export async function loadProject(file: File): Promise<{ settings: ProjectSettin
 }
 
 /**
- * Export to PDF via the browser's print dialog. We inject an `@page` size matching the current pageSize
- * (in pixels) so the print output preserves the exact aspect ratio and layout. The user picks
- * "Save as PDF" in the destination dropdown.
+ * Export to PDF using html2canvas + jsPDF.
  *
- * The trick to make Chromium paginate transformed pages correctly: zero out the on-screen
- * scale transform in print media, force the .page element back to its logical pixel size,
- * and use `break-after: page` on every .page-wrapper. Also honor the theme (page BG color)
- * instead of forcing white.
+ * Rationale (2026-07-05): Chromium's native print pipeline (window.print + @page) refused to
+ * paginate our multi-page layout no matter how aggressively we overrode transforms, overflow,
+ * and break-after in `@media print`. Ripped it out in favor of a deterministic per-page raster
+ * pipeline: for each `.page` element, render it into a canvas at its logical 1:1 pixel dims,
+ * then add each canvas as an image to a jsPDF document sized to match.
+ *
+ * Trade-offs:
+ *   - Text is rasterized (not selectable in the PDF). Acceptable for storyboards.
+ *   - File size larger than native print (each page ~300 KB–1 MB). Fine for typical boards.
+ *   - Total control over multi-page, dark theme, footer, logo. WYSIWYG guaranteed.
  */
-export function exportPdf(settings: ProjectSettings): void {
-  const styleId = 'boardfish-print-style';
-  document.getElementById(styleId)?.remove();
+export async function exportPdf(settings: ProjectSettings): Promise<void> {
+  const pageEls = Array.from(document.querySelectorAll<HTMLElement>('.page'));
+  if (pageEls.length === 0) {
+    alert('Nothing to export — add some panels first.');
+    return;
+  }
 
   const { widthPx: W, heightPx: H } = settings.pageSize;
   const pageBg = settings.colors.pageBg;
   const canvasBg = settings.colors.canvasBg;
 
-  const style = document.createElement('style');
-  style.id = styleId;
-  style.textContent = `
-    @page {
-      size: ${W}px ${H}px;
-      margin: 0;
+  // We temporarily disable the on-screen scale transform and force the pages to their logical
+  // pixel dimensions so html2canvas rasterizes at exactly W x H. Restore after.
+  const scroll = document.querySelector<HTMLElement>('.canvas-scroll');
+  const wrappers = Array.from(document.querySelectorAll<HTMLElement>('.page-wrapper'));
+  const savedTransforms = wrappers.map((w) => w.style.transform);
+  const savedMarginBottom = wrappers.map((w) => w.style.marginBottom);
+  wrappers.forEach((w) => {
+    w.style.transform = 'none';
+    w.style.marginBottom = '0px';
+  });
+
+  // jsPDF units: px, format matches page size 1:1. hotfixes→px_scaling ensures 72dpi math is skipped
+  // and 1 unit = 1 CSS pixel.
+  const orientation: 'p' | 'l' = W >= H ? 'l' : 'p';
+  const pdf = new jsPDF({ unit: 'px', format: [W, H], orientation, hotfixes: ['px_scaling'] });
+
+  try {
+    for (let i = 0; i < pageEls.length; i++) {
+      const el = pageEls[i];
+      // eslint-disable-next-line no-await-in-loop
+      const canvas = await html2canvas(el, {
+        width: W,
+        height: H,
+        windowWidth: W,
+        windowHeight: H,
+        backgroundColor: pageBg,
+        scale: 2, // 2x for crisp text/lines when zoomed in PDF viewers
+        useCORS: true,
+        allowTaint: false,
+        logging: false,
+        // Force html2canvas to render at logical size regardless of on-screen scale
+        onclone: (doc: Document) => {
+          // Kill inspector, toolbar in cloned DOM so nothing external bleeds in
+          doc.querySelectorAll('.toolbar, .inspector, .inspector-reopen, .page-label, .empty-hint').forEach(
+            (n) => ((n as HTMLElement).style.display = 'none'),
+          );
+          doc.querySelectorAll<HTMLElement>('.page-wrapper').forEach((w) => {
+            w.style.transform = 'none';
+            w.style.marginBottom = '0px';
+          });
+          // Hide empty corner-note inputs so we don't print the "note" placeholder
+          doc.querySelectorAll<HTMLInputElement>('.panel-header-note').forEach((inp) => {
+            if (!inp.value) {
+              const wrap = inp.closest('.panel-header-note-wrap') as HTMLElement | null;
+              // If there's a prefix, keep it and just hide the empty input;
+              // if there's no prefix span, hide the whole wrap.
+              const prefix = wrap?.querySelector('.panel-header-note-prefix');
+              if (prefix) inp.style.visibility = 'hidden';
+              else if (wrap) wrap.style.display = 'none';
+            }
+          });
+          // Ensure canvas + page backgrounds match settings (in case of any cascade quirk)
+          doc.querySelectorAll<HTMLElement>('.canvas-area').forEach((n) => (n.style.background = canvasBg));
+        },
+      });
+
+      const imgData = canvas.toDataURL('image/jpeg', 0.92);
+      if (i > 0) pdf.addPage([W, H], orientation);
+      pdf.addImage(imgData, 'JPEG', 0, 0, W, H, undefined, 'FAST');
     }
-    @media print {
-      /* Preserve dark backgrounds in PDF output */
-      html, body {
-        margin: 0 !important;
-        padding: 0 !important;
-        background: ${canvasBg} !important;
-        -webkit-print-color-adjust: exact !important;
-        print-color-adjust: exact !important;
-        color-adjust: exact !important;
-      }
-      * {
-        -webkit-print-color-adjust: exact !important;
-        print-color-adjust: exact !important;
-      }
 
-      /* Hide chrome (toolbar, inspector, empty-state text) */
-      .toolbar, .inspector, .inspector-reopen, .page-label, .empty-hint { display: none !important; }
-
-      /* Hide the corner-note input if the user hasn't typed anything (don't print the placeholder "note") */
-      .panel-header-note:placeholder-shown { visibility: hidden !important; }
-      /* And hide the whole note-wrapper if the note is empty AND no visible prefix */
-      .panel-header-note-wrap:has(.panel-header-note:placeholder-shown):not(:has(.panel-header-note-prefix)) {
-        display: none !important;
-      }
-
-      /* Reset app layout so only pages remain. Everything above .page-wrapper becomes a plain block
-         so Chromium's print pagination can see each .page-wrapper as a top-level printable block. */
-      .app-root { display: block !important; height: auto !important; width: auto !important; position: static !important; }
-      .app-body { display: block !important; grid-template-columns: none !important; }
-      .canvas-area {
-        display: block !important;
-        position: static !important;
-        background: ${canvasBg} !important;
-        overflow: visible !important;
-        width: auto !important;
-        height: auto !important;
-        box-shadow: none !important;
-      }
-      .canvas-scroll {
-        display: block !important;
-        padding: 0 !important;
-        margin: 0 !important;
-        gap: 0 !important;
-        overflow: visible !important;
-        width: auto !important;
-        height: auto !important;
-        align-items: initial !important;
-        flex-direction: initial !important;
-      }
-
-      /* CRITICAL: kill the on-screen scale transform so each page prints at its logical size,
-         and give each page its own physical page break. */
-      .page-wrapper {
-        display: block !important;
-        transform: none !important;
-        transform-origin: 0 0 !important;
-        margin: 0 !important;
-        padding: 0 !important;
-        box-shadow: none !important;
-        page-break-after: always !important;
-        break-after: page !important;
-        page-break-inside: avoid !important;
-        break-inside: avoid !important;
-        width: ${W}px !important;
-        height: ${H}px !important;
-        max-width: none !important;
-        max-height: none !important;
-        min-width: 0 !important;
-        min-height: 0 !important;
-        overflow: hidden !important;
-        position: relative !important;
-      }
-      .page-wrapper:last-child {
-        page-break-after: auto !important;
-        break-after: auto !important;
-      }
-
-      /* Lock .page to exact logical pixel dims, keep it at origin, keep its background from theme */
-      .page {
-        width: ${W}px !important;
-        height: ${H}px !important;
-        box-shadow: none !important;
-        border-radius: 0 !important;
-        margin: 0 !important;
-        position: relative !important;
-        overflow: hidden !important;
-        background: ${pageBg} !important;
-      }
-
-      /* Footer + logo must stay visible; they were being hidden by the old visibility-hack approach */
-      .page-footer { display: grid !important; opacity: 1 !important; }
-      .footer-right img { display: block !important; }
-
-      /* Textareas keep their fieldBg color (set inline via React), just kill borders/outlines for print */
-      .panel-field textarea {
-        border: none !important;
-        outline: none !important;
-        resize: none !important;
-      }
-      .panel-header-note {
-        border-bottom: none !important;
-        background: transparent !important;
-      }
-    }
-  `;
-  document.head.appendChild(style);
-
-  // Give the browser a tick to apply layout, then invoke print
-  setTimeout(() => {
-    window.print();
-    // Clean up the injected style after print dialog closes (~1s buffer)
-    setTimeout(() => document.getElementById(styleId)?.remove(), 2000);
-  }, 100);
+    const filename = `${sanitize(settings.projectName || 'boardfish')}.pdf`;
+    pdf.save(filename);
+  } finally {
+    // Restore on-screen scale transforms
+    wrappers.forEach((w, i) => {
+      w.style.transform = savedTransforms[i];
+      w.style.marginBottom = savedMarginBottom[i];
+    });
+    // Nudge layout so the scroll container reflows to whatever pageScale ResizeObserver last set
+    scroll?.getBoundingClientRect();
+  }
 }
