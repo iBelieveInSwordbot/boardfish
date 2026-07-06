@@ -1,22 +1,29 @@
-import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
+import {
+  DndContext,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
 import { SortableContext, rectSortingStrategy } from '@dnd-kit/sortable';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Action, BoardfishState } from '../store';
-import { fileToPanelImage, panelsToPages } from '../store';
-import { newPanel, type Panel } from '../types';
+import type { Action, BoardfishState, LaidOutPage } from '../store';
+import { fileToPanelImage, itemsToPages, panelNumberMap } from '../store';
+import { newPanel, type Panel, type Slide } from '../types';
 import { PanelView } from './Panel';
+import { SlideView } from './Slide';
 import logoBlack from '../assets/logo-black.png';
 import logoWhite from '../assets/logo-white.png';
 
-/** Compute relative luminance of a hex color (0..1). Used to auto-pick logo variant. */
+/** Compute relative luminance of a hex color (0..1). */
 function luminance(hex: string): number {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex);
-  if (!m) return 1; // assume light
+  if (!m) return 1;
   const n = parseInt(m[1], 16);
   const r = (n >> 16) & 0xff;
   const g = (n >> 8) & 0xff;
   const b = n & 0xff;
-  // sRGB relative luminance approximation
   return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
 }
 
@@ -30,23 +37,23 @@ type Props = {
 };
 
 export function Canvas({ state, dispatch }: Props) {
-  const { settings, panels, selectedPanelId } = state;
+  const { settings, items, selectedPanelId } = state;
   const perPage = Math.max(1, settings.panelsHorizontal * settings.panelsVertical);
-  const pages = panelsToPages(panels, perPage);
+  const pages = itemsToPages(items, perPage);
+  const numbers = panelNumberMap(items);
 
   const [isDropTarget, setIsDropTarget] = useState(false);
   const dragCounter = useRef(0);
   const areaRef = useRef<HTMLDivElement>(null);
   const [fitScale, setFitScale] = useState(0.5);
-  const [zoom, setZoom] = useState(1); // user zoom multiplier over fit-to-viewport scale
+  const [zoom, setZoom] = useState(1);
 
-  // Recompute fit scale so page fits comfortably in canvas viewport (leave ~48px padding).
   useEffect(() => {
     function recompute() {
       const el = areaRef.current;
       if (!el) return;
-      const availW = el.clientWidth - 96; // horizontal padding
-      const availH = el.clientHeight - 80; // vertical padding
+      const availW = el.clientWidth - 96;
+      const availH = el.clientHeight - 80;
       const sx = availW / settings.pageSize.widthPx;
       const sy = availH / settings.pageSize.heightPx;
       const s = Math.max(0.05, Math.min(1, Math.min(sx, sy)));
@@ -62,7 +69,6 @@ export function Canvas({ state, dispatch }: Props) {
 
   const pageScale = fitScale * zoom;
 
-  // Zoom shortcuts + cmd/ctrl+wheel on the canvas
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
@@ -88,7 +94,7 @@ export function Canvas({ state, dispatch }: Props) {
     const el = areaRef.current;
     if (!el) return;
     function onWheel(e: WheelEvent) {
-      if (!(e.ctrlKey || e.metaKey)) return; // trackpad pinch fires ctrlKey on Chromium
+      if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
       const delta = -e.deltaY;
       setZoom((z) => {
@@ -101,9 +107,7 @@ export function Canvas({ state, dispatch }: Props) {
   }, []);
 
   const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: { distance: 5 }, // small drag threshold so clicks on textareas still work
-    }),
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
 
   const handleFiles = useCallback(
@@ -115,9 +119,31 @@ export function Canvas({ state, dispatch }: Props) {
 
       const loaded = await Promise.all(imageFiles.map((f) => fileToPanelImage(f)));
 
-      // If aspect is locked-to-first and no image has been added yet, auto-set from first image
-      const firstImageAlreadyExists = panels.some((p) => p.imageDataUrl);
-      if (!firstImageAlreadyExists && settings.panelAspectLocked && loaded.length > 0) {
+      // Determine target storyboard: nearest to selection, or first storyboard, or create one
+      let targetId: string | null = null;
+      if (state.selectedPanelId) {
+        for (const it of state.items) {
+          if (it.kind === 'storyboard' && it.panels.some((p) => p.id === state.selectedPanelId)) {
+            targetId = it.id;
+            break;
+          }
+        }
+      }
+      if (!targetId && state.selectedItemId) {
+        const sel = state.items.find((it) => it.id === state.selectedItemId);
+        if (sel && sel.kind === 'storyboard') targetId = sel.id;
+      }
+      if (!targetId) {
+        const first = state.items.find((it) => it.kind === 'storyboard');
+        if (first) targetId = first.id;
+      }
+      if (!targetId) return; // no storyboard to accept
+
+      // If aspect is locked-to-first and no storyboard-panel has an image yet, seed panelAspectRatio
+      const anyPanelWithImage = state.items.some(
+        (it) => it.kind === 'storyboard' && it.panels.some((p) => p.imageDataUrl),
+      );
+      if (!anyPanelWithImage && settings.panelAspectLocked && loaded.length > 0) {
         dispatch({ type: 'UPDATE_SETTINGS', patch: { panelAspectRatio: loaded[0].aspect } });
       }
 
@@ -127,28 +153,31 @@ export function Canvas({ state, dispatch }: Props) {
         p.imageName = name;
         return p;
       });
-      dispatch({ type: 'ADD_PANELS', panels: newPanels });
+      dispatch({ type: 'ADD_PANELS_TO_ITEM', itemId: targetId, panels: newPanels });
     },
-    [dispatch, panels, settings.labels.defaults, settings.panelAspectLocked],
+    [dispatch, settings.labels.defaults, settings.panelAspectLocked, state.items, state.selectedItemId, state.selectedPanelId],
   );
 
   const onDragEnd = (evt: DragEndEvent) => {
     const { active, over } = evt;
     if (!over || active.id === over.id) return;
-    const ids = panels.map((p) => p.id);
-    const oldIdx = ids.indexOf(String(active.id));
-    const newIdx = ids.indexOf(String(over.id));
-    if (oldIdx < 0 || newIdx < 0) return;
-    const reordered = ids.slice();
-    reordered.splice(oldIdx, 1);
-    reordered.splice(newIdx, 0, String(active.id));
-    dispatch({ type: 'REORDER_PANELS', ids: reordered });
+
+    // Only reorder within the same storyboard item (cross-item panel moves would be confusing)
+    for (const it of state.items) {
+      if (it.kind !== 'storyboard') continue;
+      const ids = it.panels.map((p) => p.id);
+      const oldIdx = ids.indexOf(String(active.id));
+      const newIdx = ids.indexOf(String(over.id));
+      if (oldIdx < 0 || newIdx < 0) continue;
+      const reordered = ids.slice();
+      reordered.splice(oldIdx, 1);
+      reordered.splice(newIdx, 0, String(active.id));
+      dispatch({ type: 'REORDER_PANELS_WITHIN_ITEM', itemId: it.id, ids: reordered });
+      return;
+    }
   };
 
-  const stripe: React.CSSProperties = {
-    background: settings.colors.canvasBg,
-  };
-
+  const stripe: React.CSSProperties = { background: settings.colors.canvasBg };
   const areaStyle: React.CSSProperties = {
     ...stripe,
     ['--page-scale' as never]: String(pageScale),
@@ -156,9 +185,8 @@ export function Canvas({ state, dispatch }: Props) {
     ['--page-height-px' as never]: `${settings.pageSize.heightPx}px`,
   };
 
-  // Expose zoom controls to the Toolbar via a global custom event pattern would be overkill;
-  // instead we render the zoom badge here and let parent components read via a shared handler.
   const zoomPct = Math.round(zoom * 100);
+  const allPanelIds = state.items.flatMap((it) => (it.kind === 'storyboard' ? it.panels.map((p) => p.id) : []));
 
   return (
     <div
@@ -171,9 +199,7 @@ export function Canvas({ state, dispatch }: Props) {
         dragCounter.current += 1;
         setIsDropTarget(true);
       }}
-      onDragOver={(e) => {
-        e.preventDefault();
-      }}
+      onDragOver={(e) => e.preventDefault()}
       onDragLeave={(e) => {
         e.preventDefault();
         dragCounter.current -= 1;
@@ -186,22 +212,20 @@ export function Canvas({ state, dispatch }: Props) {
         e.preventDefault();
         dragCounter.current = 0;
         setIsDropTarget(false);
-        if (e.dataTransfer?.files?.length) {
-          void handleFiles(e.dataTransfer.files);
-        }
+        if (e.dataTransfer?.files?.length) void handleFiles(e.dataTransfer.files);
       }}
     >
       <div className="canvas-scroll">
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
-          <SortableContext items={panels.map((p) => p.id)} strategy={rectSortingStrategy}>
-            {pages.map((pagePanels, pageIdx) => (
-              <PageView
-                key={pageIdx}
+          <SortableContext items={allPanelIds} strategy={rectSortingStrategy}>
+            {pages.map((page, pageIdx) => (
+              <PageWrapper
+                key={`${page.itemId}-${pageIdx}`}
+                page={page}
                 pageIndex={pageIdx}
                 totalPages={pages.length}
-                pagePanels={pagePanels}
-                startIndex={pageIdx * perPage}
-                settings={state.settings}
+                numbers={numbers}
+                settings={settings}
                 selectedPanelId={selectedPanelId}
                 dispatch={dispatch}
               />
@@ -209,12 +233,13 @@ export function Canvas({ state, dispatch }: Props) {
           </SortableContext>
         </DndContext>
 
-        {panels.length === 0 && (
-          <div className="empty-hint">
-            <div className="empty-hint-title">Drop Images Here</div>
-            <div className="empty-hint-sub">JPEG or PNG. Auto-arranged into pages of {perPage}.</div>
-          </div>
-        )}
+        {items.every((it) => it.kind === 'slide' || (it.kind === 'storyboard' && it.panels.length === 0)) &&
+          items.length > 0 && (
+            <div className="empty-hint">
+              <div className="empty-hint-title">Drop Images Here</div>
+              <div className="empty-hint-sub">JPEG or PNG. Auto-arranged into pages of {perPage}.</div>
+            </div>
+          )}
       </div>
       <div className="zoom-hud">
         <button title="Zoom out (⌘-)" onClick={() => setZoom((z) => Math.max(0.1, +(z / 1.15).toFixed(3)))}>−</button>
@@ -225,22 +250,56 @@ export function Canvas({ state, dispatch }: Props) {
   );
 }
 
-type PageProps = {
+type PageWrapperProps = {
+  page: LaidOutPage;
   pageIndex: number;
   totalPages: number;
-  pagePanels: Panel[];
-  startIndex: number;
+  numbers: Map<string, number>;
   settings: BoardfishState['settings'];
   selectedPanelId: string | null;
   dispatch: React.Dispatch<Action>;
 };
 
-function PageView({ pageIndex, totalPages, pagePanels, startIndex, settings, selectedPanelId, dispatch }: PageProps) {
+function PageWrapper({ page, pageIndex, totalPages, numbers, settings, selectedPanelId, dispatch }: PageWrapperProps) {
+  if (page.kind === 'slide') {
+    return (
+      <SlidePageView
+        slide={page.slide}
+        itemId={page.itemId}
+        pageIndex={pageIndex}
+        totalPages={totalPages}
+        settings={settings}
+        dispatch={dispatch}
+      />
+    );
+  }
+  return (
+    <StoryboardPageView
+      panels={page.panels}
+      pageIndex={pageIndex}
+      totalPages={totalPages}
+      numbers={numbers}
+      settings={settings}
+      selectedPanelId={selectedPanelId}
+      dispatch={dispatch}
+    />
+  );
+}
+
+type StoryboardPageProps = {
+  panels: Panel[];
+  pageIndex: number;
+  totalPages: number;
+  numbers: Map<string, number>;
+  settings: BoardfishState['settings'];
+  selectedPanelId: string | null;
+  dispatch: React.Dispatch<Action>;
+};
+
+function StoryboardPageView({ panels, pageIndex, totalPages, numbers, settings, selectedPanelId, dispatch }: StoryboardPageProps) {
   const cols = settings.panelsHorizontal;
   const rows = settings.panelsVertical;
 
-  // Page renders at fixed logical pixel dimensions (settings.pageSize.widthPx/heightPx) so PDF export can
-  // rasterize/print it 1:1. On screen, CSS `transform: scale()` inside a wrapper handles fit-to-viewport.
   const pageStyle: React.CSSProperties = {
     width: settings.pageSize.widthPx,
     height: settings.pageSize.heightPx,
@@ -258,28 +317,65 @@ function PageView({ pageIndex, totalPages, pagePanels, startIndex, settings, sel
     columnGap: settings.gutterHorizontalPx,
     rowGap: settings.gutterVerticalPx,
     width: '100%',
-    height: `calc(100% - 40px)`, // leave room for footer strip
+    height: `calc(100% - 40px)`,
   };
 
   return (
     <div className="page-wrapper">
       <div className="page" data-page-index={pageIndex} style={pageStyle}>
         <div style={gridStyle}>
-          {pagePanels.map((panel, localIdx) => (
+          {panels.map((panel) => (
             <PanelView
               key={panel.id}
               panel={panel}
-              index={startIndex + localIdx + 1}
+              index={numbers.get(panel.id) ?? 1}
               selected={panel.id === selectedPanelId}
               settings={settings}
               dispatch={dispatch}
             />
           ))}
-          {Array.from({ length: Math.max(0, cols * rows - pagePanels.length) }).map((_, i) => (
+          {Array.from({ length: Math.max(0, cols * rows - panels.length) }).map((_, i) => (
             <div key={`empty-${i}`} className="panel-empty-slot" />
           ))}
         </div>
         <PageFooter pageIndex={pageIndex} totalPages={totalPages} settings={settings} />
+      </div>
+    </div>
+  );
+}
+
+type SlidePageProps = {
+  slide: Slide;
+  itemId: string;
+  pageIndex: number;
+  totalPages: number;
+  settings: BoardfishState['settings'];
+  dispatch: React.Dispatch<Action>;
+};
+
+function SlidePageView({ slide, itemId, pageIndex, totalPages, settings, dispatch }: SlidePageProps) {
+  const pageStyle: React.CSSProperties = {
+    width: settings.pageSize.widthPx,
+    height: settings.pageSize.heightPx,
+    background: settings.colors.pageBg,
+    color: settings.colors.text,
+    padding: settings.marginPx,
+    boxSizing: 'border-box',
+    position: 'relative',
+    fontFamily: settings.fonts.family,
+  };
+
+  return (
+    <div
+      className="page-wrapper slide-page-wrapper"
+      onClick={(e) => {
+        e.stopPropagation();
+        dispatch({ type: 'SELECT_ITEM', id: itemId });
+      }}
+    >
+      <div className="page slide-page" data-page-index={pageIndex} style={pageStyle}>
+        <SlideView slide={slide} settings={settings} dispatch={dispatch} />
+        {slide.showFooter && <PageFooter pageIndex={pageIndex} totalPages={totalPages} settings={settings} />}
       </div>
     </div>
   );
@@ -294,7 +390,6 @@ function PageFooter({
   totalPages: number;
   settings: BoardfishState['settings'];
 }) {
-  // Priority: user-uploaded logo > auto-picked default logo > (nothing if auto disabled and no upload)
   let logoSrc: string | null = null;
   if (settings.footer.logoDataUrl) {
     logoSrc = settings.footer.logoDataUrl;
@@ -309,13 +404,11 @@ function PageFooter({
     fontWeight: settings.fonts.footerBold ? 700 : 400,
     fontStyle: settings.fonts.footerItalic ? 'italic' : 'normal',
   };
-  // Anchor logo to bottom-right: as logoScale grows, the logo expands toward the top-left,
-  // keeping its lower-right corner glued to the footer's bottom-right corner.
   const logoStyle: React.CSSProperties = {
     maxHeight: 28 * settings.footer.logoScale,
     maxWidth: 120 * settings.footer.logoScale,
     display: 'block',
-    marginLeft: 'auto', // right-align
+    marginLeft: 'auto',
   };
 
   return (

@@ -33,7 +33,10 @@ export function Inspector({ state, dispatch }: Props) {
   const patchBadges = (b: Partial<typeof s.panelBadges>) => patch({ panelBadges: { ...s.panelBadges, ...b } });
 
   const logoRef = useRef<HTMLInputElement>(null);
-  const selectedPanel = state.panels.find((p) => p.id === state.selectedPanelId);
+  // Find selected panel across all storyboard items
+  const selectedPanel = state.items
+    .flatMap((it) => (it.kind === 'storyboard' ? it.panels : []))
+    .find((p) => p.id === state.selectedPanelId);
 
   return (
     <aside className="inspector">
@@ -447,6 +450,40 @@ export function Inspector({ state, dispatch }: Props) {
             <div className="hint">⌘X / ⌘C / ⌘V / Del also work when a panel is selected.</div>
           </Section>
         )}
+
+        {(() => {
+          const selItem = state.items.find((it) => it.id === state.selectedItemId);
+          if (!selItem || selItem.kind !== 'slide') return null;
+          const sl = selItem.slide;
+          return (
+            <Section title="Selected slide" openKey="selected" open={open} toggle={toggle}>
+              <Row label="Show footer">
+                <input
+                  type="checkbox"
+                  checked={sl.showFooter}
+                  onChange={(e) => dispatch({ type: 'UPDATE_SLIDE', id: sl.id, patch: { showFooter: e.target.checked } })}
+                />
+              </Row>
+              <Row label="Title">
+                <input
+                  type="text"
+                  value={sl.title}
+                  onChange={(e) => dispatch({ type: 'UPDATE_SLIDE', id: sl.id, patch: { title: e.target.value } })}
+                />
+              </Row>
+              <Row label="Subtitle">
+                <input
+                  type="text"
+                  value={sl.subtitle}
+                  onChange={(e) => dispatch({ type: 'UPDATE_SLIDE', id: sl.id, patch: { subtitle: e.target.value } })}
+                />
+              </Row>
+              <div className="button-row" style={{ marginTop: 8 }}>
+                <button onClick={() => dispatch({ type: 'REMOVE_ITEM', id: selItem.id })}>Delete slide</button>
+              </div>
+            </Section>
+          );
+        })()}
       </div>
     </aside>
   );

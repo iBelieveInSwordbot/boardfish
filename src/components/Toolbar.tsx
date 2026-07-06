@@ -7,9 +7,11 @@ type Props = {
   dispatch: React.Dispatch<Action>;
   inspectorOpen: boolean;
   onToggleInspector: () => void;
+  outlinerOpen: boolean;
+  onToggleOutliner: () => void;
 };
 
-export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector }: Props) {
+export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector, outlinerOpen, onToggleOutliner }: Props) {
   const openRef = useRef<HTMLInputElement>(null);
   const addImagesRef = useRef<HTMLInputElement>(null);
   const [exporting, setExporting] = useState(false);
@@ -49,8 +51,29 @@ export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector }: P
             const { fileToPanelImage } = await import('../store');
             const { newPanel } = await import('../types');
             const loaded = await Promise.all(Array.from(files).map((f) => fileToPanelImage(f)));
-            const firstImageAlreadyExists = state.panels.some((p) => p.imageDataUrl);
-            if (!firstImageAlreadyExists && state.settings.panelAspectLocked && loaded.length > 0) {
+            // Find target storyboard: nearest to selection, or first storyboard
+            let targetId: string | null = null;
+            if (state.selectedPanelId) {
+              for (const it of state.items) {
+                if (it.kind === 'storyboard' && it.panels.some((p) => p.id === state.selectedPanelId)) {
+                  targetId = it.id;
+                  break;
+                }
+              }
+            }
+            if (!targetId && state.selectedItemId) {
+              const sel = state.items.find((it) => it.id === state.selectedItemId);
+              if (sel && sel.kind === 'storyboard') targetId = sel.id;
+            }
+            if (!targetId) {
+              const first = state.items.find((it) => it.kind === 'storyboard');
+              if (first) targetId = first.id;
+            }
+            if (!targetId) return;
+            const anyPanelWithImage = state.items.some(
+              (it) => it.kind === 'storyboard' && it.panels.some((p) => p.imageDataUrl),
+            );
+            if (!anyPanelWithImage && state.settings.panelAspectLocked && loaded.length > 0) {
               dispatch({ type: 'UPDATE_SETTINGS', patch: { panelAspectRatio: loaded[0].aspect } });
             }
             const newPanels = loaded.map(({ dataUrl, name }) => {
@@ -59,11 +82,19 @@ export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector }: P
               p.imageName = name;
               return p;
             });
-            dispatch({ type: 'ADD_PANELS', panels: newPanels });
+            dispatch({ type: 'ADD_PANELS_TO_ITEM', itemId: targetId, panels: newPanels });
             if (addImagesRef.current) addImagesRef.current.value = '';
           }}
         />
         <button onClick={() => void saveProject(state)}>Save Project</button>
+        <button
+          className="toolbar-inspector-toggle"
+          onClick={onToggleOutliner}
+          title={outlinerOpen ? 'Hide Outline (⌘⇧O)' : 'Show Outline (⌘⇧O)'}
+          style={{ marginRight: 8 }}
+        >
+          {outlinerOpen ? 'Hide Outline' : 'Show Outline'}
+        </button>
         <button onClick={() => openRef.current?.click()}>Open…</button>
         <input
           ref={openRef}
@@ -75,7 +106,7 @@ export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector }: P
             if (!file) return;
             try {
               const loaded = await loadProject(file);
-              dispatch({ type: 'LOAD_PROJECT', state: loaded });
+              dispatch({ type: 'LOAD_PROJECT', state: { settings: loaded.settings, items: loaded.items } });
             } catch (err) {
               alert(`Could not open project: ${(err as Error).message}`);
             }
@@ -101,7 +132,10 @@ export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector }: P
         </button>
         <button
           onClick={() => {
-            if (state.panels.length === 0 || confirm('Start a new project? Current work will be cleared.')) {
+            const anyContent = state.items.some(
+              (it) => it.kind === 'slide' || (it.kind === 'storyboard' && it.panels.length > 0),
+            );
+            if (!anyContent || confirm('Start a new project? Current work will be cleared.')) {
               dispatch({ type: 'RESET' });
             }
           }}

@@ -5,19 +5,49 @@ import { saveAs } from 'file-saver';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import type { BoardfishState } from './store';
-import type { Panel, ProjectSettings } from './types';
+import { itemsFromLegacyPanels } from './store';
+import type { DocItem, Panel, ProjectSettings } from './types';
 
+// v1: legacy flat panels[] (pre-outliner, up to 2026-07-05 evening)
+type SavedPanelV1 = {
+  id: string;
+  imageName: string | null;
+  imagePath: string | null; // path inside zip
+  cornerNote?: string;
+  fields: { id: string; label: string; value: string }[];
+};
 type SavedProjectV1 = {
   version: 1;
   savedAt: string;
   settings: ProjectSettings;
-  panels: {
-    id: string;
-    imageName: string | null;
-    imagePath: string | null; // path inside zip
-    cornerNote?: string;
-    fields: { id: string; label: string; value: string }[];
-  }[];
+  panels: SavedPanelV1[];
+  logoPath: string | null;
+};
+
+// v2: outliner items[] (slides + storyboards)
+type SavedItemV2 =
+  | {
+      id: string;
+      kind: 'slide';
+      slide: {
+        id: string;
+        imageName: string | null;
+        imagePath: string | null;
+        title: string;
+        subtitle: string;
+        showFooter: boolean;
+      };
+    }
+  | {
+      id: string;
+      kind: 'storyboard';
+      panels: SavedPanelV1[];
+    };
+type SavedProjectV2 = {
+  version: 2;
+  savedAt: string;
+  settings: ProjectSettings;
+  items: SavedItemV2[];
   logoPath: string | null;
 };
 
@@ -59,20 +89,49 @@ export async function saveProject(state: BoardfishState): Promise<void> {
   const zip = new JSZip();
   const images = zip.folder('images')!;
 
-  const savedPanels: SavedProjectV1['panels'] = state.panels.map((p, idx) => {
-    let imagePath: string | null = null;
-    if (p.imageDataUrl) {
-      const ext = extForDataUrl(p.imageDataUrl);
-      imagePath = `images/panel-${idx.toString().padStart(4, '0')}-${p.id}.${ext}`;
-      images.file(imagePath.replace(/^images\//, ''), dataUrlToBlob(p.imageDataUrl));
+  let panelSerial = 0;
+  let slideSerial = 0;
+
+  const savedItems: SavedItemV2[] = state.items.map((it) => {
+    if (it.kind === 'slide') {
+      let imagePath: string | null = null;
+      if (it.slide.imageDataUrl) {
+        const ext = extForDataUrl(it.slide.imageDataUrl);
+        imagePath = `images/slide-${slideSerial.toString().padStart(4, '0')}-${it.slide.id}.${ext}`;
+        images.file(imagePath.replace(/^images\//, ''), dataUrlToBlob(it.slide.imageDataUrl));
+      }
+      slideSerial += 1;
+      return {
+        id: it.id,
+        kind: 'slide',
+        slide: {
+          id: it.slide.id,
+          imageName: it.slide.imageName,
+          imagePath,
+          title: it.slide.title,
+          subtitle: it.slide.subtitle,
+          showFooter: it.slide.showFooter,
+        },
+      };
     }
-    return {
-      id: p.id,
-      imageName: p.imageName,
-      imagePath,
-      cornerNote: p.cornerNote,
-      fields: p.fields.map((f) => ({ id: f.id, label: f.label, value: f.value })),
-    };
+    // storyboard
+    const savedPanels: SavedPanelV1[] = it.panels.map((p) => {
+      let imagePath: string | null = null;
+      if (p.imageDataUrl) {
+        const ext = extForDataUrl(p.imageDataUrl);
+        imagePath = `images/panel-${panelSerial.toString().padStart(4, '0')}-${p.id}.${ext}`;
+        images.file(imagePath.replace(/^images\//, ''), dataUrlToBlob(p.imageDataUrl));
+      }
+      panelSerial += 1;
+      return {
+        id: p.id,
+        imageName: p.imageName,
+        imagePath,
+        cornerNote: p.cornerNote,
+        fields: p.fields.map((f) => ({ id: f.id, label: f.label, value: f.value })),
+      };
+    });
+    return { id: it.id, kind: 'storyboard', panels: savedPanels };
   });
 
   let logoPath: string | null = null;
@@ -82,17 +141,16 @@ export async function saveProject(state: BoardfishState): Promise<void> {
     zip.file(logoPath, dataUrlToBlob(state.settings.footer.logoDataUrl));
   }
 
-  // Store settings without embedded logo data URL (it's in the zip separately)
   const settingsForSave: ProjectSettings = {
     ...state.settings,
     footer: { ...state.settings.footer, logoDataUrl: null },
   };
 
-  const manifest: SavedProjectV1 = {
-    version: 1,
+  const manifest: SavedProjectV2 = {
+    version: 2,
     savedAt: new Date().toISOString(),
     settings: settingsForSave,
-    panels: savedPanels,
+    items: savedItems,
     logoPath,
   };
   zip.file('project.json', JSON.stringify(manifest, null, 2));
@@ -106,36 +164,72 @@ function sanitize(name: string): string {
   return name.replace(/[^a-z0-9-_. ]/gi, '_').trim() || 'boardfish-project';
 }
 
-export async function loadProject(file: File): Promise<{ settings: ProjectSettings; panels: Panel[] }> {
+export async function loadProject(
+  file: File,
+): Promise<{ settings: ProjectSettings; items: DocItem[] }> {
   const zip = await JSZip.loadAsync(file);
   const manifestEntry = zip.file('project.json');
   if (!manifestEntry) throw new Error('Not a valid .boardfish file (missing project.json)');
-  const manifest = JSON.parse(await manifestEntry.async('string')) as SavedProjectV1;
-  if (manifest.version !== 1) throw new Error(`Unsupported project version: ${manifest.version}`);
+  const manifestRaw = JSON.parse(await manifestEntry.async('string')) as SavedProjectV1 | SavedProjectV2;
 
-  const panels: Panel[] = await Promise.all(
-    manifest.panels.map(async (mp) => {
-      let dataUrl: string | null = null;
-      if (mp.imagePath) {
-        const entry = zip.file(mp.imagePath);
-        if (entry) {
-          const blob = await entry.async('blob');
-          dataUrl = await blobToDataUrl(blob);
+  const loadImage = async (imagePath: string | null): Promise<string | null> => {
+    if (!imagePath) return null;
+    const entry = zip.file(imagePath);
+    if (!entry) return null;
+    const blob = await entry.async('blob');
+    return blobToDataUrl(blob);
+  };
+
+  let items: DocItem[];
+
+  if (manifestRaw.version === 2) {
+    items = await Promise.all(
+      manifestRaw.items.map(async (it): Promise<DocItem> => {
+        if (it.kind === 'slide') {
+          return {
+            id: it.id,
+            kind: 'slide',
+            slide: {
+              id: it.slide.id,
+              imageDataUrl: await loadImage(it.slide.imagePath),
+              imageName: it.slide.imageName,
+              title: it.slide.title,
+              subtitle: it.slide.subtitle,
+              showFooter: it.slide.showFooter,
+            },
+          };
         }
-      }
-      return {
+        const panels: Panel[] = await Promise.all(
+          it.panels.map(async (mp) => ({
+            id: mp.id,
+            imageDataUrl: await loadImage(mp.imagePath),
+            imageName: mp.imageName,
+            cornerNote: mp.cornerNote ?? '',
+            fields: mp.fields.map((f) => ({ ...f })),
+          })),
+        );
+        return { id: it.id, kind: 'storyboard', panels };
+      }),
+    );
+  } else if (manifestRaw.version === 1) {
+    // Legacy: flat panels[] → wrap in a single storyboard item
+    const panels: Panel[] = await Promise.all(
+      manifestRaw.panels.map(async (mp) => ({
         id: mp.id,
-        imageDataUrl: dataUrl,
+        imageDataUrl: await loadImage(mp.imagePath),
         imageName: mp.imageName,
         cornerNote: mp.cornerNote ?? '',
         fields: mp.fields.map((f) => ({ ...f })),
-      };
-    }),
-  );
+      })),
+    );
+    items = itemsFromLegacyPanels(panels);
+  } else {
+    throw new Error(`Unsupported project version: ${(manifestRaw as { version: number }).version}`);
+  }
 
   let logoDataUrl: string | null = null;
-  if (manifest.logoPath) {
-    const entry = zip.file(manifest.logoPath);
+  if (manifestRaw.logoPath) {
+    const entry = zip.file(manifestRaw.logoPath);
     if (entry) {
       const blob = await entry.async('blob');
       logoDataUrl = await blobToDataUrl(blob);
@@ -143,11 +237,11 @@ export async function loadProject(file: File): Promise<{ settings: ProjectSettin
   }
 
   const settings: ProjectSettings = {
-    ...manifest.settings,
-    footer: { ...manifest.settings.footer, logoDataUrl },
+    ...manifestRaw.settings,
+    footer: { ...manifestRaw.settings.footer, logoDataUrl },
   };
 
-  return { settings, panels };
+  return { settings, items };
 }
 
 /**
@@ -207,10 +301,11 @@ export async function exportPdf(settings: ProjectSettings): Promise<void> {
         logging: false,
         // Force html2canvas to render at logical size regardless of on-screen scale
         onclone: (doc: Document) => {
-          // Kill inspector, toolbar in cloned DOM so nothing external bleeds in
-          doc.querySelectorAll('.toolbar, .inspector, .inspector-reopen, .page-label, .empty-hint').forEach(
-            (n) => ((n as HTMLElement).style.display = 'none'),
-          );
+          // Kill inspector, toolbar, outliner, and controls in cloned DOM so nothing external bleeds in
+          doc.querySelectorAll(
+            '.toolbar, .inspector, .inspector-reopen, .outliner, .outliner-reopen, .page-label, .empty-hint, ' +
+              '.slide-image-replace, .slide-image-remove, .slide-image-placeholder, .zoom-hud',
+          ).forEach((n) => ((n as HTMLElement).style.display = 'none'));
           // Strip the blue selection highlight from panels so it doesn't render in the PDF
           doc.querySelectorAll<HTMLElement>('.panel').forEach((n) => {
             n.style.borderColor = 'transparent';

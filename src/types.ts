@@ -45,6 +45,40 @@ export type Panel = {
   cornerNote: string; // optional per-panel text shown in the top-right corner
 };
 
+/** Freeform "slide" (Keynote-style): image + title + subtitle. Renders as a single full page. */
+export type Slide = {
+  id: string;
+  imageDataUrl: string | null;
+  imageName: string | null;
+  title: string;
+  subtitle: string;
+  showFooter: boolean;
+};
+
+/** Document-level item: either a slide, or a storyboard block that owns its own panels. */
+export type DocItem =
+  | { id: string; kind: 'slide'; slide: Slide }
+  | { id: string; kind: 'storyboard'; panels: Panel[] };
+
+export function newSlide(): Slide {
+  return {
+    id: cryptoRandomId(),
+    imageDataUrl: null,
+    imageName: null,
+    title: 'Section Title',
+    subtitle: '',
+    showFooter: true,
+  };
+}
+
+export function newSlideItem(): DocItem {
+  return { id: cryptoRandomId(), kind: 'slide', slide: newSlide() };
+}
+
+export function newStoryboardItem(panels: Panel[] = []): DocItem {
+  return { id: cryptoRandomId(), kind: 'storyboard', panels };
+}
+
 // Project-level settings that live in the Inspector
 export type ProjectSettings = {
   projectName: string;
