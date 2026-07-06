@@ -108,13 +108,28 @@ input, textarea, select {
   border-radius: 8px;
   overflow: hidden;
   box-shadow: 0 40px 100px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.06);
-  width: min(90vw, 1600px);
+  /* Sized to fill viewport minus lightbox padding (5vh top/bottom, 5vw sides) */
+  max-width: 90vw;
   max-height: 90vh;
 }
+/* Captions-off: no chrome, image alone. Let CSS aspect-ratio drive width so image renders 1:1 at its panel ratio,
+   constrained to viewport dims. */
+.lightbox-panel.no-captions {
+  box-shadow: none;
+  background: transparent !important;
+}
+.lightbox-panel.no-captions .lightbox-image {
+  width: auto;
+  height: auto;
+  max-width: 90vw;
+  max-height: 90vh;
+  /* aspect-ratio is set inline on .lightbox-image; combine with max-w/h to fit viewport */
+}
 .lightbox-image {
-  flex: 0 1 auto;
   overflow: hidden;
   min-height: 0;
+  width: 100%;
+  /* aspect-ratio applied inline from settings.panelAspectRatio */
 }
 .lightbox-image img {
   width: 100%;
@@ -191,6 +206,25 @@ input, textarea, select {
   letter-spacing: 0.15em;
   pointer-events: none;
 }
+
+.lightbox-toggle-captions {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  z-index: 1001;
+  background: rgba(20, 20, 24, 0.75);
+  border: 1px solid rgba(255,255,255,0.15);
+  color: #fff;
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  font-family: inherit;
+}
+.lightbox-toggle-captions:hover { background: rgba(20, 20, 24, 0.95); }
 
 /* --- Toolbar --- */
 .toolbar {

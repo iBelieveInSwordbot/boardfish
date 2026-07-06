@@ -41,7 +41,9 @@ function App() {
         return;
       }
 
-      if (!state.selectedPanelId && !(meta && e.key.toLowerCase() === 'v')) return;
+      // Allow arrow-key selection even without a current selection
+      const isArrowNav = (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && state.panels.length > 0;
+      if (!state.selectedPanelId && !(meta && e.key.toLowerCase() === 'v') && !isArrowNav) return;
 
       if (meta && e.key.toLowerCase() === 'x' && state.selectedPanelId) {
         e.preventDefault();
@@ -59,6 +61,20 @@ function App() {
         // Spacebar: toggle lightbox for selected panel
         e.preventDefault();
         setLightboxOpen((v) => !v);
+      } else if ((e.key === 'ArrowRight' || e.key === 'ArrowLeft') && !lightboxOpen) {
+        // Left/Right arrows on main canvas: select prev/next panel.
+        // (Lightbox handles its own arrow-key navigation and Up/Down remain free to scroll the canvas.)
+        if (state.panels.length === 0) return;
+        e.preventDefault();
+        const dir = e.key === 'ArrowRight' ? 1 : -1;
+        const idx = state.selectedPanelId
+          ? state.panels.findIndex((p) => p.id === state.selectedPanelId)
+          : -1;
+        const next =
+          idx < 0
+            ? dir === 1 ? 0 : state.panels.length - 1
+            : (idx + dir + state.panels.length) % state.panels.length;
+        dispatch({ type: 'SELECT_PANEL', id: state.panels[next].id });
       } else if (e.key === 'Escape') {
         if (lightboxOpen) setLightboxOpen(false);
         else dispatch({ type: 'SELECT_PANEL', id: null });

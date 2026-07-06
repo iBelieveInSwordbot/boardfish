@@ -1,7 +1,8 @@
 // Spacebar-triggered full-screen preview of the currently-selected panel.
-// Editable caption fields; arrow keys navigate prev/next; Esc closes.
+// Image renders at same crop/fit settings as canvas; captions can be toggled;
+// arrow keys navigate prev/next; Esc closes.
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import type { Panel, ProjectSettings } from '../types';
 import type { Action } from '../store';
 
@@ -24,6 +25,7 @@ export function PanelLightbox({
   onClose,
   onNavigate,
 }: Props) {
+  // Use the SAME object-fit rule as the canvas Panel component so the crop matches exactly.
   const objectFit: 'contain' | 'fill' | 'cover' =
     settings.imageFit === 'fill' ? 'fill' : settings.imageFit === 'crop' ? 'cover' : 'contain';
 
@@ -32,7 +34,24 @@ export function PanelLightbox({
     ? `${badges.numberPrefix}${String(panelIndex).padStart(2, '0')}`
     : String(panelIndex).padStart(2, '0');
 
-  // Arrow-key navigation (only when the lightbox itself is focused, i.e. user isn't editing a field)
+  // Local UI state: whether captions are visible in the lightbox
+  const [showCaptions, setShowCaptions] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem('boardfish:lightboxCaptions');
+      return raw === null ? true : raw === 'true';
+    } catch {
+      return true;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('boardfish:lightboxCaptions', String(showCaptions));
+    } catch {
+      // ignore
+    }
+  }, [showCaptions]);
+
+  // Arrow-key navigation + C-key toggle for captions.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
@@ -46,6 +65,9 @@ export function PanelLightbox({
       } else if (e.key === 'ArrowLeft') {
         e.preventDefault();
         onNavigate(-1);
+      } else if (e.key.toLowerCase() === 'c') {
+        e.preventDefault();
+        setShowCaptions((v) => !v);
       }
     }
     window.addEventListener('keydown', onKey);
@@ -76,16 +98,28 @@ export function PanelLightbox({
       >
         ›
       </button>
+
+      <button
+        className="lightbox-toggle-captions"
+        title={`${showCaptions ? 'Hide' : 'Show'} captions (C)`}
+        onClick={(e) => {
+          e.stopPropagation();
+          setShowCaptions((v) => !v);
+        }}
+      >
+        {showCaptions ? 'Hide captions' : 'Show captions'}
+      </button>
+
       <div
-        className="lightbox-panel"
+        className={`lightbox-panel ${showCaptions ? 'with-captions' : 'no-captions'}`}
         onClick={(e) => e.stopPropagation()}
         style={{
-          background: settings.colors.panelBg,
+          background: showCaptions ? settings.colors.panelBg : 'transparent',
           color: settings.colors.text,
           fontFamily: settings.fonts.family,
         }}
       >
-        {(badges.showNumber || badges.showCornerNote) && (
+        {showCaptions && (badges.showNumber || badges.showCornerNote) && (
           <div
             className="panel-header"
             style={{
@@ -123,43 +157,53 @@ export function PanelLightbox({
             </div>
           </div>
         )}
-        <div className="lightbox-image" style={{ aspectRatio: `${settings.panelAspectRatio}`, background: '#000' }}>
+
+        <div
+          className="lightbox-image"
+          style={{
+            aspectRatio: `${settings.panelAspectRatio}`,
+            background: showCaptions ? '#000' : 'transparent',
+          }}
+        >
           {panel.imageDataUrl ? (
             <img src={panel.imageDataUrl} alt={panel.imageName ?? ''} style={{ objectFit }} draggable={false} />
           ) : (
             <div className="panel-image-placeholder">no image</div>
           )}
         </div>
-        <div className="lightbox-fields">
-          {panel.fields.map((f) => (
-            <div key={f.id} className="lightbox-field" style={{ background: settings.colors.fieldBg }}>
-              <div className="lightbox-field-label" style={{ color: settings.colors.panelLabel }}>
-                {f.label}
+
+        {showCaptions && (
+          <div className="lightbox-fields">
+            {panel.fields.map((f) => (
+              <div key={f.id} className="lightbox-field" style={{ background: settings.colors.fieldBg }}>
+                <div className="lightbox-field-label" style={{ color: settings.colors.panelLabel }}>
+                  {f.label}
+                </div>
+                <textarea
+                  className="lightbox-field-input"
+                  value={f.value}
+                  placeholder={f.label}
+                  rows={3}
+                  style={{
+                    fontSize: settings.fonts.fieldSizePx * 1.5,
+                    fontFamily: settings.fonts.family,
+                    fontWeight: settings.fonts.captionBold ? 700 : 400,
+                    fontStyle: settings.fonts.captionItalic ? 'italic' : 'normal',
+                    color: settings.colors.fieldText,
+                    background: 'transparent',
+                    caretColor: settings.colors.fieldText,
+                  }}
+                  onChange={(e) =>
+                    dispatch({ type: 'UPDATE_FIELD', panelId: panel.id, fieldId: f.id, value: e.target.value })
+                  }
+                />
               </div>
-              <textarea
-                className="lightbox-field-input"
-                value={f.value}
-                placeholder={f.label}
-                rows={3}
-                style={{
-                  fontSize: settings.fonts.fieldSizePx * 1.5,
-                  fontFamily: settings.fonts.family,
-                  fontWeight: settings.fonts.captionBold ? 700 : 400,
-                  fontStyle: settings.fonts.captionItalic ? 'italic' : 'normal',
-                  color: settings.colors.fieldText,
-                  background: 'transparent',
-                  caretColor: settings.colors.fieldText,
-                }}
-                onChange={(e) =>
-                  dispatch({ type: 'UPDATE_FIELD', panelId: panel.id, fieldId: f.id, value: e.target.value })
-                }
-              />
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
       <div className="lightbox-hint">
-        {panelIndex} / {totalPanels}  ·  ← / → to navigate  ·  Esc to close
+        {panelIndex} / {totalPanels}  ·  ← / →  navigate  ·  C  toggle captions  ·  Esc  close
       </div>
     </div>
   );
