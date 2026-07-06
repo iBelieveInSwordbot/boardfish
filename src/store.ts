@@ -411,7 +411,14 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
           merged.panelAspect = { ...(prev.panelAspect ?? {}), ...action.patch.panelAspect };
         if (action.patch.fields !== undefined)
           merged.fields = { ...(prev.fields ?? {}), ...action.patch.fields };
-        return { ...it, overrides: merged };
+
+        // If the fields override changed, reconcile every panel's fields[] to match the new label set.
+        let panels = it.panels;
+        if (action.patch.fields?.defaults) {
+          const newLabels = action.patch.fields.defaults;
+          panels = panels.map((p) => reconcilePanelFields(p, newLabels));
+        }
+        return { ...it, overrides: merged, panels };
       });
       return { ...state, items };
     }
@@ -420,7 +427,12 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
         if (it.kind !== 'storyboard' || it.id !== action.id) return it;
         const next = { ...(it.overrides ?? {}) };
         delete next[action.section];
-        return { ...it, overrides: next };
+        // When clearing the fields override, reconcile panels back to the global default labels
+        let panels = it.panels;
+        if (action.section === 'fields') {
+          panels = panels.map((p) => reconcilePanelFields(p, state.settings.labels.defaults));
+        }
+        return { ...it, overrides: next, panels };
       });
       return { ...state, items };
     }
@@ -435,6 +447,22 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
     default:
       return state;
   }
+}
+
+/**
+ * Reconcile a panel's fields[] to match the desired label list.
+ * - Preserves existing field values (and ids) whose labels appear in `desiredLabels`.
+ * - Adds empty fields for labels not currently on the panel.
+ * - Drops any fields whose labels aren't in the desired list.
+ * - Output order matches `desiredLabels`.
+ */
+function reconcilePanelFields(panel: Panel, desiredLabels: string[]): Panel {
+  const byLabel = new Map(panel.fields.map((f) => [f.label, f]));
+  const nextFields = desiredLabels.map((label) => {
+    const existing = byLabel.get(label);
+    return existing ?? { id: cryptoRandomId(), label, value: '' };
+  });
+  return { ...panel, fields: nextFields };
 }
 
 function deepClonePanel(p: Panel): Panel {
