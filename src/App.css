@@ -57,6 +57,106 @@ input, textarea, select {
 }
 .inspector-reopen:hover { background: #2c2c31; }
 
+/* --- Zoom HUD (bottom-right of canvas) --- */
+.zoom-hud {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: rgba(15, 15, 16, 0.85);
+  border: 1px solid #303035;
+  border-radius: 8px;
+  padding: 4px;
+  backdrop-filter: blur(8px);
+}
+.inspector-hidden .zoom-hud { right: 16px; }
+.zoom-hud button {
+  background: transparent;
+  color: #ddd;
+  border: none;
+  padding: 4px 10px;
+  font-size: 13px;
+  border-radius: 4px;
+  min-width: 32px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.zoom-hud button:hover { background: #232327; color: #fff; }
+.zoom-hud button:nth-child(2) { font-size: 12px; color: #aaa; min-width: 52px; }
+
+/* --- Panel spacebar lightbox --- */
+.lightbox-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5vh 5vw;
+  animation: lightbox-fade 120ms ease-out;
+}
+@keyframes lightbox-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.lightbox-panel {
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 40px 100px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.06);
+  width: min(90vw, 1600px);
+  max-height: 90vh;
+}
+.lightbox-image {
+  flex: 0 1 auto;
+  overflow: hidden;
+  min-height: 0;
+}
+.lightbox-image img {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.lightbox-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px 24px;
+  overflow: auto;
+}
+.lightbox-field {
+  padding: 12px 16px;
+  border-radius: 6px;
+}
+.lightbox-field-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  opacity: 0.7;
+  margin-bottom: 4px;
+}
+.lightbox-field-value {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  line-height: 1.4;
+}
+.lightbox-field-value .dim { opacity: 0.3; }
+.lightbox-hint {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  color: rgba(255,255,255,0.5);
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  pointer-events: none;
+}
+
 /* --- Toolbar --- */
 .toolbar {
   display: grid;

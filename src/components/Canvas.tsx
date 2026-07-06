@@ -37,19 +37,20 @@ export function Canvas({ state, dispatch }: Props) {
   const [isDropTarget, setIsDropTarget] = useState(false);
   const dragCounter = useRef(0);
   const areaRef = useRef<HTMLDivElement>(null);
-  const [pageScale, setPageScale] = useState(0.5);
+  const [fitScale, setFitScale] = useState(0.5);
+  const [zoom, setZoom] = useState(1); // user zoom multiplier over fit-to-viewport scale
 
-  // Recompute page scale so page fits comfortably in canvas viewport (leave ~48px padding).
+  // Recompute fit scale so page fits comfortably in canvas viewport (leave ~48px padding).
   useEffect(() => {
     function recompute() {
       const el = areaRef.current;
       if (!el) return;
       const availW = el.clientWidth - 96; // horizontal padding
-      const availH = el.clientHeight - 80; // vertical padding + label
+      const availH = el.clientHeight - 80; // vertical padding
       const sx = availW / settings.pageSize.widthPx;
       const sy = availH / settings.pageSize.heightPx;
-      const s = Math.max(0.1, Math.min(1, Math.min(sx, sy)));
-      setPageScale(s);
+      const s = Math.max(0.05, Math.min(1, Math.min(sx, sy)));
+      setFitScale(s);
     }
     recompute();
     const el = areaRef.current;
@@ -58,6 +59,46 @@ export function Canvas({ state, dispatch }: Props) {
     ro.observe(el);
     return () => ro.disconnect();
   }, [settings.pageSize.widthPx, settings.pageSize.heightPx]);
+
+  const pageScale = fitScale * zoom;
+
+  // Zoom shortcuts + cmd/ctrl+wheel on the canvas
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+      const meta = e.metaKey || e.ctrlKey;
+      if (!meta) return;
+      if (e.key === '=' || e.key === '+') {
+        e.preventDefault();
+        setZoom((z) => Math.min(4, +(z * 1.15).toFixed(3)));
+      } else if (e.key === '-' || e.key === '_') {
+        e.preventDefault();
+        setZoom((z) => Math.max(0.1, +(z / 1.15).toFixed(3)));
+      } else if (e.key === '0') {
+        e.preventDefault();
+        setZoom(1);
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  useEffect(() => {
+    const el = areaRef.current;
+    if (!el) return;
+    function onWheel(e: WheelEvent) {
+      if (!(e.ctrlKey || e.metaKey)) return; // trackpad pinch fires ctrlKey on Chromium
+      e.preventDefault();
+      const delta = -e.deltaY;
+      setZoom((z) => {
+        const next = z * (1 + delta / 500);
+        return Math.min(4, Math.max(0.1, +next.toFixed(3)));
+      });
+    }
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -115,6 +156,10 @@ export function Canvas({ state, dispatch }: Props) {
     ['--page-height-px' as never]: `${settings.pageSize.heightPx}px`,
   };
 
+  // Expose zoom controls to the Toolbar via a global custom event pattern would be overkill;
+  // instead we render the zoom badge here and let parent components read via a shared handler.
+  const zoomPct = Math.round(zoom * 100);
+
   return (
     <div
       ref={areaRef}
@@ -170,6 +215,11 @@ export function Canvas({ state, dispatch }: Props) {
             <div className="empty-hint-sub">JPEG or PNG. Auto-arranged into pages of {perPage}.</div>
           </div>
         )}
+      </div>
+      <div className="zoom-hud">
+        <button title="Zoom out (⌘-)" onClick={() => setZoom((z) => Math.max(0.1, +(z / 1.15).toFixed(3)))}>−</button>
+        <button title="Reset zoom (⌘0)" onClick={() => setZoom(1)}>{zoomPct}%</button>
+        <button title="Zoom in (⌘+)" onClick={() => setZoom((z) => Math.min(4, +(z * 1.15).toFixed(3)))}>+</button>
       </div>
     </div>
   );

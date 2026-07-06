@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Canvas } from './components/Canvas';
 import { Inspector } from './components/Inspector';
 import { Toolbar } from './components/Toolbar';
+import { PanelLightbox } from './components/PanelLightbox';
 import { useBoardfish } from './store';
 import './App.css';
 
@@ -15,6 +16,7 @@ function App() {
       return true;
     }
   });
+  const [lightboxOpen, setLightboxOpen] = useState(false);
 
   useEffect(() => {
     try {
@@ -53,13 +55,28 @@ function App() {
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && state.selectedPanelId) {
         e.preventDefault();
         dispatch({ type: 'DELETE_PANEL', id: state.selectedPanelId });
+      } else if (e.key === ' ' && state.selectedPanelId) {
+        // Spacebar: toggle lightbox for selected panel
+        e.preventDefault();
+        setLightboxOpen((v) => !v);
       } else if (e.key === 'Escape') {
-        dispatch({ type: 'SELECT_PANEL', id: null });
+        if (lightboxOpen) setLightboxOpen(false);
+        else dispatch({ type: 'SELECT_PANEL', id: null });
       }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [dispatch, state.selectedPanelId]);
+  }, [dispatch, state.selectedPanelId, lightboxOpen]);
+
+  // Ensure lightbox closes if the selected panel goes away (deleted, cut, etc.)
+  useEffect(() => {
+    if (!state.selectedPanelId && lightboxOpen) setLightboxOpen(false);
+  }, [state.selectedPanelId, lightboxOpen]);
+
+  const selectedPanel = state.panels.find((p) => p.id === state.selectedPanelId);
+  const selectedPanelIndex = selectedPanel
+    ? state.panels.findIndex((p) => p.id === selectedPanel.id) + 1
+    : 0;
 
   return (
     <div className={`app-root ${inspectorOpen ? 'inspector-visible' : 'inspector-hidden'}`}>
@@ -81,6 +98,14 @@ function App() {
         >
           ‹ Inspector
         </button>
+      )}
+      {lightboxOpen && selectedPanel && (
+        <PanelLightbox
+          panel={selectedPanel}
+          panelIndex={selectedPanelIndex}
+          settings={state.settings}
+          onClose={() => setLightboxOpen(false)}
+        />
       )}
     </div>
   );
