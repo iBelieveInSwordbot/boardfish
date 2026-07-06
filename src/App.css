@@ -381,13 +381,17 @@ input, textarea, select {
   max-width: 90vw;
 }
 .lightbox-panel.with-captions {
-  width: auto;
+  /* Captions get a comfortable reading width regardless of image aspect ratio */
+  width: min(90vw, 1200px);
   max-width: 90vw;
 }
 .lightbox-panel.with-captions .lightbox-image {
   height: 55vh;
-  width: auto;
-  max-width: 90vw;
+  width: auto; /* aspect-ratio drives width from fixed height */
+  max-width: 100%;
+}
+.lightbox-panel.with-captions .lightbox-fields {
+  width: 100%; /* fields stretch to panel width, not image width */
 }
 .lightbox-image {
   overflow: hidden;
