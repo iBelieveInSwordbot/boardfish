@@ -38,9 +38,10 @@ export function PanelLightbox({
   const [showCaptions, setShowCaptions] = useState<boolean>(() => {
     try {
       const raw = localStorage.getItem('boardfish:lightboxCaptions');
-      return raw === null ? true : raw === 'true';
+      // Default OFF — lightbox is a closeup preview by default; caption editing on demand.
+      return raw === null ? false : raw === 'true';
     } catch {
-      return true;
+      return false;
     }
   });
   useEffect(() => {

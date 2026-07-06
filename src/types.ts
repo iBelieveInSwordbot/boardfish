@@ -112,14 +112,14 @@ export const FONT_FAMILIES: { label: string; value: string }[] = [
 
 export function themeColors(theme: ThemePreset): ProjectSettings['colors'] {
   if (theme === 'dark') {
-    // Deeper, more contrasty dark theme so panels + field BGs are clearly darker than page
+    // Dark palette from Matt's approved Boardfish project 2026-07-05 (`Untitled Board-2.boardfish`)
     return {
-      canvasBg: '#050506',
-      pageBg: '#0e0e11',
-      panelBg: '#161619',
+      canvasBg: '#121212',
+      pageBg: '#000000',
+      panelBg: '#0f0f11',
       fieldBg: '#050506',
-      text: '#eaeaea',
-      fieldText: '#eaeaea',
+      text: '#d6d6d6',
+      fieldText: '#aaaaaa',
       panelLabel: '#c8c8c8',
       accent: '#4a9eff',
     };
@@ -181,7 +181,7 @@ export function defaultSettings(): ProjectSettings {
       showCornerNote: true,
       numberPrefix: 'Panel ',
       cornerNotePrefix: '',
-      useNumberPrefix: false,
+      useNumberPrefix: true, // "Panel 01" by default
       useCornerNotePrefix: false,
     },
   };

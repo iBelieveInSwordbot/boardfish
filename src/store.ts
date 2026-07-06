@@ -235,7 +235,7 @@ function deepClonePanel(p: Panel): Panel {
   };
 }
 
-const LS_KEY = 'boardfish3:autosave:v6'; // v6: logo 1.5x default, bold/italic toggles, footer bold default
+const LS_KEY = 'boardfish3:autosave:v7'; // v7: new dark palette from Matt's approved project, panel# prefix on by default
 
 export function useBoardfish() {
   const [state, dispatch] = useReducer(reducer, undefined, () => {
