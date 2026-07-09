@@ -37,9 +37,24 @@ export async function generateShotList(input: {
   defaultAspect?: string;
   constraints?: string;
   sessionId?: string | null;
+  directorRefs?: string;
+  styleKey?: string;
 }): Promise<{ shotList: ShotList; sessionId: string | null }> {
   const res = await postJson<ShotListResponse>('/api/ronan/shot-list', input);
   return { shotList: res.shotList, sessionId: res.sessionId };
+}
+
+export type StylePreset = { key: string; label: string; tag: string };
+
+export async function listStyles(): Promise<StylePreset[]> {
+  try {
+    const res = await fetch('/api/styles');
+    if (!res.ok) return [];
+    const j = await res.json();
+    return Array.isArray(j.styles) ? j.styles : [];
+  } catch {
+    return [];
+  }
 }
 
 export async function refineShot(input: {

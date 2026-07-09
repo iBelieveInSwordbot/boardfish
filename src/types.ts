@@ -50,7 +50,7 @@ export type PanelImageVersion = {
 export type PanelStyleMode = 'pencil-sketch' | 'none';
 
 export const STYLE_TAG_PENCIL_SKETCH =
-  'Black and white pencil-sketch storyboard aesthetic, concise line work, greytone shading.';
+  'Black-and-white pencil-sketch aesthetic, concise line work, greytone shading.';
 
 export function styleSuffix(mode: PanelStyleMode | undefined): string {
   return (mode ?? 'pencil-sketch') === 'pencil-sketch' ? ' ' + STYLE_TAG_PENCIL_SKETCH : '';

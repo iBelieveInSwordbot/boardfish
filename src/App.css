@@ -1661,6 +1661,31 @@ input, textarea, select {
   color: #fff;
 }
 
+/* AI Director — visual-style picker (chips row) */
+.ai-style-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.ai-style-btn {
+  background: #101013;
+  color: #ddd;
+  border: 1px solid #303035;
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+}
+.ai-style-btn:hover { background: #17171b; border-color: #4a4a4e; }
+.ai-style-btn.active {
+  background: #3a76c9;
+  border-color: #3a76c9;
+  color: #fff;
+}
+
 /* Compare overlay: improvements + focus mode */
 .panel-compare-toolbar-btns {
   display: flex;

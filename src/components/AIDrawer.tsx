@@ -7,7 +7,8 @@ import { useEffect, useState } from 'react';
 import type { Action, BoardfishState } from '../store';
 import { resolveStoryboardSettings } from '../store';
 import type { Panel } from '../types';
-import { generatePanelImage, generateShotList, healthCheck, ratioToLabel } from '../ai/client';
+import { generatePanelImage, generateShotList, healthCheck, ratioToLabel, listStyles } from '../ai/client';
+import type { StylePreset } from '../ai/client';
 import type { Shot, ShotList } from '../ai/types';
 
 type Props = {
@@ -15,6 +16,17 @@ type Props = {
   dispatch: React.Dispatch<Action>;
   onClose: () => void;
 };
+
+const DEFAULT_STYLE_FALLBACK: StylePreset[] = [
+  { key: 'pencil-sketch', label: 'Pencil sketch', tag: '' },
+  { key: 'ink-wash', label: 'Ink wash', tag: '' },
+  { key: 'photoreal', label: 'Photoreal', tag: '' },
+  { key: 'noir', label: 'Film noir', tag: '' },
+  { key: 'anime', label: 'Anime', tag: '' },
+  { key: 'watercolor', label: 'Watercolor', tag: '' },
+  { key: 'comic-ink', label: 'Comic book ink', tag: '' },
+  { key: 'none', label: 'No style directive', tag: '' },
+];
 
 type Stage =
   | { kind: 'idle' }
@@ -57,6 +69,9 @@ function shotToPanel(shot: Shot): Panel {
 export function AIDrawer({ state, dispatch, onClose }: Props) {
   const [script, setScript] = useState('');
   const [constraints, setConstraints] = useState('');
+  const [directorRefs, setDirectorRefs] = useState('');
+  const [styleKey, setStyleKey] = useState<string>('pencil-sketch');
+  const [styles, setStyles] = useState<StylePreset[]>([]);
   const [autoGenerate, setAutoGenerate] = useState(true);
   const [variantCount, setVariantCount] = useState<1 | 2 | 3 | 4>(1);
   const [stage, setStage] = useState<Stage>({ kind: 'checking' });
@@ -76,6 +91,10 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
       const ok = await healthCheck();
       if (cancelled) return;
       setStage(ok ? { kind: 'idle' } : { kind: 'proxy-down' });
+      if (ok) {
+        const list = await listStyles();
+        if (!cancelled && list.length > 0) setStyles(list);
+      }
     })();
     return () => { cancelled = true; };
   }, []);
@@ -99,6 +118,8 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
         script: script.trim(),
         defaultAspect: effectiveAspect,
         constraints: constraints.trim() || undefined,
+        directorRefs: directorRefs.trim() || undefined,
+        styleKey,
       });
       setStage({ kind: 'preview', shotList, sessionId });
     } catch (err) {
@@ -211,11 +232,36 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
             <label className="ai-label">Script</label>
             <textarea
               className="ai-textarea"
-              rows={16}
+              rows={14}
               placeholder="Paste your script here. Ronan will read it like Scorsese, Tarantino, or Hitchcock and produce a shot list…"
               value={script}
               onChange={(e) => setScript(e.target.value)}
             />
+            <label className="ai-label">Director / artist references (optional)</label>
+            <input
+              className="ai-input"
+              type="text"
+              placeholder="e.g. Wes Anderson, Roger Deakins, Sofia Coppola, Miyazaki…"
+              value={directorRefs}
+              onChange={(e) => setDirectorRefs(e.target.value)}
+            />
+            <p className="ai-muted small" style={{ marginTop: -4 }}>
+              Ronan will study each name (their signature camera language, how their DP would light it, how their editor would cut it) and board the script in their voice.
+            </p>
+            <label className="ai-label">Visual style</label>
+            <div className="ai-style-picker">
+              {(styles.length > 0 ? styles : DEFAULT_STYLE_FALLBACK).map((s) => (
+                <button
+                  key={s.key}
+                  type="button"
+                  className={`ai-style-btn ${styleKey === s.key ? 'active' : ''}`}
+                  title={s.tag || 'No style directive appended'}
+                  onClick={() => setStyleKey(s.key)}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
             <label className="ai-label">Optional direction (e.g. “more Hitchcock,” “color, not b&w,” “handheld throughout”)</label>
             <input
               className="ai-input"

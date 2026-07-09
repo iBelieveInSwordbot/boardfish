@@ -96,7 +96,7 @@ async function generateImage({ prompt, aspectRatio }) {
 // System-ish preamble: prepended to every shot-list request so Ronan reliably
 // thinks like a director and returns clean JSON. Ronan's own agent config
 // already gives him a persona; this is the *task* framing on top of that.
-const DIRECTOR_PREAMBLE = `You are Ronan, working as a great film director. Think in the tradition of Scorsese (bold camera moves, kinetic energy, character close-ups that reveal soul), Tarantino (long dialogue takes broken by sudden violence, low-angle hero shots, chapter-like structure), and Hitchcock (subjective POV, suspense from what's *not* shown, meticulous framing, use of space).
+const DIRECTOR_PREAMBLE_BASE = `You are Ronan, working as a great film director. By default, think in the tradition of Scorsese (bold camera moves, kinetic energy, character close-ups that reveal soul), Tarantino (long dialogue takes broken by sudden violence, low-angle hero shots, chapter-like structure), and Hitchcock (subjective POV, suspense from what's *not* shown, meticulous framing, use of space).
 
 For each script, decide:
 - How to break it into shots (not one shot per line — think in beats)
@@ -106,8 +106,70 @@ For each script, decide:
 
 Your image prompts must be usable by a text-to-image model that can't read scripts. They should be visually concrete: subject, action, lighting, mood, camera angle, style. No dialogue. No abstract emotions without visual anchors.`;
 
-function buildShotListPrompt({ script, defaultAspect, constraints }) {
-  return `${DIRECTOR_PREAMBLE}
+// Named style presets. `label` is what the UI shows, `tag` is what gets
+// appended to every image prompt. Keep tags short — Nano Banana Pro follows
+// terse style directives much better than paragraph-long ones.
+const STYLE_PRESETS = {
+  'pencil-sketch': {
+    label: 'Pencil sketch',
+    tag: 'Black-and-white pencil-sketch aesthetic, concise line work, greytone shading.',
+  },
+  'ink-wash': {
+    label: 'Ink wash',
+    tag: 'Black-and-white ink-wash illustration, loose brushwork, high-contrast shadows.',
+  },
+  'photoreal': {
+    label: 'Photoreal',
+    tag: 'Photorealistic cinematic still, natural lighting, shallow depth of field, film grain.',
+  },
+  'noir': {
+    label: 'Film noir',
+    tag: 'Black-and-white film-noir cinematography, hard chiaroscuro lighting, deep shadows, 35mm grain.',
+  },
+  'anime': {
+    label: 'Anime',
+    tag: 'Anime key-frame illustration, clean linework, cel-shaded color, dramatic composition.',
+  },
+  'watercolor': {
+    label: 'Watercolor',
+    tag: 'Loose watercolor illustration, soft edges, muted palette, paper texture.',
+  },
+  'comic-ink': {
+    label: 'Comic book ink',
+    tag: 'Comic-book ink illustration, bold outlines, halftone shading, dynamic composition.',
+  },
+  'none': {
+    label: 'No style directive',
+    tag: '',
+  },
+};
+
+function styleTagFor(styleKey) {
+  const preset = STYLE_PRESETS[styleKey] || STYLE_PRESETS['pencil-sketch'];
+  return preset.tag;
+}
+
+function buildDirectorPreamble({ directorRefs }) {
+  if (!directorRefs || !String(directorRefs).trim()) return DIRECTOR_PREAMBLE_BASE;
+  return `${DIRECTOR_PREAMBLE_BASE}
+
+DIRECTOR REFERENCES (user-provided): ${String(directorRefs).trim()}
+
+Before drafting the shot list, do a mental research pass on each named director/artist. Consider:
+- Their signature camera language (favorite lens lengths, angles, movement)
+- How their long-time director of photography would light and frame these beats
+- How their editor would cut the coverage (shot lengths, when to hold, when to cut hard)
+- Any recurring visual motifs or compositional rules they're known for
+
+Board this script as if that team were producing it. Weight the references you were given over the defaults above.`;
+}
+
+function buildShotListPrompt({ script, defaultAspect, constraints, directorRefs, styleKey }) {
+  const styleTag = styleTagFor(styleKey);
+  const styleLine = styleTag
+    ? `- Style directive to append to every image prompt: "${styleTag}"`
+    : `- No global style directive — let each shot's image prompt describe its own look.`;
+  return `${buildDirectorPreamble({ directorRefs })}
 
 TASK: Read this script and produce a shot list.
 
@@ -118,7 +180,7 @@ ${script}
 
 CONSTRAINTS:
 - Default panel aspect ratio: ${defaultAspect || '16:9'} (only override per-shot if it clearly serves the story)
-- Style: black-and-white pencil-sketch storyboard aesthetic (concise line work, greytone shading), unless the constraints below say otherwise
+${styleLine}
 ${constraints ? `- Additional user constraints: ${constraints}` : ''}
 
 RESPOND WITH ONE JSON OBJECT AND NOTHING ELSE. No markdown fences, no commentary before or after. Schema:
@@ -135,8 +197,8 @@ RESPOND WITH ONE JSON OBJECT AND NOTHING ELSE. No markdown fences, no commentary
       "cameraMove": "STATIC | PAN | TILT | DOLLY | HANDHELD | CRANE | ZOOM (or a short phrase)",
       "angle": "EYE | HIGH | LOW | DUTCH | OVERHEAD",
       "aspectRatio": "16:9",
-      "imagePrompt": "visually concrete text-to-image prompt: subject, action, lighting, mood, camera language, style. Include the style directive at the end.",
-      "directorNote": "why this shot at this beat (Scorsese would... / Hitchcock's rule about... / etc.). One line."
+      "imagePrompt": "visually concrete text-to-image prompt: subject, action, lighting, mood, camera language. Append the style directive verbatim at the end if one is provided above.",
+      "directorNote": "why this shot at this beat, referencing the named directors when relevant. One line."
     }
   ]
 }
@@ -145,6 +207,11 @@ Return between 4 and 40 shots depending on script length. Do NOT include the JSO
 }
 
 // ---------- Routes ----------
+
+app.get('/api/styles', (_req, res) => {
+  const styles = Object.entries(STYLE_PRESETS).map(([key, v]) => ({ key, label: v.label, tag: v.tag }));
+  res.json({ ok: true, styles });
+});
 
 app.get('/api/health', async (_req, res) => {
   try {
@@ -156,12 +223,12 @@ app.get('/api/health', async (_req, res) => {
 });
 
 app.post('/api/ronan/shot-list', async (req, res) => {
-  const { script, defaultAspect, constraints, sessionId } = req.body || {};
+  const { script, defaultAspect, constraints, sessionId, directorRefs, styleKey } = req.body || {};
   if (!script || typeof script !== 'string') {
     return res.status(400).json({ error: 'script (string) required' });
   }
   try {
-    const prompt = buildShotListPrompt({ script, defaultAspect, constraints });
+    const prompt = buildShotListPrompt({ script, defaultAspect, constraints, directorRefs, styleKey });
     const { text, sessionId: nextSessionId } = await callRonan({ message: prompt, sessionId });
     // Strip any accidental markdown fences or preambles.
     const cleaned = extractJson(text);
@@ -181,12 +248,12 @@ app.post('/api/ronan/shot-list', async (req, res) => {
 });
 
 app.post('/api/ronan/refine', async (req, res) => {
-  const { instruction, shot, sessionId, defaultAspect } = req.body || {};
+  const { instruction, shot, sessionId, defaultAspect, directorRefs } = req.body || {};
   if (!instruction || !shot) {
     return res.status(400).json({ error: 'instruction and shot required' });
   }
   try {
-    const message = `${DIRECTOR_PREAMBLE}
+    const message = `${buildDirectorPreamble({ directorRefs })}
 
 TASK: Refine this single shot per the user's instruction. Preserve the shot number.
 
@@ -301,8 +368,9 @@ app.listen(PORT, HOST, () => {
   const bindLabel = HOST === '0.0.0.0' ? `all interfaces:${PORT}` : `${HOST}:${PORT}`;
   console.log(`[boardfish-ai-proxy] listening on ${bindLabel}`);
   console.log(`  Static app: ${SERVE_STATIC ? DIST_DIR : '(none — dev-mode, no dist/ found)'}`);
-  console.log(`  POST /api/ronan/shot-list   { script, defaultAspect?, constraints?, sessionId? }`);
-  console.log(`  POST /api/ronan/refine      { instruction, shot, sessionId?, defaultAspect? }`);
+  console.log(`  POST /api/ronan/shot-list   { script, defaultAspect?, constraints?, sessionId?, directorRefs?, styleKey? }`);
+  console.log(`  POST /api/ronan/refine      { instruction, shot, sessionId?, defaultAspect?, directorRefs? }`);
+  console.log(`  GET  /api/styles            → list of available style presets`);
   console.log(`  POST /api/image/generate    { prompt, aspectRatio? }`);
   console.log(`  GET  /api/health`);
 });
