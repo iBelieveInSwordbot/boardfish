@@ -43,6 +43,7 @@ export type Panel = {
   imageName: string | null;
   fields: TextField[];
   cornerNote: string; // optional per-panel text shown in the top-right corner
+  aiPrompt?: string; // last prompt used to generate the panel image (editable, re-gennable)
 };
 
 /** Freeform "slide" (Keynote-style): image + title + subtitle. Renders as a single full page. */

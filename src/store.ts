@@ -28,6 +28,7 @@ function normalizePanel(p: Partial<Panel>): Panel {
     imageName: p.imageName ?? null,
     cornerNote: p.cornerNote ?? '',
     fields: (p.fields ?? []).map((f) => ({ id: f.id, label: f.label, value: f.value })),
+    aiPrompt: p.aiPrompt,
   };
 }
 
@@ -109,6 +110,7 @@ export type Action =
   | { type: 'UPDATE_SLIDE'; id: string; patch: Partial<Slide> }
   | { type: 'UPDATE_STORYBOARD_OVERRIDES'; id: string; patch: StoryboardOverrides; merge?: boolean }
   | { type: 'CLEAR_STORYBOARD_OVERRIDE'; id: string; section: 'grid' | 'panelAspect' | 'fields' | 'name' }
+  | { type: 'SET_LAST_STORYBOARD_PANELS'; panels: Panel[]; name?: string }
   | { type: 'LOAD_PROJECT'; state: { settings: ProjectSettings; items: DocItem[] } }
   | { type: 'RESET' };
 
@@ -525,6 +527,24 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
       const items = insertAfter(state.items, afterIdx, newItem);
       return { ...state, items, selectedItemId: newItem.id, selectedPanelIds: [], lastClickedPanelId: null };
     }
+    case 'SET_LAST_STORYBOARD_PANELS': {
+      // AI Director helper: create a new storyboard at the end, seeded with the given
+      // panels and (optionally) a name override. Atomic so the AIDrawer can hand off
+      // ids for a follow-up image-gen loop.
+      const newItem: DocItem = {
+        id: cryptoRandomId(),
+        kind: 'storyboard',
+        panels: action.panels.map(normalizePanel),
+        overrides: action.name ? { name: action.name } : {},
+      };
+      return {
+        ...state,
+        items: [...state.items, newItem],
+        selectedItemId: newItem.id,
+        selectedPanelIds: [],
+        lastClickedPanelId: null,
+      };
+    }
     case 'REMOVE_ITEM': {
       const items = state.items.filter((it) => it.id !== action.id);
       // If we deleted the last item, keep an empty storyboard placeholder
@@ -625,6 +645,7 @@ function deepClonePanel(p: Panel): Panel {
     imageName: p.imageName,
     cornerNote: p.cornerNote,
     fields: p.fields.map((f) => ({ ...f })),
+    aiPrompt: p.aiPrompt,
   };
 }
 

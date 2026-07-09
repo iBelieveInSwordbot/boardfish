@@ -9,9 +9,10 @@ type Props = {
   onToggleInspector: () => void;
   outlinerOpen: boolean;
   onToggleOutliner: () => void;
+  onOpenAI: () => void;
 };
 
-export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector, outlinerOpen, onToggleOutliner }: Props) {
+export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector, outlinerOpen, onToggleOutliner, onOpenAI }: Props) {
   const openRef = useRef<HTMLInputElement>(null);
   const addImagesRef = useRef<HTMLInputElement>(null);
   const [exporting, setExporting] = useState(false);
@@ -19,7 +20,7 @@ export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector, out
   return (
     <header className="toolbar">
       <div className="toolbar-brand">
-        <span className="brand-name">Boardfish 3.0</span>
+        <span className="brand-name">Boardfish 4</span>
       </div>
       <div className="toolbar-project">
         <input
@@ -31,6 +32,13 @@ export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector, out
         />
       </div>
       <div className="toolbar-actions">
+        <button
+          className="toolbar-ai-btn"
+          onClick={onOpenAI}
+          title="AI Director — script to storyboard"
+        >
+          ✨ AI Director
+        </button>
         <button
           onClick={() => addImagesRef.current?.click()}
           title="Add images"

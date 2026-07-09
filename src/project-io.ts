@@ -15,6 +15,7 @@ type SavedPanelV1 = {
   imagePath: string | null; // path inside zip
   cornerNote?: string;
   fields: { id: string; label: string; value: string }[];
+  aiPrompt?: string;
 };
 type SavedProjectV1 = {
   version: 1;
@@ -197,6 +198,7 @@ export async function saveProject(
         imagePath,
         cornerNote: p.cornerNote,
         fields: p.fields.map((f) => ({ id: f.id, label: f.label, value: f.value })),
+        aiPrompt: p.aiPrompt,
       });
     }
     savedItems.push({ id: it.id, kind: 'storyboard', panels: savedPanels, overrides: it.overrides });
@@ -276,6 +278,7 @@ export async function loadProject(
             imageName: mp.imageName,
             cornerNote: mp.cornerNote ?? '',
             fields: mp.fields.map((f) => ({ ...f })),
+            aiPrompt: mp.aiPrompt,
           })),
         );
         return { id: it.id, kind: 'storyboard', panels, overrides: it.overrides ?? {} };
@@ -290,6 +293,7 @@ export async function loadProject(
         imageName: mp.imageName,
         cornerNote: mp.cornerNote ?? '',
         fields: mp.fields.map((f) => ({ ...f })),
+        aiPrompt: mp.aiPrompt,
       })),
     );
     items = itemsFromLegacyPanels(panels);

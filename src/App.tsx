@@ -4,6 +4,7 @@ import { Inspector } from './components/Inspector';
 import { Outliner } from './components/Outliner';
 import { Toolbar } from './components/Toolbar';
 import { PanelLightbox } from './components/PanelLightbox';
+import { AIDrawer } from './components/AIDrawer';
 import { allStoryboardPanels, primarySelectedPanelId, useBoardfish } from './store';
 import './App.css';
 
@@ -28,6 +29,7 @@ function App() {
   });
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
 
   useEffect(() => {
     try {
@@ -57,6 +59,12 @@ function App() {
       if (meta && (e.key === '\\' || e.key === '|')) {
         e.preventDefault();
         setInspectorOpen((v) => !v);
+        return;
+      }
+      // ⌘K opens the AI Director drawer
+      if (meta && !e.shiftKey && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setAiOpen((v) => !v);
         return;
       }
       // ⌘⇧O toggles the outliner
@@ -174,6 +182,7 @@ function App() {
           onToggleInspector={() => setInspectorOpen((v) => !v)}
           outlinerOpen={outlinerOpen}
           onToggleOutliner={() => setOutlinerOpen((v) => !v)}
+          onOpenAI={() => setAiOpen(true)}
         />
       )}
       <div className="app-body">
@@ -201,6 +210,9 @@ function App() {
         >
           Exit Full Screen  ·  F
         </button>
+      )}
+      {aiOpen && (
+        <AIDrawer state={state} dispatch={dispatch} onClose={() => setAiOpen(false)} />
       )}
       {lightboxOpen && selectedPanel && (
         <PanelLightbox
