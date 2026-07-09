@@ -440,24 +440,26 @@ function StoryboardPageView({
   };
 
   return (
-    <div className="page-wrapper">
-      <div className="page" data-page-index={pageIndex} style={pageStyle}>
-        <div style={gridStyle}>
-          {panels.map((panel) => (
-            <PanelView
-              key={panel.id}
-              panel={panel}
-              index={numbers.get(panel.id) ?? 1}
-              selected={selectedSet.has(panel.id)}
-              settings={panelViewSettings}
-              dispatch={dispatch}
-            />
-          ))}
-          {Array.from({ length: Math.max(0, cols * rows - panels.length) }).map((_, i) => (
-            <div key={`empty-${i}`} className="panel-empty-slot" />
-          ))}
+    <div className="page-frame">
+      <div className="page-wrapper">
+        <div className="page" data-page-index={pageIndex} style={pageStyle}>
+          <div style={gridStyle}>
+            {panels.map((panel) => (
+              <PanelView
+                key={panel.id}
+                panel={panel}
+                index={numbers.get(panel.id) ?? 1}
+                selected={selectedSet.has(panel.id)}
+                settings={panelViewSettings}
+                dispatch={dispatch}
+              />
+            ))}
+            {Array.from({ length: Math.max(0, cols * rows - panels.length) }).map((_, i) => (
+              <div key={`empty-${i}`} className="panel-empty-slot" />
+            ))}
+          </div>
+          <PageFooter pageIndex={pageIndex} totalPages={totalPages} settings={settings} />
         </div>
-        <PageFooter pageIndex={pageIndex} totalPages={totalPages} settings={settings} />
       </div>
     </div>
   );
@@ -485,16 +487,18 @@ function SlidePageView({ slide, itemId, pageIndex, totalPages, settings, dispatc
   };
 
   return (
-    <div
-      className="page-wrapper slide-page-wrapper"
-      onClick={(e) => {
-        e.stopPropagation();
-        dispatch({ type: 'SELECT_ITEM', id: itemId });
-      }}
-    >
-      <div className="page slide-page" data-page-index={pageIndex} style={pageStyle}>
-        <SlideView slide={slide} settings={settings} dispatch={dispatch} />
-        {slide.showFooter && <PageFooter pageIndex={pageIndex} totalPages={totalPages} settings={settings} />}
+    <div className="page-frame">
+      <div
+        className="page-wrapper slide-page-wrapper"
+        onClick={(e) => {
+          e.stopPropagation();
+          dispatch({ type: 'SELECT_ITEM', id: itemId });
+        }}
+      >
+        <div className="page slide-page" data-page-index={pageIndex} style={pageStyle}>
+          <SlideView slide={slide} settings={settings} dispatch={dispatch} />
+          {slide.showFooter && <PageFooter pageIndex={pageIndex} totalPages={totalPages} settings={settings} />}
+        </div>
       </div>
     </div>
   );

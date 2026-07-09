@@ -594,29 +594,39 @@ input, textarea, select {
 }
 .empty-hint-sub { margin-top: 8px; font-size: 13px; color: #666; }
 
-/* --- Page --- */
+/* --- Page ---
+ *
+ * Two-layer geometry so scaled pages behave in a flex-centered scroll parent:
+ *
+ *   .page-frame   — plain block that reserves the *scaled* bounding box so
+ *                   .canvas-scroll's flex centering + scrollbars both reflect
+ *                   what the user actually sees.
+ *   .page-wrapper — laid out at *logical* (unscaled) pixel size (the page's
+ *                   own widthPx / heightPx) so its child .page is not
+ *                   flex-compressed. Then `transform: scale(...)` shrinks/grows
+ *                   the whole thing around top-left, staying inside the frame.
+ *
+ * Previous single-div attempt set width on .page-wrapper directly, but that
+ * flex-compressed the inner .page (1920px) into the wrapper's scaled width
+ * (e.g. 960px), breaking the aspect ratio and sticking pages to the left.
+ */
+.page-frame {
+  position: relative;
+  width: calc(var(--page-width-px, 1920px) * var(--page-scale, 0.5));
+  height: calc(var(--page-height-px, 1080px) * var(--page-scale, 0.5));
+  flex: 0 0 auto;
+}
 .page-wrapper {
+  position: absolute;
+  top: 0;
+  left: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  /* Scale each page around its top-left corner. Origin `top center` used to
-   * cause a scroll bug when zoomed in: the page would grow left as well as
-   * right, but the parent `.canvas-scroll` centers items via flexbox, so the
-   * leftmost slice ended up beyond scroll-left:0 and became unreachable
-   * (couldn't see the first panel when zoomed). Origin `top left` keeps the
-   * layout box's top-left pinned; we then explicitly reserve the *scaled*
-   * box size below so both flex-centering (when smaller than viewport) and
-   * full scrolling (when larger) work correctly. */
+  width: var(--page-width-px, 1920px);
   transform: scale(var(--page-scale, 0.5));
   transform-origin: top left;
-  /* Reserve the scaled bounding box so flex centering + scrollbars both
-   * reflect the visible size, not the pre-scale logical size. */
-  width: calc(var(--page-width-px, 1920px) * var(--page-scale, 0.5));
-  height: calc(var(--page-height-px, 1080px) * var(--page-scale, 0.5));
-  /* Zero out the old negative-margin trick — no longer needed now that we
-   * reserve the scaled height explicitly. */
-  margin-bottom: 0;
 }
 .page {
   box-shadow: 0 12px 40px rgba(0,0,0,0.5), 0 0 0 1px #2a2a2e;
