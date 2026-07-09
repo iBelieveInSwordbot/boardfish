@@ -58,6 +58,7 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
   const [script, setScript] = useState('');
   const [constraints, setConstraints] = useState('');
   const [autoGenerate, setAutoGenerate] = useState(true);
+  const [variantCount, setVariantCount] = useState<1 | 2 | 3 | 4>(1);
   const [stage, setStage] = useState<Stage>({ kind: 'checking' });
   const [error, setError] = useState<string | null>(null);
 
@@ -122,8 +123,16 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
 
   async function generateAllImages(panels: Panel[]) {
     const workable = panels.filter((p) => p.aiPrompt);
+    // Fan out: each panel spawns `variantCount` jobs. Total jobs = panels × variants.
+    // Every job archives its result to that panel's history.
+    const jobs: { panel: Panel; variantIdx: number }[] = [];
+    for (const p of workable) {
+      for (let i = 0; i < variantCount; i++) {
+        jobs.push({ panel: p, variantIdx: i });
+      }
+    }
     let done = 0;
-    setStage({ kind: 'generating', done: 0, total: workable.length, label: 'starting concurrent gen…' });
+    setStage({ kind: 'generating', done: 0, total: jobs.length, label: `starting concurrent gen (×${variantCount} per panel)…` });
 
     // Concurrency cap: 5 in flight at once. High enough to feel snappy for
     // typical 10-20 panel boards, low enough to avoid provider 429s on longer
@@ -131,14 +140,15 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
     const CONCURRENCY = 5;
     const failures: string[] = [];
 
-    async function worker(p: Panel) {
+    async function worker(job: { panel: Panel; variantIdx: number }) {
+      const p = job.panel;
       try {
         const img = await generatePanelImage({ prompt: p.aiPrompt!, aspectRatio: effectiveAspect });
         dispatch({
           type: 'APPLY_AI_IMAGE',
           panelId: p.id,
           dataUrl: img.dataUrl,
-          imageName: `AI ${new Date().toISOString().slice(0,10)} ${p.id.slice(0,6)}.jpg`,
+          imageName: `AI ${new Date().toISOString().slice(0,10)} ${p.id.slice(0,6)}-v${job.variantIdx + 1}.jpg`,
           prompt: p.aiPrompt!,
           generatedAt: Date.now(),
         });
@@ -147,16 +157,16 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
         failures.push(p.id);
       } finally {
         done += 1;
-        setStage({ kind: 'generating', done, total: workable.length, label: `${done} of ${workable.length} complete` });
+        setStage({ kind: 'generating', done, total: jobs.length, label: `${done} of ${jobs.length} complete` });
       }
     }
 
-    await runWithConcurrency(workable, CONCURRENCY, worker);
+    await runWithConcurrency(jobs, CONCURRENCY, worker);
 
     const label = failures.length === 0
       ? 'done'
       : `done — ${failures.length} failed (retry individually)`;
-    setStage({ kind: 'generating', done: workable.length, total: workable.length, label });
+    setStage({ kind: 'generating', done: jobs.length, total: jobs.length, label });
     // Close after a beat so the user sees "done".
     setTimeout(() => onClose(), failures.length ? 1600 : 700);
   }
@@ -221,6 +231,29 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
               </label>
               <span className="ai-muted small">Default panel aspect: {effectiveAspect}</span>
             </div>
+            <div className="ai-row">
+              <div className="ai-variants-picker">
+                <span className="ai-variants-label">Variants per shot:</span>
+                {[1, 2, 3, 4].map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    className={`ai-variant-btn ${variantCount === n ? 'active' : ''}`}
+                    onClick={() => setVariantCount(n as 1 | 2 | 3 | 4)}
+                    disabled={!autoGenerate}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+              <span className="ai-muted small">
+                {autoGenerate && variantCount > 1
+                  ? `Each shot renders ${variantCount} alts, all saved to history — use grid compare to pick.`
+                  : autoGenerate
+                    ? '1 image per shot.'
+                    : 'Enable auto-generate to use variants.'}
+              </span>
+            </div>
             {error && <p className="ai-error">{error}</p>}
             <div className="ai-actions">
               <button className="ai-btn-secondary" onClick={onClose}>Cancel</button>
@@ -263,7 +296,9 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
             <div className="ai-actions">
               <button className="ai-btn-secondary" onClick={() => setStage({ kind: 'idle' })}>Back / new script</button>
               <button className="ai-btn-primary" onClick={() => handleCreateStoryboard(stage.shotList)}>
-                {autoGenerate ? 'Create storyboard + generate images' : 'Create storyboard (no images)'}
+                {autoGenerate
+                  ? `Create storyboard + generate ${variantCount > 1 ? `×${variantCount} ` : ''}images`
+                  : 'Create storyboard (no images)'}
               </button>
             </div>
           </div>
