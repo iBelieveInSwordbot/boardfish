@@ -600,11 +600,23 @@ input, textarea, select {
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  /* Scale down large pages to fit viewport nicely; each page keeps its logical px dimensions */
+  /* Scale each page around its top-left corner. Origin `top center` used to
+   * cause a scroll bug when zoomed in: the page would grow left as well as
+   * right, but the parent `.canvas-scroll` centers items via flexbox, so the
+   * leftmost slice ended up beyond scroll-left:0 and became unreachable
+   * (couldn't see the first panel when zoomed). Origin `top left` keeps the
+   * layout box's top-left pinned; we then explicitly reserve the *scaled*
+   * box size below so both flex-centering (when smaller than viewport) and
+   * full scrolling (when larger) work correctly. */
   transform: scale(var(--page-scale, 0.5));
-  transform-origin: top center;
-  /* Compensate for scale so pages don't leave huge whitespace */
-  margin-bottom: calc(-1 * var(--page-height-px, 1080px) * (1 - var(--page-scale, 0.5)));
+  transform-origin: top left;
+  /* Reserve the scaled bounding box so flex centering + scrollbars both
+   * reflect the visible size, not the pre-scale logical size. */
+  width: calc(var(--page-width-px, 1920px) * var(--page-scale, 0.5));
+  height: calc(var(--page-height-px, 1080px) * var(--page-scale, 0.5));
+  /* Zero out the old negative-margin trick — no longer needed now that we
+   * reserve the scaled height explicitly. */
+  margin-bottom: 0;
 }
 .page {
   box-shadow: 0 12px 40px rgba(0,0,0,0.5), 0 0 0 1px #2a2a2e;
