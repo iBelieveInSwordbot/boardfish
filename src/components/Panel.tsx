@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Panel, PanelImageVersion, ProjectSettings } from '../types';
+import { styleSuffix } from '../types';
 import type { Action } from '../store';
 import { generatePanelImage, ratioToLabel } from '../ai/client';
 
@@ -44,17 +45,21 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
   }
 
   // Fire one generation (non-blocking). If prompt is empty, no-op.
-  async function fireGenerate(promptOverride?: string) {
-    const prompt = (promptOverride ?? effectivePrompt()).trim();
-    if (!prompt) {
+  // styleModeOverride lets the editor commit a per-click override without
+  // waiting for React state to flush; falls back to panel.styleMode.
+  async function fireGenerate(promptOverride?: string, styleModeOverride?: Panel['styleMode']) {
+    const rawPrompt = (promptOverride ?? effectivePrompt()).trim();
+    if (!rawPrompt) {
       setErr('Add a description first, then try again.');
       return;
     }
+    const mode = styleModeOverride ?? panel.styleMode;
+    const finalPrompt = rawPrompt + styleSuffix(mode);
     setErr(null);
     setInFlight((n) => n + 1);
     try {
       const img = await generatePanelImage({
-        prompt,
+        prompt: finalPrompt,
         aspectRatio: ratioToLabel(settings.panelAspectRatio),
       });
       dispatch({
@@ -62,7 +67,9 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
         panelId: panel.id,
         dataUrl: img.dataUrl,
         imageName: `AI ${new Date().toISOString().slice(0,10)} ${panel.id.slice(0,6)}.jpg`,
-        prompt,
+        // Save the user-facing prompt (without style suffix) so the editor
+        // shows what they typed, not the mangled version.
+        prompt: rawPrompt,
         generatedAt: Date.now(),
       });
     } catch (e) {
@@ -113,6 +120,7 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
       ref={setNodeRef}
       style={style}
       className={`panel ${selected ? 'panel-selected' : ''}`}
+      data-panel-id={panel.id}
       onClick={(e) => {
         e.stopPropagation();
         const modifier: 'set' | 'toggle' | 'range' =
@@ -247,6 +255,17 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
             onChange={(e) => setAiPrompt(e.target.value)}
             autoFocus
           />
+          <label className="panel-ai-toggle" title="When on, the panel is rendered in the same B&W pencil-sketch storyboard style as the scripted AI Director flow.">
+            <input
+              type="checkbox"
+              checked={(panel.styleMode ?? 'pencil-sketch') === 'pencil-sketch'}
+              onChange={(e) => {
+                const newMode: Panel['styleMode'] = e.target.checked ? 'pencil-sketch' : 'none';
+                dispatch({ type: 'UPDATE_PANEL', id: panel.id, patch: { styleMode: newMode } });
+              }}
+            />
+            <span>Pencil-sketch storyboard style</span>
+          </label>
           {err && <div className="panel-ai-error">{err}</div>}
           <div className="panel-ai-actions">
             <button className="panel-ai-btn" onClick={() => setAiOpen(false)}>Cancel</button>

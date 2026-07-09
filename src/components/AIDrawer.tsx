@@ -46,6 +46,11 @@ function shotToPanel(shot: Shot): Panel {
       { id: cryptoRandomId(), label: 'Director Note', value: shot.directorNote || '' },
     ],
     aiPrompt: shot.imagePrompt,
+    // Ronan already bakes the style guidance into every imagePrompt via the
+    // DIRECTOR_PREAMBLE, so we opt these panels out of automatic suffixing to
+    // avoid double-applying the style tag on re-gen. Users can flip it back
+    // on per-panel from the AI editor if they want.
+    styleMode: 'none',
   };
 }
 

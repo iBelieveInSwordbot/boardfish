@@ -30,6 +30,7 @@ function normalizePanel(p: Partial<Panel>): Panel {
     fields: (p.fields ?? []).map((f) => ({ id: f.id, label: f.label, value: f.value })),
     aiPrompt: p.aiPrompt,
     imageHistory: p.imageHistory ? p.imageHistory.map((v) => ({ ...v })) : undefined,
+    styleMode: p.styleMode,
   };
 }
 
@@ -729,6 +730,7 @@ function deepClonePanel(p: Panel): Panel {
     fields: p.fields.map((f) => ({ ...f })),
     aiPrompt: p.aiPrompt,
     imageHistory: p.imageHistory ? p.imageHistory.map((v) => ({ ...v })) : undefined,
+    styleMode: p.styleMode,
   };
 }
 

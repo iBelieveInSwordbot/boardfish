@@ -19,6 +19,7 @@ type SavedPanelV1 = {
   // AI history: prior generations. Each entry stores its image inside the zip
   // under images/history/<panelId>/<versionId>.<ext>. Loaded as PanelImageVersion.
   imageHistory?: { id: string; imagePath: string; prompt: string; generatedAt: number }[];
+  styleMode?: 'pencil-sketch' | 'none';
 };
 type SavedProjectV1 = {
   version: 1;
@@ -215,6 +216,7 @@ export async function saveProject(
         fields: p.fields.map((f) => ({ id: f.id, label: f.label, value: f.value })),
         aiPrompt: p.aiPrompt,
         imageHistory: savedHistory,
+        styleMode: p.styleMode,
       });
     }
     savedItems.push({ id: it.id, kind: 'storyboard', panels: savedPanels, overrides: it.overrides });
@@ -303,6 +305,7 @@ export async function loadProject(
                   }),
                 )).filter((x): x is import('./types').PanelImageVersion => x !== null)
               : undefined,
+            styleMode: mp.styleMode,
           })),
         );
         return { id: it.id, kind: 'storyboard', panels, overrides: it.overrides ?? {} };

@@ -44,6 +44,18 @@ export type PanelImageVersion = {
   generatedAt: number; // ms since epoch
 };
 
+// Style tag applied to the panel's AI prompt at generation time. 'pencil-sketch'
+// matches the AI Director default so ad-hoc panels look consistent with the
+// scripted-workflow output. 'none' passes the user's prompt through as-is.
+export type PanelStyleMode = 'pencil-sketch' | 'none';
+
+export const STYLE_TAG_PENCIL_SKETCH =
+  'Black and white pencil-sketch storyboard aesthetic, concise line work, greytone shading.';
+
+export function styleSuffix(mode: PanelStyleMode | undefined): string {
+  return (mode ?? 'pencil-sketch') === 'pencil-sketch' ? ' ' + STYLE_TAG_PENCIL_SKETCH : '';
+}
+
 export type Panel = {
   id: string;
   imageDataUrl: string | null;
@@ -52,6 +64,7 @@ export type Panel = {
   cornerNote: string; // optional per-panel text shown in the top-right corner
   aiPrompt?: string; // last prompt used to generate the panel image (editable, re-gennable)
   imageHistory?: PanelImageVersion[]; // prior AI generations, oldest first. Current image is NOT in this list.
+  styleMode?: PanelStyleMode; // undefined = default (pencil-sketch)
 };
 
 /** Freeform "slide" (Keynote-style): image + title + subtitle. Renders as a single full page. */

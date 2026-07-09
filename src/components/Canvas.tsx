@@ -45,6 +45,7 @@ export function Canvas({ state, dispatch }: Props) {
   const [isDropTarget, setIsDropTarget] = useState(false);
   const dragCounter = useRef(0);
   const areaRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const [fitScale, setFitScale] = useState(0.5);
   const [zoom, setZoom] = useState(1);
 
@@ -69,6 +70,72 @@ export function Canvas({ state, dispatch }: Props) {
 
   const pageScale = fitScale * zoom;
 
+  // Zoom focal-point tracking.
+  //
+  // When the user zooms in/out, we want a specific point in the content to
+  // stay put in the viewport. Two focal-point strategies:
+  //   - If a panel is selected: keep the selected panel's *center* under the
+  //     viewport center (zoom-toward-selection).
+  //   - Otherwise: keep whatever is currently at the viewport center under
+  //     the viewport center (zoom-toward-center of view).
+  //
+  // Because .page-wrapper uses transform-origin: top left with an
+  // explicitly-sized layout box (width = page-px * scale), the scaled visual
+  // position of any content point (x, y) in *scale=1 content coordinates* is
+  // simply (x * scale, y * scale) inside .canvas-scroll's scrollable content.
+  // So to keep content point (cx, cy) at viewport pixel (vx, vy):
+  //     scrollLeft = cx * newScale - vx
+  //     scrollTop  = cy * newScale - vy
+  // We call adjustZoom() instead of setZoom() everywhere that changes zoom.
+
+  function findSelectedPanelContentCenter(): { x: number; y: number } | null {
+    const scroll = scrollRef.current;
+    if (!scroll) return null;
+    const primary = state.selectedPanelIds[0];
+    if (!primary) return null;
+    const el = scroll.querySelector<HTMLElement>(`[data-panel-id="${primary}"]`);
+    if (!el) return null;
+    const panelRect = el.getBoundingClientRect();
+    const scrollRect = scroll.getBoundingClientRect();
+    // Panel center in viewport pixels
+    const vx = panelRect.left + panelRect.width / 2 - scrollRect.left;
+    const vy = panelRect.top + panelRect.height / 2 - scrollRect.top;
+    // Convert viewport pixel to content pixel at current scale
+    const cx = (vx + scroll.scrollLeft) / pageScale;
+    const cy = (vy + scroll.scrollTop) / pageScale;
+    return { x: cx, y: cy };
+  }
+
+  function adjustZoom(compute: (z: number) => number) {
+    const scroll = scrollRef.current;
+    if (!scroll) { setZoom((z) => compute(z)); return; }
+
+    const oldScale = pageScale;
+    // Focal point in content (unscaled) coordinates.
+    const selCenter = findSelectedPanelContentCenter();
+    const viewportCx = scroll.clientWidth / 2;
+    const viewportCy = scroll.clientHeight / 2;
+    const focal = selCenter ?? {
+      x: (scroll.scrollLeft + viewportCx) / oldScale,
+      y: (scroll.scrollTop + viewportCy) / oldScale,
+    };
+
+    const newZoom = Math.min(4, Math.max(0.1, +compute(zoom).toFixed(3)));
+    setZoom(newZoom);
+
+    // Recentre on the next frame after React commits the new width/height.
+    requestAnimationFrame(() => {
+      const s = scrollRef.current;
+      if (!s) return;
+      const newScale = fitScale * newZoom;
+      const targetScrollLeft = focal.x * newScale - viewportCx;
+      const targetScrollTop = focal.y * newScale - viewportCy;
+      // clamp to valid scroll range (clientWidth+scrollWidth already reflect the new size)
+      s.scrollLeft = Math.max(0, Math.min(targetScrollLeft, s.scrollWidth - s.clientWidth));
+      s.scrollTop = Math.max(0, Math.min(targetScrollTop, s.scrollHeight - s.clientHeight));
+    });
+  }
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
@@ -77,18 +144,19 @@ export function Canvas({ state, dispatch }: Props) {
       if (!meta) return;
       if (e.key === '=' || e.key === '+') {
         e.preventDefault();
-        setZoom((z) => Math.min(4, +(z * 1.15).toFixed(3)));
+        adjustZoom((z) => Math.min(4, z * 1.15));
       } else if (e.key === '-' || e.key === '_') {
         e.preventDefault();
-        setZoom((z) => Math.max(0.1, +(z / 1.15).toFixed(3)));
+        adjustZoom((z) => Math.max(0.1, z / 1.15));
       } else if (e.key === '0') {
         e.preventDefault();
-        setZoom(1);
+        adjustZoom(() => 1);
       }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.selectedPanelIds, zoom, fitScale]);
 
   useEffect(() => {
     const el = areaRef.current;
@@ -97,14 +165,12 @@ export function Canvas({ state, dispatch }: Props) {
       if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
       const delta = -e.deltaY;
-      setZoom((z) => {
-        const next = z * (1 + delta / 500);
-        return Math.min(4, Math.max(0.1, +next.toFixed(3)));
-      });
+      adjustZoom((z) => z * (1 + delta / 500));
     }
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.selectedPanelIds, zoom, fitScale]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -224,7 +290,7 @@ export function Canvas({ state, dispatch }: Props) {
         if (e.dataTransfer?.files?.length) void handleFiles(e.dataTransfer.files);
       }}
     >
-      <div className="canvas-scroll">
+      <div className="canvas-scroll" ref={scrollRef}>
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
           <SortableContext items={allPanelIds} strategy={rectSortingStrategy}>
             {pages.map((page, pageIdx) => (
@@ -252,9 +318,9 @@ export function Canvas({ state, dispatch }: Props) {
           )}
       </div>
       <div className="zoom-hud">
-        <button title="Zoom out (⌘-)" onClick={() => setZoom((z) => Math.max(0.1, +(z / 1.15).toFixed(3)))}>−</button>
-        <button title="Reset zoom (⌘0)" onClick={() => setZoom(1)}>{zoomPct}%</button>
-        <button title="Zoom in (⌘+)" onClick={() => setZoom((z) => Math.min(4, +(z * 1.15).toFixed(3)))}>+</button>
+        <button title="Zoom out (⌘-)" onClick={() => adjustZoom((z) => Math.max(0.1, z / 1.15))}>−</button>
+        <button title="Reset zoom (⌘0)" onClick={() => adjustZoom(() => 1)}>{zoomPct}%</button>
+        <button title="Zoom in (⌘+)" onClick={() => adjustZoom((z) => Math.min(4, z * 1.15))}>+</button>
       </div>
     </div>
   );
