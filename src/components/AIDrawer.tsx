@@ -116,22 +116,58 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
   }
 
   async function generateAllImages(panels: Panel[]) {
-    setStage({ kind: 'generating', done: 0, total: panels.length, label: 'starting...' });
-    for (let i = 0; i < panels.length; i++) {
-      const p = panels[i];
-      if (!p.aiPrompt) continue;
-      setStage({ kind: 'generating', done: i, total: panels.length, label: `panel ${i + 1} of ${panels.length}` });
+    const workable = panels.filter((p) => p.aiPrompt);
+    let done = 0;
+    setStage({ kind: 'generating', done: 0, total: workable.length, label: 'starting concurrent gen…' });
+
+    // Concurrency cap: 5 in flight at once. High enough to feel snappy for
+    // typical 10-20 panel boards, low enough to avoid provider 429s on longer
+    // boards. Each task also records its result to history via APPLY_AI_IMAGE.
+    const CONCURRENCY = 5;
+    const failures: string[] = [];
+
+    async function worker(p: Panel) {
       try {
-        const img = await generatePanelImage({ prompt: p.aiPrompt, aspectRatio: effectiveAspect });
-        dispatch({ type: 'UPDATE_PANEL', id: p.id, patch: { imageDataUrl: img.dataUrl, imageName: `AI ${new Date().toISOString().slice(0,10)} ${p.id.slice(0,6)}.jpg` } });
+        const img = await generatePanelImage({ prompt: p.aiPrompt!, aspectRatio: effectiveAspect });
+        dispatch({
+          type: 'APPLY_AI_IMAGE',
+          panelId: p.id,
+          dataUrl: img.dataUrl,
+          imageName: `AI ${new Date().toISOString().slice(0,10)} ${p.id.slice(0,6)}.jpg`,
+          prompt: p.aiPrompt!,
+          generatedAt: Date.now(),
+        });
       } catch (err) {
         console.warn('[ai] panel image gen failed', p.id, err);
-        // Continue with the rest — user can retry individually from Panel UI.
+        failures.push(p.id);
+      } finally {
+        done += 1;
+        setStage({ kind: 'generating', done, total: workable.length, label: `${done} of ${workable.length} complete` });
       }
     }
-    setStage({ kind: 'generating', done: panels.length, total: panels.length, label: 'done' });
+
+    await runWithConcurrency(workable, CONCURRENCY, worker);
+
+    const label = failures.length === 0
+      ? 'done'
+      : `done — ${failures.length} failed (retry individually)`;
+    setStage({ kind: 'generating', done: workable.length, total: workable.length, label });
     // Close after a beat so the user sees "done".
-    setTimeout(() => onClose(), 600);
+    setTimeout(() => onClose(), failures.length ? 1600 : 700);
+  }
+
+  // Bounded-concurrency task runner. Simple, dependency-free.
+  async function runWithConcurrency<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+    const queue = items.slice();
+    const workers: Promise<void>[] = [];
+    const step = async (): Promise<void> => {
+      while (queue.length > 0) {
+        const next = queue.shift()!;
+        await fn(next);
+      }
+    };
+    for (let i = 0; i < Math.min(limit, items.length); i++) workers.push(step());
+    await Promise.all(workers);
   }
 
   return (

@@ -29,6 +29,7 @@ function normalizePanel(p: Partial<Panel>): Panel {
     cornerNote: p.cornerNote ?? '',
     fields: (p.fields ?? []).map((f) => ({ id: f.id, label: f.label, value: f.value })),
     aiPrompt: p.aiPrompt,
+    imageHistory: p.imageHistory ? p.imageHistory.map((v) => ({ ...v })) : undefined,
   };
 }
 
@@ -111,6 +112,14 @@ export type Action =
   | { type: 'UPDATE_STORYBOARD_OVERRIDES'; id: string; patch: StoryboardOverrides; merge?: boolean }
   | { type: 'CLEAR_STORYBOARD_OVERRIDE'; id: string; section: 'grid' | 'panelAspect' | 'fields' | 'name' }
   | { type: 'SET_LAST_STORYBOARD_PANELS'; panels: Panel[]; name?: string }
+  // AI: replace the panel's current image with a new one, pushing the previous
+  // image (if any) onto imageHistory. Preserves prompt+timestamp per version.
+  | { type: 'APPLY_AI_IMAGE'; panelId: string; dataUrl: string; imageName: string; prompt: string; generatedAt: number }
+  // AI: restore a previous image from history. Puts the current image onto history
+  // and swaps in the chosen version.
+  | { type: 'RESTORE_AI_IMAGE'; panelId: string; versionId: string }
+  // AI: delete a specific history entry (permanent).
+  | { type: 'DELETE_AI_HISTORY'; panelId: string; versionId: string }
   | { type: 'LOAD_PROJECT'; state: { settings: ProjectSettings; items: DocItem[] } }
   | { type: 'RESET' };
 
@@ -417,6 +426,79 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
       const nextPanels = it.panels.map((p) => (p.id === action.id ? { ...p, ...action.patch } : p));
       return { ...state, items: updateStoryboardPanels(state.items, loc.itemIdx, nextPanels) };
     }
+    case 'APPLY_AI_IMAGE': {
+      const loc = findPanelLocation(state.items, action.panelId);
+      if (!loc) return state;
+      const it = state.items[loc.itemIdx] as Extract<DocItem, { kind: 'storyboard' }>;
+      const nextPanels = it.panels.map((p) => {
+        if (p.id !== action.panelId) return p;
+        // If a current image exists, archive it onto history first (with its
+        // prompt if we know it, so restoring works cleanly).
+        const prior = p.imageDataUrl
+          ? [
+              ...(p.imageHistory ?? []),
+              {
+                id: cryptoRandomId(),
+                dataUrl: p.imageDataUrl,
+                prompt: p.aiPrompt ?? '',
+                generatedAt: Date.now(), // archive time; we don't know original gen time
+              } as import('./types').PanelImageVersion,
+            ]
+          : (p.imageHistory ?? []);
+        return {
+          ...p,
+          imageDataUrl: action.dataUrl,
+          imageName: action.imageName,
+          aiPrompt: action.prompt,
+          imageHistory: prior,
+        };
+      });
+      return { ...state, items: updateStoryboardPanels(state.items, loc.itemIdx, nextPanels) };
+    }
+    case 'RESTORE_AI_IMAGE': {
+      const loc = findPanelLocation(state.items, action.panelId);
+      if (!loc) return state;
+      const it = state.items[loc.itemIdx] as Extract<DocItem, { kind: 'storyboard' }>;
+      const nextPanels = it.panels.map((p) => {
+        if (p.id !== action.panelId) return p;
+        const history = p.imageHistory ?? [];
+        const target = history.find((v) => v.id === action.versionId);
+        if (!target) return p;
+        // Push the currently-displayed image (if any) onto history, then swap.
+        const withoutTarget = history.filter((v) => v.id !== action.versionId);
+        const archivedCurrent = p.imageDataUrl
+          ? [
+              ...withoutTarget,
+              {
+                id: cryptoRandomId(),
+                dataUrl: p.imageDataUrl,
+                prompt: p.aiPrompt ?? '',
+                generatedAt: Date.now(),
+              } as import('./types').PanelImageVersion,
+            ]
+          : withoutTarget;
+        return {
+          ...p,
+          imageDataUrl: target.dataUrl,
+          aiPrompt: target.prompt || p.aiPrompt,
+          imageHistory: archivedCurrent,
+        };
+      });
+      return { ...state, items: updateStoryboardPanels(state.items, loc.itemIdx, nextPanels) };
+    }
+    case 'DELETE_AI_HISTORY': {
+      const loc = findPanelLocation(state.items, action.panelId);
+      if (!loc) return state;
+      const it = state.items[loc.itemIdx] as Extract<DocItem, { kind: 'storyboard' }>;
+      const nextPanels = it.panels.map((p) => {
+        if (p.id !== action.panelId) return p;
+        return {
+          ...p,
+          imageHistory: (p.imageHistory ?? []).filter((v) => v.id !== action.versionId),
+        };
+      });
+      return { ...state, items: updateStoryboardPanels(state.items, loc.itemIdx, nextPanels) };
+    }
     case 'UPDATE_FIELD': {
       const loc = findPanelLocation(state.items, action.panelId);
       if (!loc) return state;
@@ -646,6 +728,7 @@ function deepClonePanel(p: Panel): Panel {
     cornerNote: p.cornerNote,
     fields: p.fields.map((f) => ({ ...f })),
     aiPrompt: p.aiPrompt,
+    imageHistory: p.imageHistory ? p.imageHistory.map((v) => ({ ...v })) : undefined,
   };
 }
 

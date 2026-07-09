@@ -9,14 +9,28 @@
 import express from 'express';
 import { spawn } from 'node:child_process';
 import { readFile, unlink, mkdtemp } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 app.use(express.json({ limit: '5mb' }));
 
 const PORT = Number(process.env.PORT || 5174);
+// Default bind is loopback-only. When serving over Tailscale (or any LAN), pass
+//   HOST=0.0.0.0 npm start
+// so remote tailnet devices can reach the app. Tailscale ACLs already restrict
+// who can hit the tailnet in the first place.
+const HOST = process.env.HOST || '127.0.0.1';
 const OPENCLAW = process.env.OPENCLAW_BIN || 'openclaw';
+// If ../dist exists we serve the built Boardfish app from the same origin so
+// there's exactly one URL to share. Fall back to just API routes otherwise
+// (that's the dev-server mode where Vite proxies /api to us).
+const DIST_DIR = path.resolve(__dirname, '..', 'dist');
+const SERVE_STATIC = existsSync(DIST_DIR);
 
 // ---------- OpenClaw helpers ----------
 
@@ -271,8 +285,22 @@ function normalizeAspect(input) {
 
 // ---------- start ----------
 
-app.listen(PORT, '127.0.0.1', () => {
-  console.log(`[boardfish-ai-proxy] listening on http://127.0.0.1:${PORT}`);
+// Static app (only when a prod build exists). Mount AFTER the /api routes so
+// they still win. This makes the proxy a one-URL production server.
+if (SERVE_STATIC) {
+  app.use(express.static(DIST_DIR, { index: 'index.html' }));
+  // SPA fallback: any non-/api GET falls back to index.html so client-side
+  // paths work if we ever add router routes. (Boardfish is single-page today.)
+  // In Express 5, wildcard path syntax changed — use a RegExp instead of '*'.
+  app.get(/^\/(?!api\/).*/, (_req, res) => {
+    res.sendFile(path.join(DIST_DIR, 'index.html'));
+  });
+}
+
+app.listen(PORT, HOST, () => {
+  const bindLabel = HOST === '0.0.0.0' ? `all interfaces:${PORT}` : `${HOST}:${PORT}`;
+  console.log(`[boardfish-ai-proxy] listening on ${bindLabel}`);
+  console.log(`  Static app: ${SERVE_STATIC ? DIST_DIR : '(none — dev-mode, no dist/ found)'}`);
   console.log(`  POST /api/ronan/shot-list   { script, defaultAspect?, constraints?, sessionId? }`);
   console.log(`  POST /api/ronan/refine      { instruction, shot, sessionId?, defaultAspect? }`);
   console.log(`  POST /api/image/generate    { prompt, aspectRatio? }`);

@@ -37,6 +37,13 @@ export type TextField = {
   value: string;
 };
 
+export type PanelImageVersion = {
+  id: string;
+  dataUrl: string;
+  prompt: string;
+  generatedAt: number; // ms since epoch
+};
+
 export type Panel = {
   id: string;
   imageDataUrl: string | null;
@@ -44,6 +51,7 @@ export type Panel = {
   fields: TextField[];
   cornerNote: string; // optional per-panel text shown in the top-right corner
   aiPrompt?: string; // last prompt used to generate the panel image (editable, re-gennable)
+  imageHistory?: PanelImageVersion[]; // prior AI generations, oldest first. Current image is NOT in this list.
 };
 
 /** Freeform "slide" (Keynote-style): image + title + subtitle. Renders as a single full page. */

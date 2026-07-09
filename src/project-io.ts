@@ -16,6 +16,9 @@ type SavedPanelV1 = {
   cornerNote?: string;
   fields: { id: string; label: string; value: string }[];
   aiPrompt?: string;
+  // AI history: prior generations. Each entry stores its image inside the zip
+  // under images/history/<panelId>/<versionId>.<ext>. Loaded as PanelImageVersion.
+  imageHistory?: { id: string; imagePath: string; prompt: string; generatedAt: number }[];
 };
 type SavedProjectV1 = {
   version: 1;
@@ -191,6 +194,18 @@ export async function saveProject(
         imagePath = `images/panel-${panelSerial.toString().padStart(4, '0')}-${p.id}.${ext}`;
         images.file(imagePath.replace(/^images\//, ''), dataUrlToBlob(dataUrl));
       }
+      // AI image history: save each version under images/history/<panelId>/
+      let savedHistory: { id: string; imagePath: string; prompt: string; generatedAt: number }[] | undefined;
+      if (p.imageHistory && p.imageHistory.length > 0) {
+        savedHistory = [];
+        for (const v of p.imageHistory) {
+          const vUrl = (await maybeDownscale(v.dataUrl, downscale, maxLongEdgePx)) as string;
+          const vExt = extForDataUrl(vUrl);
+          const vPath = `images/history/${p.id}/${v.id}.${vExt}`;
+          zip.file(vPath, dataUrlToBlob(vUrl));
+          savedHistory.push({ id: v.id, imagePath: vPath, prompt: v.prompt, generatedAt: v.generatedAt });
+        }
+      }
       panelSerial += 1;
       savedPanels.push({
         id: p.id,
@@ -199,6 +214,7 @@ export async function saveProject(
         cornerNote: p.cornerNote,
         fields: p.fields.map((f) => ({ id: f.id, label: f.label, value: f.value })),
         aiPrompt: p.aiPrompt,
+        imageHistory: savedHistory,
       });
     }
     savedItems.push({ id: it.id, kind: 'storyboard', panels: savedPanels, overrides: it.overrides });
@@ -279,6 +295,14 @@ export async function loadProject(
             cornerNote: mp.cornerNote ?? '',
             fields: mp.fields.map((f) => ({ ...f })),
             aiPrompt: mp.aiPrompt,
+            imageHistory: mp.imageHistory
+              ? (await Promise.all(
+                  mp.imageHistory.map(async (v) => {
+                    const dataUrl = await loadImage(v.imagePath);
+                    return dataUrl ? { id: v.id, dataUrl, prompt: v.prompt, generatedAt: v.generatedAt } : null;
+                  }),
+                )).filter((x): x is import('./types').PanelImageVersion => x !== null)
+              : undefined,
           })),
         );
         return { id: it.id, kind: 'storyboard', panels, overrides: it.overrides ?? {} };

@@ -22,24 +22,48 @@ strictly additive.
 
 ## Running it
 
-Terminal 1 — the AI proxy:
-
-```bash
-cd projects/boardfish/ai-proxy
-npm install       # first time only
-npm start
-# [boardfish-ai-proxy] listening on http://127.0.0.1:5174
-```
-
-Terminal 2 — the app:
+### Fast path — one server, one URL (recommended)
 
 ```bash
 cd projects/boardfish
-npm run dev
-# ➜  Local:   http://localhost:5173/
+npm install                     # first time only
+cd ai-proxy && npm install && cd ..
+npm run serve                   # builds + serves on 0.0.0.0:5174
 ```
 
-Open http://localhost:5173/ and click ✨ **AI Director** in the toolbar (⌘K).
+Then open http://localhost:5174/ (or a tailnet URL, see below). One process,
+no separate dev server. This is what's running on the mac mini.
+
+### Dev mode (hot reload)
+
+Terminal 1:
+```bash
+cd projects/boardfish/ai-proxy && npm start
+```
+Terminal 2:
+```bash
+cd projects/boardfish && npm run dev
+```
+Then http://localhost:5173/ (Vite proxies `/api` to the proxy on 5174).
+
+## Sharing to another Mac (Tailscale)
+
+The mac mini is on your tailnet (`swordbot`, `100.87.47.112`, MagicDNS suffix
+`tail2a1eb4.ts.net`). `npm run serve` binds `HOST=0.0.0.0` so any device on
+the tailnet can reach it.
+
+On the other Mac:
+1. Install Tailscale, sign in to the same account.
+2. Open one of these URLs:
+   - http://swordbot.tail2a1eb4.ts.net:5174/
+   - http://swordbot:5174/  *(if MagicDNS short-name resolution works)*
+   - http://100.87.47.112:5174/  *(raw tailnet IP, always works)*
+
+No public exposure, no auth flow — Tailscale ACLs already gate who's on the
+tailnet. Nano Banana / Ronan calls still happen locally on the mac mini via
+the `openclaw` CLI, so provider credentials stay on that host.
+
+Use ✨ **AI Director** in the toolbar (or ⌘K).
 
 ## Flow
 

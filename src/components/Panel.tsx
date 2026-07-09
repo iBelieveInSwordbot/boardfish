@@ -16,9 +16,11 @@ type Props = {
 export function PanelView({ panel, index, selected, settings, dispatch }: Props) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: panel.id });
   const [aiOpen, setAiOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [aiPrompt, setAiPrompt] = useState(panel.aiPrompt ?? '');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const historyCount = panel.imageHistory?.length ?? 0;
 
   async function runGenerate() {
     if (!aiPrompt.trim()) return;
@@ -30,13 +32,12 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
         aspectRatio: ratioToLabel(settings.panelAspectRatio),
       });
       dispatch({
-        type: 'UPDATE_PANEL',
-        id: panel.id,
-        patch: {
-          imageDataUrl: img.dataUrl,
-          imageName: `AI ${new Date().toISOString().slice(0,10)} ${panel.id.slice(0,6)}.jpg`,
-          aiPrompt: aiPrompt.trim(),
-        },
+        type: 'APPLY_AI_IMAGE',
+        panelId: panel.id,
+        dataUrl: img.dataUrl,
+        imageName: `AI ${new Date().toISOString().slice(0,10)} ${panel.id.slice(0,6)}.jpg`,
+        prompt: aiPrompt.trim(),
+        generatedAt: Date.now(),
       });
       setAiOpen(false);
     } catch (e) {
@@ -158,8 +159,18 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
         ))}
       </div>
       {/* AI controls (hover-revealed) */}
-      {!aiOpen && (
+      {!aiOpen && !historyOpen && (
         <div className="panel-ai-controls" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+          {historyCount > 0 && (
+            <button
+              className="panel-ai-btn"
+              title={`${historyCount} prior generation${historyCount === 1 ? '' : 's'}`}
+              disabled={busy}
+              onClick={() => setHistoryOpen(true)}
+            >
+              🕒 {historyCount}
+            </button>
+          )}
           {panel.aiPrompt && panel.imageDataUrl && (
             <button
               className="panel-ai-btn"
@@ -178,6 +189,47 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
           >
             {panel.imageDataUrl ? '✎ Prompt' : '✨ AI'}
           </button>
+        </div>
+      )}
+      {historyOpen && (
+        <div
+          className="panel-ai-history"
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <div className="panel-ai-history-head">
+            <span>Previous generations ({historyCount})</span>
+            <button className="panel-ai-btn" onClick={() => setHistoryOpen(false)}>Close</button>
+          </div>
+          <div className="panel-ai-history-strip">
+            {(panel.imageHistory ?? []).slice().reverse().map((v) => (
+              <div key={v.id} className="panel-ai-history-thumb" title={new Date(v.generatedAt).toLocaleString() + '\n\n' + v.prompt}>
+                <img src={v.dataUrl} alt="" draggable={false} />
+                <div className="panel-ai-history-thumb-actions">
+                  <button
+                    className="panel-ai-btn primary"
+                    onClick={() => {
+                      dispatch({ type: 'RESTORE_AI_IMAGE', panelId: panel.id, versionId: v.id });
+                      setHistoryOpen(false);
+                    }}
+                  >
+                    Use
+                  </button>
+                  <button
+                    className="panel-ai-btn danger"
+                    onClick={() => {
+                      if (confirm('Delete this previous generation? This cannot be undone.')) {
+                        dispatch({ type: 'DELETE_AI_HISTORY', panelId: panel.id, versionId: v.id });
+                      }
+                    }}
+                    title="Delete this version"
+                  >
+                    ✖
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
       {aiOpen && (
