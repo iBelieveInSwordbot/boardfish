@@ -574,6 +574,11 @@ input, textarea, select {
   flex-direction: column;
   align-items: center;
   gap: 24px;
+  /* Contain trackpad rubber-band + swipe gestures so scrolling left at
+   * scroll-left:0 doesn't trigger the browser's history-back navigation.
+   * `contain` also stops overscroll from bubbling to the page. */
+  overscroll-behavior: contain;
+  overscroll-behavior-x: contain;
 }
 
 .empty-hint {

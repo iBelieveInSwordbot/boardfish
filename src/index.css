@@ -2,3 +2,9 @@
 :root {
   color-scheme: dark;
 }
+
+/* Kill trackpad back-swipe / rubber-band navigation at the page level so
+ * canvas scrolling never accidentally triggers browser history-back. */
+html, body {
+  overscroll-behavior: none;
+}
