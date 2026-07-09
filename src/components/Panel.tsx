@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import type { Panel, ProjectSettings } from '../types';
+import type { Panel, PanelImageVersion, ProjectSettings } from '../types';
 import type { Action } from '../store';
 import { generatePanelImage, ratioToLabel } from '../ai/client';
 
@@ -18,17 +18,43 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
   const [aiOpen, setAiOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [aiPrompt, setAiPrompt] = useState(panel.aiPrompt ?? '');
-  const [busy, setBusy] = useState(false);
+  // Rapid re-gen: counter of currently in-flight generations for this panel.
+  // Multiple clicks fire multiple concurrent requests; each archives its result
+  // to history, and whichever finishes last becomes the current image. Nothing
+  // is lost — the user can revisit any version from the history strip.
+  const [inFlight, setInFlight] = useState(0);
   const [err, setErr] = useState<string | null>(null);
   const historyCount = panel.imageHistory?.length ?? 0;
 
-  async function runGenerate() {
-    if (!aiPrompt.trim()) return;
-    setBusy(true);
+  // Prompt source: if we have an explicit aiPrompt (AI Director flow), use it.
+  // Otherwise fall back to concatenated Description-style fields, so a blank
+  // panel added via "+ Panel" can generate straight from what the user typed
+  // in the description caption(s).
+  function promptFromFields(): string {
+    // Prefer field labeled "Description" (case-insensitive) if present, else
+    // join all non-empty field values.
+    const desc = panel.fields.find((f) => f.label.toLowerCase() === 'description');
+    if (desc && desc.value.trim()) return desc.value.trim();
+    return panel.fields.map((f) => f.value.trim()).filter(Boolean).join('. ');
+  }
+
+  function effectivePrompt(): string {
+    if (panel.aiPrompt && panel.aiPrompt.trim()) return panel.aiPrompt.trim();
+    return promptFromFields();
+  }
+
+  // Fire one generation (non-blocking). If prompt is empty, no-op.
+  async function fireGenerate(promptOverride?: string) {
+    const prompt = (promptOverride ?? effectivePrompt()).trim();
+    if (!prompt) {
+      setErr('Add a description first, then try again.');
+      return;
+    }
     setErr(null);
+    setInFlight((n) => n + 1);
     try {
       const img = await generatePanelImage({
-        prompt: aiPrompt.trim(),
+        prompt,
         aspectRatio: ratioToLabel(settings.panelAspectRatio),
       });
       dispatch({
@@ -36,15 +62,21 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
         panelId: panel.id,
         dataUrl: img.dataUrl,
         imageName: `AI ${new Date().toISOString().slice(0,10)} ${panel.id.slice(0,6)}.jpg`,
-        prompt: aiPrompt.trim(),
+        prompt,
         generatedAt: Date.now(),
       });
-      setAiOpen(false);
     } catch (e) {
       setErr(String((e as Error).message || e));
     } finally {
-      setBusy(false);
+      setInFlight((n) => Math.max(0, n - 1));
     }
+  }
+
+  // Prompt-editor path: submits the current textarea value, closes editor.
+  async function runGenerate() {
+    if (!aiPrompt.trim()) return;
+    setAiOpen(false);
+    await fireGenerate(aiPrompt.trim());
   }
 
   const style: React.CSSProperties = {
@@ -161,76 +193,45 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
       {/* AI controls (hover-revealed) */}
       {!aiOpen && !historyOpen && (
         <div className="panel-ai-controls" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+          {inFlight > 0 && (
+            <span className="panel-ai-badge" title={`${inFlight} generation${inFlight === 1 ? '' : 's'} in flight`}>
+              ● {inFlight}
+            </span>
+          )}
           {historyCount > 0 && (
             <button
               className="panel-ai-btn"
               title={`${historyCount} prior generation${historyCount === 1 ? '' : 's'}`}
-              disabled={busy}
               onClick={() => setHistoryOpen(true)}
             >
               🕒 {historyCount}
             </button>
           )}
-          {panel.aiPrompt && panel.imageDataUrl && (
+          {(panel.imageDataUrl || effectivePrompt()) && (
             <button
               className="panel-ai-btn"
-              title="Regenerate with current prompt"
-              disabled={busy}
-              onClick={() => { setAiPrompt(panel.aiPrompt ?? ''); void runGenerate(); }}
+              title="Re-generate (click multiple times for parallel variants; every result is saved)"
+              onClick={() => { void fireGenerate(); }}
             >
-              {busy ? '…' : '↻ Re-gen'}
+              ↻ Re-gen
             </button>
           )}
           <button
             className="panel-ai-btn"
-            title={panel.aiPrompt ? 'Edit prompt' : 'AI generate image'}
-            disabled={busy}
-            onClick={() => { setAiPrompt(panel.aiPrompt ?? ''); setAiOpen(true); }}
+            title={panel.aiPrompt ? 'Edit prompt' : effectivePrompt() ? 'AI generate from description' : 'AI generate image'}
+            onClick={() => { setAiPrompt(panel.aiPrompt ?? effectivePrompt()); setAiOpen(true); }}
           >
             {panel.imageDataUrl ? '✎ Prompt' : '✨ AI'}
           </button>
         </div>
       )}
       {historyOpen && (
-        <div
-          className="panel-ai-history"
-          onClick={(e) => e.stopPropagation()}
-          onPointerDown={(e) => e.stopPropagation()}
-        >
-          <div className="panel-ai-history-head">
-            <span>Previous generations ({historyCount})</span>
-            <button className="panel-ai-btn" onClick={() => setHistoryOpen(false)}>Close</button>
-          </div>
-          <div className="panel-ai-history-strip">
-            {(panel.imageHistory ?? []).slice().reverse().map((v) => (
-              <div key={v.id} className="panel-ai-history-thumb" title={new Date(v.generatedAt).toLocaleString() + '\n\n' + v.prompt}>
-                <img src={v.dataUrl} alt="" draggable={false} />
-                <div className="panel-ai-history-thumb-actions">
-                  <button
-                    className="panel-ai-btn primary"
-                    onClick={() => {
-                      dispatch({ type: 'RESTORE_AI_IMAGE', panelId: panel.id, versionId: v.id });
-                      setHistoryOpen(false);
-                    }}
-                  >
-                    Use
-                  </button>
-                  <button
-                    className="panel-ai-btn danger"
-                    onClick={() => {
-                      if (confirm('Delete this previous generation? This cannot be undone.')) {
-                        dispatch({ type: 'DELETE_AI_HISTORY', panelId: panel.id, versionId: v.id });
-                      }
-                    }}
-                    title="Delete this version"
-                  >
-                    ✖
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+        <PanelHistoryPane
+          panel={panel}
+          historyCount={historyCount}
+          dispatch={dispatch}
+          onClose={() => setHistoryOpen(false)}
+        />
       )}
       {aiOpen && (
         <div
@@ -244,18 +245,215 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
             placeholder="Describe the shot for Nano Banana Pro..."
             value={aiPrompt}
             onChange={(e) => setAiPrompt(e.target.value)}
-            disabled={busy}
             autoFocus
           />
           {err && <div className="panel-ai-error">{err}</div>}
           <div className="panel-ai-actions">
-            <button className="panel-ai-btn" onClick={() => setAiOpen(false)} disabled={busy}>Cancel</button>
-            <button className="panel-ai-btn primary" onClick={runGenerate} disabled={busy || !aiPrompt.trim()}>
-              {busy ? 'Generating…' : 'Generate'}
+            <button className="panel-ai-btn" onClick={() => setAiOpen(false)}>Cancel</button>
+            <button className="panel-ai-btn primary" onClick={runGenerate} disabled={!aiPrompt.trim()}>
+              Generate
             </button>
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------- History pane (inline over the panel) ----------
+//
+// Shows the current image + all prior versions. Click a thumbnail to check it
+// (multi-select up to 4); "Compare selected" opens the full-screen grid.
+// Single "Use" swap and "Delete" per version remain available. The current
+// image is included as a selectable card labeled "current" so it can
+// participate in Compare too.
+
+type HistoryPaneProps = {
+  panel: Panel;
+  historyCount: number;
+  dispatch: React.Dispatch<Action>;
+  onClose: () => void;
+};
+
+function PanelHistoryPane({ panel, historyCount, dispatch, onClose }: HistoryPaneProps) {
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [compareOpen, setCompareOpen] = useState(false);
+
+  // Build a unified list: current image first (id='__current'), then history newest-first.
+  const history = panel.imageHistory ?? [];
+  const currentAsVersion: PanelImageVersion | null = panel.imageDataUrl
+    ? {
+        id: '__current',
+        dataUrl: panel.imageDataUrl,
+        prompt: panel.aiPrompt ?? '',
+        generatedAt: 0, // marker
+      }
+    : null;
+  const versions: PanelImageVersion[] = [
+    ...(currentAsVersion ? [currentAsVersion] : []),
+    ...history.slice().reverse(),
+  ];
+
+  function toggle(id: string) {
+    setSelectedIds((prev) => {
+      if (prev.includes(id)) return prev.filter((x) => x !== id);
+      if (prev.length >= 4) return prev; // cap at 4
+      return [...prev, id];
+    });
+  }
+
+  const selectedVersions = selectedIds
+    .map((id) => versions.find((v) => v.id === id))
+    .filter((v): v is PanelImageVersion => Boolean(v));
+
+  return (
+    <>
+      <div
+        className="panel-ai-history"
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        <div className="panel-ai-history-head">
+          <span>
+            {historyCount === 0 ? 'Current only' : `Current + ${historyCount} prior`}
+            {selectedIds.length > 0 && ` · ${selectedIds.length} selected`}
+          </span>
+          <div className="panel-ai-history-head-actions">
+            {selectedIds.length >= 2 && (
+              <button className="panel-ai-btn primary" onClick={() => setCompareOpen(true)}>
+                Compare ({selectedIds.length})
+              </button>
+            )}
+            {selectedIds.length > 0 && (
+              <button className="panel-ai-btn" onClick={() => setSelectedIds([])}>Clear</button>
+            )}
+            <button className="panel-ai-btn" onClick={onClose}>Close</button>
+          </div>
+        </div>
+        <div className="panel-ai-history-strip">
+          {versions.map((v) => {
+            const isCurrent = v.id === '__current';
+            const isSelected = selectedIds.includes(v.id);
+            return (
+              <div
+                key={v.id}
+                className={`panel-ai-history-thumb ${isSelected ? 'selected' : ''} ${isCurrent ? 'current' : ''}`}
+                title={
+                  (isCurrent ? 'Currently displayed\n\n' : new Date(v.generatedAt).toLocaleString() + '\n\n') +
+                  (v.prompt || '(no prompt recorded)')
+                }
+                onClick={() => toggle(v.id)}
+              >
+                <img src={v.dataUrl} alt="" draggable={false} />
+                {isCurrent && <div className="panel-ai-history-thumb-badge">current</div>}
+                {isSelected && (
+                  <div className="panel-ai-history-thumb-check">
+                    {selectedIds.indexOf(v.id) + 1}
+                  </div>
+                )}
+                <div
+                  className="panel-ai-history-thumb-actions"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {!isCurrent && (
+                    <button
+                      className="panel-ai-btn primary"
+                      onClick={() => {
+                        dispatch({ type: 'RESTORE_AI_IMAGE', panelId: panel.id, versionId: v.id });
+                        onClose();
+                      }}
+                    >
+                      Use
+                    </button>
+                  )}
+                  {!isCurrent && (
+                    <button
+                      className="panel-ai-btn danger"
+                      onClick={() => {
+                        if (confirm('Delete this previous generation? This cannot be undone.')) {
+                          dispatch({ type: 'DELETE_AI_HISTORY', panelId: panel.id, versionId: v.id });
+                        }
+                      }}
+                      title="Delete this version"
+                    >
+                      ✖
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      {compareOpen && selectedVersions.length >= 2 && (
+        <HistoryCompareOverlay
+          panelId={panel.id}
+          versions={selectedVersions}
+          currentImageDataUrl={panel.imageDataUrl}
+          dispatch={dispatch}
+          onClose={() => setCompareOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+
+// ---------- Full-screen compare overlay (2-4 images) ----------
+
+type CompareProps = {
+  panelId: string;
+  versions: PanelImageVersion[];
+  currentImageDataUrl: string | null;
+  dispatch: React.Dispatch<Action>;
+  onClose: () => void;
+};
+
+function HistoryCompareOverlay({ panelId, versions, currentImageDataUrl, dispatch, onClose }: CompareProps) {
+  const n = versions.length;
+  const gridClass = n === 2 ? 'compare-2' : n === 3 ? 'compare-3' : 'compare-4';
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        onClose();
+      }
+    }
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [onClose]);
+
+  return (
+    <div className="panel-compare-backdrop" onClick={onClose}>
+      <div className="panel-compare-toolbar" onClick={(e) => e.stopPropagation()}>
+        <span>Compare {n} versions</span>
+        <span className="panel-compare-hint">Click any image to make it the current panel image — the one it replaces is saved to history.</span>
+        <button className="panel-ai-btn" onClick={onClose}>Close (Esc)</button>
+      </div>
+      <div className={`panel-compare-grid ${gridClass}`} onClick={(e) => e.stopPropagation()}>
+        {versions.map((v) => {
+          const isCurrent = v.dataUrl === currentImageDataUrl;
+          return (
+            <div
+              key={v.id}
+              className={`panel-compare-cell ${isCurrent ? 'is-current' : ''}`}
+              onClick={() => {
+                if (v.id === '__current') { onClose(); return; }
+                dispatch({ type: 'RESTORE_AI_IMAGE', panelId, versionId: v.id });
+                onClose();
+              }}
+              title={v.prompt || '(no prompt recorded)'}
+            >
+              <img src={v.dataUrl} alt="" draggable={false} />
+              <div className="panel-compare-caption">
+                {isCurrent ? 'current' : v.generatedAt ? new Date(v.generatedAt).toLocaleString() : ''}
+                {v.prompt && <div className="panel-compare-prompt">{v.prompt}</div>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

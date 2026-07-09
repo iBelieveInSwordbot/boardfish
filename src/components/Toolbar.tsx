@@ -40,6 +40,39 @@ export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector, out
           ✨ AI Director
         </button>
         <button
+          onClick={async () => {
+            // Insert a blank panel into the best-guess target storyboard.
+            // Priority: (1) storyboard owning current selection, (2) selected item
+            // if it's a storyboard, (3) first storyboard in the doc.
+            const { newPanel } = await import('../types');
+            let targetId: string | null = null;
+            const primary = state.selectedPanelIds[0];
+            if (primary) {
+              for (const it of state.items) {
+                if (it.kind === 'storyboard' && it.panels.some((p) => p.id === primary)) {
+                  targetId = it.id;
+                  break;
+                }
+              }
+            }
+            if (!targetId && state.selectedItemId) {
+              const sel = state.items.find((it) => it.id === state.selectedItemId);
+              if (sel && sel.kind === 'storyboard') targetId = sel.id;
+            }
+            if (!targetId) {
+              const first = state.items.find((it) => it.kind === 'storyboard');
+              if (first) targetId = first.id;
+            }
+            if (!targetId) return;
+            const p = newPanel(state.settings.labels.defaults);
+            dispatch({ type: 'ADD_PANELS_TO_ITEM', itemId: targetId, panels: [p] });
+            dispatch({ type: 'SELECT_PANEL', id: p.id, modifier: 'set' });
+          }}
+          title="Add a blank panel (placeholder or AI-gen from description)"
+        >
+          + Panel
+        </button>
+        <button
           onClick={() => addImagesRef.current?.click()}
           title="Add images"
         >
