@@ -570,15 +570,35 @@ input, textarea, select {
   height: 100%;
   overflow: auto;
   padding: 24px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 24px;
   /* Contain trackpad rubber-band + swipe gestures so scrolling left at
-   * scroll-left:0 doesn't trigger the browser's history-back navigation.
-   * `contain` also stops overscroll from bubbling to the page. */
+   * scroll-left:0 doesn't trigger the browser's history-back navigation. */
   overscroll-behavior: contain;
   overscroll-behavior-x: contain;
+  /* IMPORTANT: this used to be `display: flex; align-items: center`, but
+   * that combo *clips the leftmost overflow* when a child is wider than
+   * the container — you could only scroll to the child's right edge, never
+   * its left. That was the persistent "can't reach the first panel when
+   * zoomed in" bug.
+   *
+   * Fix: plain block scroll container. Each .page-frame centers itself
+   * with margin: 0 auto (below). When smaller than the viewport it stays
+   * centered; when wider it overflows equally on both sides, and
+   * `overflow: auto` gives the user real scroll room in both directions.
+   * Scrollbars naturally start at scroll-left:0 revealing the leftmost
+   * edge of the content — which is the wrapper's padding, so both left
+   * and right have symmetric scrollable ranges. */
+  display: block;
+}
+
+/* Center + vertical-stack every page. Applied to .page-frame directly so
+ * DndContext / SortableContext context providers (which render no DOM of
+ * their own but occasionally wrap for portals) don't sit between the
+ * scroll parent and the centered child. */
+.page-frame {
+  margin: 0 auto 24px;
+}
+.page-frame:last-child {
+  margin-bottom: 0;
 }
 
 .empty-hint {
@@ -619,7 +639,6 @@ input, textarea, select {
   position: relative;
   width: calc(var(--page-width-px, 1920px) * var(--page-scale, 0.5));
   height: calc(var(--page-height-px, 1080px) * var(--page-scale, 0.5));
-  flex: 0 0 auto;
 }
 .page-wrapper {
   position: absolute;
