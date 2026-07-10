@@ -24,6 +24,7 @@ import {
   urlToDataUrl,
 } from './client';
 import { getFalModel } from './fal-models';
+import type { FalModelDef } from './fal-models';
 import type { NodeGraph, BaseNode, NodeId, Edge } from '../nodes/types';
 
 // The stored per-node output shape used by the executor. This is a superset of
@@ -428,9 +429,17 @@ async function runImageGen(
     throw new Error(`Model ${modelId} (${model.label}) is not yet available.`);
   }
 
-  const payload = buildFalInput(node, inputs, model.supportsPrompt);
-  ctx.onProgress(`Submitting to ${model.label} (${model.endpoint})…`);
-  const res = await runFalJob(model.endpoint, payload);
+  // Collect all upstream image refs (Nano Banana Pro accepts multiple).
+  const refImages = collectRefImages(node, inputs);
+  const payload = buildFalInput(node, inputs, model, refImages);
+  // Route to edit endpoint when we have image refs and the model has one.
+  const endpoint = refImages.length > 0 && model.editEndpoint
+    ? model.editEndpoint
+    : model.endpoint;
+  ctx.onProgress(
+    `Submitting to ${model.label} (${endpoint})${refImages.length ? ` with ${refImages.length} ref image${refImages.length > 1 ? 's' : ''}` : ''}…`,
+  );
+  const res = await runFalJob(endpoint, payload);
   ctx.onProgress('FAL job complete, downloading image…');
 
   const imgUrl = extractImageUrl(res.result);
@@ -445,6 +454,25 @@ async function runImageGen(
     sourceUrl: imgUrl,
     requestId: res.requestId,
   };
+}
+
+// Collect all reference-image data URLs available to this gen node:
+//   1. anything upstream via the `ref` input port
+//   2. anything already sitting on `node.data.image_url` (legacy) or
+//      `node.data.image_urls` (current) — the seedDefaultGraph bakes the
+//      panel's current image into data.image_url so a fresh editor open
+//      round-trips through image-to-image without needing a wired ref node.
+function collectRefImages(node: BaseNode, inputs: ResolvedInputs): string[] {
+  const out: string[] = [];
+  for (const img of inputs.images) if (img) out.push(img);
+  const dataUrl = (node.data as { image_url?: unknown }).image_url;
+  const dataUrls = (node.data as { image_urls?: unknown }).image_urls;
+  if (typeof dataUrl === 'string' && dataUrl) out.push(dataUrl);
+  if (Array.isArray(dataUrls)) {
+    for (const u of dataUrls) if (typeof u === 'string' && u) out.push(u);
+  }
+  // De-dupe while preserving order.
+  return Array.from(new Set(out));
 }
 
 async function runMovieGen(
@@ -526,19 +554,31 @@ async function runCustomFal(node: BaseNode, ctx: RunCtx): Promise<NodeOutput> {
   };
 }
 
-// Build the FAL input payload from a node's `data` (spread verbatim) plus
-// upstream text (concatenated) as `prompt` if the model wants one and there
-// isn't a manually-set one. Also injects `image_url` from an upstream image
-// if the node doesn't have its own image_url set.
+// Build the FAL input payload from a node's `data` (spread verbatim, minus
+// meta fields) plus upstream text (concatenated) as `prompt` and reference
+// images placed under the model's declared `refImageKey`.
 function buildFalInput(
   node: BaseNode,
   inputs: ResolvedInputs,
-  supportsPrompt: boolean,
+  modelOrSupportsPrompt: FalModelDef | boolean,
+  refImages?: string[],
 ): Record<string, unknown> {
-  // Copy everything from `data` except the meta-fields we know about.
+  // Old signature: buildFalInput(node, inputs, supportsPrompt: boolean)
+  // New signature: buildFalInput(node, inputs, model: FalModelDef, refImages: string[])
+  // Support both so movie-gen (still on old signature) keeps working.
+  const isModel = typeof modelOrSupportsPrompt === 'object';
+  const model = isModel ? modelOrSupportsPrompt : null;
+  const supportsPrompt = isModel ? model!.supportsPrompt : Boolean(modelOrSupportsPrompt);
+  const refImageKey = model?.refImageKey ?? 'image_urls';
+  const refImageIsArray = model?.refImageIsArray ?? true;
+
+  // Copy everything from `data` except meta and any ref-image key we'll set below.
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(node.data)) {
     if (k === 'modelId') continue;
+    if (k === '__runtime') continue;
+    // Drop any *_url / *_urls fields on the node; refImages arg is the source of truth.
+    if (k === 'image_url' || k === 'image_urls') continue;
     if (v === undefined || v === null) continue;
     if (typeof v === 'string' && v.trim() === '') continue;
     out[k] = v;
@@ -551,9 +591,13 @@ function buildFalInput(
     else if (upstreamPrompt && existing) out.prompt = `${existing} ${upstreamPrompt}`.trim();
   }
 
-  // Inject upstream image as image_url if not already set.
-  if (!out.image_url && inputs.images[0]) {
-    out.image_url = inputs.images[0];
+  // Ref images: source of truth is the passed-in refImages arg. Fall back to
+  // legacy behavior (first upstream image as `image_url`) for callers that
+  // don't pass refImages (movie-gen for now).
+  const refs = refImages ?? (inputs.images[0] ? [inputs.images[0]] : []);
+  if (refs.length > 0) {
+    if (refImageIsArray) out[refImageKey] = refs;
+    else out[refImageKey] = refs[0];
   }
 
   return out;

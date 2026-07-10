@@ -269,8 +269,12 @@ app.post('/api/fal/run', async (req, res) => {
     if (!requestId) {
       return res.status(502).json({ error: 'FAL did not return a request_id', body: submitJson });
     }
-    const statusUrl = `${FAL_BASE}/${path}/requests/${requestId}/status`;
-    const resultUrl = `${FAL_BASE}/${path}/requests/${requestId}`;
+    // FAL returns authoritative status_url + response_url in the submit payload.
+    // For sub-endpoints like `fal-ai/nano-banana-pro/edit`, the poll URLs strip
+    // the trailing subpath (e.g. status lives at `fal-ai/nano-banana-pro/requests/...`).
+    // Trust FAL's returned URLs; fall back to a derived path only if missing.
+    const statusUrl = submitJson.status_url || `${FAL_BASE}/${path}/requests/${requestId}/status`;
+    const resultUrl = submitJson.response_url || `${FAL_BASE}/${path}/requests/${requestId}`;
     const started = Date.now();
     // Poll for completion.
     while (Date.now() - started < FAL_POLL_MAX_MS) {

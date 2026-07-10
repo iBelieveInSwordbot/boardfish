@@ -28,7 +28,19 @@ export type FalModelDef = {
   label: string;                     // "Nano Banana Pro"
   vendor: string;                    // "Google", "OpenAI", "Kling", "ByteDance", etc.
   kind: FalModelKind;                // 'image' or 'video'
-  endpoint: string;                  // FAL path, e.g. "fal-ai/nano-banana/edit" or "fal-ai/veo3"
+  endpoint: string;                  // FAL path, e.g. "fal-ai/nano-banana-pro" or "fal-ai/veo3"
+  // Some models expose a separate endpoint for image-to-image / edit that takes
+  // reference images. When the executor has upstream image inputs, it will
+  // route to `editEndpoint` instead of `endpoint`. If unset, `endpoint` is
+  // used for both t2i and edit calls.
+  editEndpoint?: string;
+  // Which FAL input key carries reference images when the graph provides them.
+  // Most modern FAL image models use `image_urls` (array). Older models use
+  // `image_url` (singular string). Video models often use `image_url` for
+  // first-frame reference. Defaults to `image_urls` if omitted.
+  refImageKey?: string;
+  // If true, refImageKey expects an array of URLs; if false, a single string.
+  refImageIsArray?: boolean;
   inputs: FalModelInput[];           // input schema for the Inspector
   supportsImageInput?: boolean;      // takes an existing image as reference/edit source
   supportsPrompt: boolean;           // true for text-driven models
@@ -94,13 +106,16 @@ export const FAL_MODELS: FalModelDef[] = [
     label: 'Nano Banana Pro',
     vendor: 'Google',
     kind: 'image',
-    endpoint: 'fal-ai/nano-banana-pro',
+    endpoint: 'fal-ai/nano-banana-pro',              // text-to-image
+    editEndpoint: 'fal-ai/nano-banana-pro/edit',     // image-to-image / reference edit
+    refImageKey: 'image_urls',
+    refImageIsArray: true,
     supportsImageInput: true,
     supportsPrompt: true,
     status: 'active',
     costHint: '~$0.05/img',
     notes:
-      'Gemini 3 Pro Image — top-tier photoreal + text rendering. endpoint verified pending (try fal-ai/nano-banana/edit if this 404s).',
+      'Gemini 3 Pro Image — top-tier photoreal + text rendering. Verified end-to-end 2026-07-10.',
     inputs: [
       PROMPT_INPUT,
       {
