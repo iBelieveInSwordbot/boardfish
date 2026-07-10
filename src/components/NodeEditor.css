@@ -73,9 +73,11 @@
   position: relative;
   overflow: hidden;
   display: grid;
-  grid-template-columns: 1fr auto;
+  /* Palette | canvas | inspector (when open). Palette is fixed 160px so the
+     canvas gets all remaining space. */
+  grid-template-columns: 160px 1fr;
 }
-.ne-body.has-inspector { grid-template-columns: 1fr 340px; }
+.ne-body.has-inspector { grid-template-columns: 160px 1fr 340px; }
 
 /* --- Canvas --- */
 .ne-canvas {
