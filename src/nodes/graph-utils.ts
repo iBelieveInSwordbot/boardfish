@@ -4,8 +4,222 @@
 // mutating in place. `useReducer` in NodeEditor.tsx composes them into
 // actions.
 
-import type { BaseNode, Edge, NodeGraph, NodeId, NodeKind, NodePort, PortId } from './types';
+import type { BaseNode, Edge, NodeGraph, NodeId, NodeKind, NodeOutput, NodePort, PortId } from './types';
 import { defaultDataFor, defaultPortsFor, newId } from './types';
+import { NODE_KINDS_META } from './registry-meta';
+
+// ---------------------------------------------------------------------------
+// Node-editor UI helpers added for the resize + history + XML export pass.
+// These are pure functions and safe to call from either the reducer path or
+// directly from render code.
+// ---------------------------------------------------------------------------
+
+/** Bounds enforced by the resize UX. */
+export const NODE_MIN_WIDTH = 200;
+export const NODE_MIN_HEIGHT = 120;
+export const NODE_MAX_WIDTH = 800;
+export const NODE_MAX_HEIGHT = 600;
+
+/**
+ * Resolve a node's rendered size.
+ *
+ * Precedence:
+ *   1. `data.__size = { width, height }` (piggy-backed on UPDATE_NODE_DATA;
+ *      lets us persist resizes without adding a reducer action)
+ *   2. explicit `node.width` / `node.height` on the BaseNode
+ *   3. the kind's `defaultWidth` / `defaultHeight` from NODE_KINDS_META
+ */
+export function readNodeSize(node: BaseNode): { width: number; height: number } {
+  const meta = NODE_KINDS_META[node.kind];
+  const defW = meta?.defaultWidth ?? 220;
+  const defH = meta?.defaultHeight ?? 140;
+  const size = (node.data as Record<string, unknown>).__size as
+    | { width?: number; height?: number }
+    | undefined;
+  const width = clamp(
+    Number(size?.width ?? node.width ?? defW),
+    NODE_MIN_WIDTH,
+    NODE_MAX_WIDTH,
+  );
+  const height = clamp(
+    Number(size?.height ?? node.height ?? defH),
+    NODE_MIN_HEIGHT,
+    NODE_MAX_HEIGHT,
+  );
+  return { width, height };
+}
+
+function clamp(n: number, lo: number, hi: number): number {
+  if (!Number.isFinite(n)) return lo;
+  return Math.max(lo, Math.min(hi, n));
+}
+
+/**
+ * Return the node's per-node output history (previous generations).
+ * Stored on `data.__history` as an array of NodeOutput snapshots, oldest
+ * first. The current `node.output` is NOT included in this list — it is the
+ * live head.
+ */
+export function readNodeHistory(node: BaseNode): NodeOutput[] {
+  const raw = (node.data as Record<string, unknown>).__history;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((v): v is NodeOutput => Boolean(v && typeof v === 'object'));
+}
+
+/**
+ * Push a previous output snapshot onto a node's per-node history and return
+ * the new full array. Bounded to the most recent HISTORY_LIMIT entries so
+ * long-running graphs don't inflate `data` indefinitely.
+ *
+ * NOTE: The DAG executor is the natural place to call this — right before it
+ * overwrites `node.output` with a new snapshot it should push the previous
+ * one here. Because this pass can't touch dag-executor.ts, the Preview
+ * components hook into an effect that mirrors that behavior on the client
+ * side. See `pushToHistory` for the reducer-friendly variant.
+ */
+export const HISTORY_LIMIT = 24;
+
+export function appendHistory(node: BaseNode, prev: NodeOutput | undefined): NodeOutput[] {
+  const cur = readNodeHistory(node);
+  if (!prev) return cur;
+  const next = [...cur, prev];
+  if (next.length > HISTORY_LIMIT) next.splice(0, next.length - HISTORY_LIMIT);
+  return next;
+}
+
+/**
+ * Reducer-friendly variant: return a new graph with `prev` appended to the
+ * node's history bucket. Kept in graph-utils so dag-executor can drop the
+ * following one-liner in the right place when it lands:
+ *
+ *   graph = pushToHistory(graph, nodeId, oldOutput);
+ */
+export function pushToHistory(
+  g: NodeGraph,
+  nodeId: NodeId,
+  prev: NodeOutput | undefined,
+): NodeGraph {
+  if (!prev) return g;
+  return {
+    ...g,
+    nodes: g.nodes.map((n) =>
+      n.id !== nodeId
+        ? n
+        : { ...n, data: { ...n.data, __history: appendHistory(n, prev) } },
+    ),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// XML export.
+// ---------------------------------------------------------------------------
+
+/** Keys on `node.data` that are private editor state and should NOT be
+ * serialized. Keep this list in sync with any new `__foo` piggy-backs. */
+const INTERNAL_DATA_KEYS = new Set(['__size', '__history', '__runtime']);
+
+function xmlEscape(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/**
+ * Is the given data-URL-ish string a large binary blob that would blow up
+ * the XML file if we inlined it? Filters both data: URIs and huge blob:
+ * cache keys.
+ */
+function isLargeBinary(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  if (value.length > 2048) return true;
+  return value.startsWith('data:') || value.startsWith('blob:');
+}
+
+/**
+ * Render a single data key/value as either an attribute (scalars) or a child
+ * element (nested objects / long strings). Skips internal keys and large
+ * binary blobs.
+ */
+function renderDataChild(key: string, value: unknown, indent: string): string | null {
+  if (INTERNAL_DATA_KEYS.has(key)) return null;
+  if (value === null || value === undefined) return null;
+  if (isLargeBinary(value)) return null;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return `${indent}<${key}>${xmlEscape(String(value))}</${key}>`;
+  }
+  // Objects / arrays: JSON-encode into a child element with the raw payload.
+  try {
+    const json = JSON.stringify(value);
+    if (json.length > 4096) return null;
+    return `${indent}<${key} format="json">${xmlEscape(json)}</${key}>`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Serialize a graph to the storyboard-oriented XML schema described in the
+ * task spec. Skips large data-URL fields, __history, __runtime, __size, and
+ * XML-escapes all text content.
+ */
+export function graphToXml(g: NodeGraph): string {
+  const lines: string[] = [];
+  lines.push('<?xml version="1.0" encoding="UTF-8"?>');
+  lines.push('<boardfish-graph version="1">');
+  lines.push('  <nodes>');
+  for (const n of g.nodes) {
+    const dataChildren: string[] = [];
+    for (const [k, v] of Object.entries(n.data)) {
+      const rendered = renderDataChild(k, v, '        ');
+      if (rendered) dataChildren.push(rendered);
+    }
+    const attrs: string[] = [
+      `id="${xmlEscape(n.id)}"`,
+      `kind="${xmlEscape(n.kind)}"`,
+      `x="${Math.round(n.x)}"`,
+      `y="${Math.round(n.y)}"`,
+    ];
+    const size = readNodeSize(n);
+    attrs.push(`width="${size.width}"`, `height="${size.height}"`);
+    lines.push(`    <node ${attrs.join(' ')}>`);
+    if (dataChildren.length > 0) {
+      lines.push('      <data>');
+      for (const c of dataChildren) lines.push(c);
+      lines.push('      </data>');
+    } else {
+      lines.push('      <data />');
+    }
+    if (n.output) {
+      const outAttrs: string[] = [`kind="${xmlEscape(n.output.kind)}"`];
+      if (n.output.generatedAt) outAttrs.push(`generatedAt="${n.output.generatedAt}"`);
+      if (n.output.mime) outAttrs.push(`mime="${xmlEscape(n.output.mime)}"`);
+      // Inline text output but never inline image/video data URLs.
+      if (n.output.kind === 'text' && typeof n.output.text === 'string' && n.output.text.length <= 4096) {
+        lines.push(`      <output ${outAttrs.join(' ')}>${xmlEscape(n.output.text)}</output>`);
+      } else {
+        lines.push(`      <output ${outAttrs.join(' ')} />`);
+      }
+    }
+    lines.push('    </node>');
+  }
+  lines.push('  </nodes>');
+  lines.push('  <edges>');
+  for (const e of g.edges) {
+    lines.push(
+      `    <edge id="${xmlEscape(e.id)}" ` +
+        `from-node="${xmlEscape(e.from.nodeId)}" ` +
+        `from-port="${xmlEscape(e.from.portId)}" ` +
+        `to-node="${xmlEscape(e.to.nodeId)}" ` +
+        `to-port="${xmlEscape(e.to.portId)}" />`,
+    );
+  }
+  lines.push('  </edges>');
+  lines.push('</boardfish-graph>');
+  return lines.join('\n');
+}
 
 // ---------------------------------------------------------------------------
 // Bulk operations added for FiCal-parity UX (multi-select move/delete, paste,

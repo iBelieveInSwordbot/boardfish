@@ -12,14 +12,16 @@
 // .tsx) — the NodeEditor.tsx and .css files handle all the visual polish.
 //
 // Rendering rules:
-//   - Preview: no editing UI, just visual state (thumbnail, text preview,
-//     "coming soon" placeholder). Kept small.
+//   - Preview: mostly visual state (thumbnail, text preview, "coming soon"
+//     placeholder). May opt into light editing via the `onChangeData` prop
+//     (e.g. text-prompt's inline textarea) — same reducer path as Inspector.
 //   - Inspector: full form; calls `onChangeData` with a shallow patch. Calls
 //     `onGenerate` when the user wants to execute starting at this node.
 
-import { createElement, type FC } from 'react';
-import type { BaseNode, NodeKind, NodePort } from './types';
+import { createElement, useEffect, useRef, Fragment, type FC } from 'react';
+import type { BaseNode, NodeKind, NodeOutput, NodePort } from './types';
 import { defaultDataFor, defaultPortsFor } from './types';
+import { appendHistory, readNodeHistory } from './graph-utils';
 import { FAL_MODELS } from '../ai/fal-models';
 
 // Local view of a FAL model as this file needs it (id + label + coming-soon flag).
@@ -52,6 +54,16 @@ const ASPECT_RATIOS: string[] = [
   '16:9', '9:16', '1:1', '4:3', '3:4', '3:2', '2:3', '4:5', '5:4', '21:9',
 ];
 
+/**
+ * Optional `onChangeData` prop threaded from NodeView → Preview so kinds
+ * like text-prompt can offer inline editing. When absent (e.g. read-only
+ * renders), the preview should fall back to display-only state.
+ */
+export type PreviewProps = {
+  node: BaseNode;
+  onChangeData?: (patch: Record<string, unknown>) => void;
+};
+
 export type NodeKindDef = {
   kind: NodeKind;
   label: string;
@@ -60,7 +72,7 @@ export type NodeKindDef = {
   defaultHeight: number;
   defaultData: () => Record<string, unknown>;
   ports: (data: Record<string, unknown>) => NodePort[];
-  Preview: FC<{ node: BaseNode }>;
+  Preview: FC<PreviewProps>;
   Inspector: FC<{
     node: BaseNode;
     onChangeData: (patch: Record<string, unknown>) => void;
@@ -70,93 +82,168 @@ export type NodeKindDef = {
 };
 
 // ---------------------------------------------------------------------------
+// Shared history hook — mirrors what the DAG executor SHOULD be doing, but
+// piggy-backs on the Preview's render lifecycle since dag-executor.ts is off
+// limits for this pass.
+//
+// TODO(dag-executor): Move history push into dag-executor.ts. When the
+// executor is about to overwrite `node.output`, call:
+//    graph = pushToHistory(graph, node.id, oldOutput);
+// and delete this hook. The Preview components should read `data.__history`
+// only — writing here creates an extra dispatch per render which is not
+// ideal.
+// ---------------------------------------------------------------------------
+function useHistoryMirror(
+  node: BaseNode,
+  onChangeData: ((patch: Record<string, unknown>) => void) | undefined,
+): NodeOutput[] {
+  // Track the previous output snapshot we've seen for THIS node instance.
+  // When `node.output.generatedAt` changes, we push the PREVIOUS snapshot
+  // onto history — mirroring what the DAG executor should be doing itself.
+  const prevOutputRef = useRef<NodeOutput | null>(null);
+  const history = readNodeHistory(node);
+  useEffect(() => {
+    if (!onChangeData) return;
+    const cur = node.output;
+    const prev = prevOutputRef.current;
+    // Update the tracking ref FIRST so subsequent renders compare against
+    // the freshest snapshot.
+    prevOutputRef.current = cur ? { ...cur } : null;
+    if (!cur || !cur.generatedAt) return;
+    if (!prev || !prev.generatedAt) return;
+    if (prev.generatedAt === cur.generatedAt) return;
+    // Guard: if the previous snapshot is already the tail of history (which
+    // would happen if dag-executor ever starts pushing itself — see TODO),
+    // skip to avoid double-pushes.
+    const tail = history[history.length - 1];
+    if (tail && tail.generatedAt === prev.generatedAt) return;
+    const next = appendHistory(node, prev);
+    onChangeData({ __history: next });
+    // We intentionally omit `history` from deps: we only want this to fire
+    // when the node's output changes, not on every history strip re-render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [node.output?.generatedAt, node.output?.dataUrl, onChangeData]);
+  return history;
+}
+
+/** History strip helper (thumbnails only; restore is TODO). */
+function renderHistoryStrip(history: NodeOutput[], kind: 'image' | 'video') {
+  if (history.length === 0) return null;
+  return createElement(
+    'div',
+    { className: 'ne-node-history-strip', title: 'Past outputs (click-restore coming soon)' },
+    ...history.slice().reverse().map((h, i) => {
+      const url = h.dataUrl;
+      if (!url) return null;
+      return createElement(
+        'div',
+        { key: (h.generatedAt ?? i) + '_' + i, className: 'ne-node-history-thumb' },
+        kind === 'video'
+          ? createElement('video', { src: url, muted: true, playsInline: true, preload: 'metadata' })
+          : createElement('img', { src: url, alt: '', draggable: false }),
+      );
+    }).filter(Boolean),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Preview components
 // ---------------------------------------------------------------------------
 
-const TextPromptPreview: FC<{ node: BaseNode }> = ({ node }) => {
-  const text = String(node.data.text ?? '').trim();
+const TextPromptPreview: FC<PreviewProps> = ({ node, onChangeData }) => {
+  const text = String(node.data.text ?? '');
+  // Read-only fallback if the parent didn't give us onChangeData. Keeps the
+  // old behavior for anyone who instantiates the preview in isolation.
+  if (!onChangeData) {
+    const trimmed = text.trim();
+    return createElement(
+      'div',
+      { className: 'ne-node-preview ne-node-preview--text' },
+      trimmed
+        ? createElement('div', { className: 'ne-node-preview-text' }, truncate(trimmed, 200))
+        : createElement('div', { className: 'ne-node-preview-empty' }, '(empty prompt)'),
+    );
+  }
+  // Editable: textarea fills the node body. Pointer events on the textarea
+  // are stopped from bubbling so the node-drag handler on the header/body
+  // never fires while typing/selecting text. The reducer's kbd handler
+  // already ignores keydowns whose target is a TEXTAREA.
   return createElement(
     'div',
-    { className: 'ne-node-preview ne-node-preview--text' },
-    text
-      ? createElement('div', { className: 'ne-node-preview-text' }, truncate(text, 120))
-      : createElement('div', { className: 'ne-node-preview-empty' }, '(empty prompt)'),
+    { className: 'ne-node-preview ne-node-preview--text is-editable' },
+    createElement('textarea', {
+      className: 'ne-node-inline-textarea',
+      value: text,
+      placeholder: 'Describe the shot\u2026',
+      spellCheck: false,
+      onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) =>
+        onChangeData({ text: e.target.value }),
+      onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+      onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
+      onClick: (e: React.MouseEvent) => e.stopPropagation(),
+      onDoubleClick: (e: React.MouseEvent) => e.stopPropagation(),
+      onKeyDown: (e: React.KeyboardEvent) => e.stopPropagation(),
+    }),
   );
 };
 
-const ImageGenPreview: FC<{ node: BaseNode }> = ({ node }) => {
+const ImageGenPreview: FC<PreviewProps> = ({ node, onChangeData }) => {
+  const history = useHistoryMirror(node, onChangeData);
   const url = node.output?.dataUrl;
   const model = String(node.data.modelId ?? 'nano-banana-pro');
   const aspect = String(node.data.aspect_ratio ?? '16:9');
-  if (url) {
-    return createElement(
-      'div',
-      { className: 'ne-node-preview ne-node-preview--image' },
-      createElement('img', {
-        src: url,
-        alt: '',
-        draggable: false,
-        className: 'ne-node-preview-thumb',
-      }),
-      createElement(
-        'div',
-        { className: 'ne-node-preview-caption' },
-        `${modelLabel(model)} · ${aspect}`,
-      ),
-    );
-  }
   return createElement(
     'div',
-    { className: 'ne-node-preview ne-node-preview--image is-empty' },
-    createElement('div', { className: 'ne-node-preview-empty' }, 'no image yet'),
+    { className: 'ne-node-preview ne-node-preview--image' + (url ? '' : ' is-empty') },
+    url
+      ? createElement('img', {
+          src: url,
+          alt: '',
+          draggable: false,
+          className: 'ne-node-preview-thumb',
+        })
+      : createElement('div', { className: 'ne-node-preview-empty' }, 'no image yet'),
     createElement(
       'div',
       { className: 'ne-node-preview-caption' },
-      `${modelLabel(model)} · ${aspect}`,
+      `${modelLabel(model)} \u00b7 ${aspect}`,
     ),
+    renderHistoryStrip(history, 'image'),
   );
 };
 
-const MovieGenPreview: FC<{ node: BaseNode }> = ({ node }) => {
+const MovieGenPreview: FC<PreviewProps> = ({ node, onChangeData }) => {
+  const history = useHistoryMirror(node, onChangeData);
   const url = node.output?.dataUrl;
   const model = String(node.data.modelId ?? 'veo-3');
   const aspect = String(node.data.aspect_ratio ?? '16:9');
   const duration = Number(node.data.duration ?? 5);
-  if (url) {
-    return createElement(
-      'div',
-      { className: 'ne-node-preview ne-node-preview--video' },
-      createElement('video', {
-        src: url,
-        muted: true,
-        loop: true,
-        autoPlay: true,
-        playsInline: true,
-        className: 'ne-node-preview-thumb',
-      }),
-      createElement(
-        'div',
-        { className: 'ne-node-preview-caption' },
-        `${modelLabel(model)} · ${aspect} · ${duration}s`,
-      ),
-    );
-  }
   return createElement(
     'div',
-    { className: 'ne-node-preview ne-node-preview--video is-empty' },
-    createElement('div', { className: 'ne-node-preview-empty' }, '🎬 no video yet'),
+    { className: 'ne-node-preview ne-node-preview--video' + (url ? '' : ' is-empty') },
+    url
+      ? createElement('video', {
+          src: url,
+          muted: true,
+          loop: true,
+          autoPlay: true,
+          playsInline: true,
+          className: 'ne-node-preview-thumb',
+        })
+      : createElement('div', { className: 'ne-node-preview-empty' }, '\ud83c\udfac no video yet'),
     createElement(
       'div',
       { className: 'ne-node-preview-caption' },
-      `${modelLabel(model)} · ${aspect} · ${duration}s`,
+      `${modelLabel(model)} \u00b7 ${aspect} \u00b7 ${duration}s`,
     ),
+    renderHistoryStrip(history, 'video'),
   );
 };
 
 // Out node visualized as a mini storyboard page: numbered header, image frame,
 // and a caption strip. Makes it visually obvious that this is what will land
 // in the panel when the editor closes.
-const OutPreview: FC<{ node: BaseNode }> = ({ node }) => {
+const OutPreview: FC<PreviewProps> = ({ node }) => {
   const url = node.output?.dataUrl;
   const kind = node.output?.kind;
   return createElement(
@@ -183,12 +270,12 @@ const OutPreview: FC<{ node: BaseNode }> = ({ node }) => {
     createElement(
       'div',
       { className: 'ne-out-page-caption' },
-      url ? 'panel image → storyboard' : 'wire something to me',
+      url ? 'panel image \u2192 storyboard' : 'wire something to me',
     ),
   );
 };
 
-const SwitchPreview: FC<{ node: BaseNode }> = ({ node }) => {
+const SwitchPreview: FC<PreviewProps> = ({ node }) => {
   const count = Number(node.data.count ?? 2);
   const selected = Number(node.data.selected ?? 0);
   return createElement(
@@ -202,16 +289,20 @@ const SwitchPreview: FC<{ node: BaseNode }> = ({ node }) => {
   );
 };
 
-const NullNodePreview: FC<{ node: BaseNode }> = () =>
+const NullNodePreview: FC<PreviewProps> = () =>
   createElement(
     'div',
     { className: 'ne-node-preview ne-node-preview--null' },
     createElement('div', { className: 'ne-node-preview-caption' }, 'passthrough'),
   );
 
-const PromptConcatPreview: FC<{ node: BaseNode }> = ({ node }) => {
+const PromptConcatPreview: FC<PreviewProps> = ({ node }) => {
   const count = Number(node.data.count ?? 2);
   const sep = JSON.stringify(String(node.data.separator ?? ' '));
+  // If the node has been executed we have the combined text on
+  // `node.output.text`. Show it so users can eyeball what will land in the
+  // downstream ImageGen. When empty, hint the user to run the graph.
+  const combined = typeof node.output?.text === 'string' ? node.output.text : '';
   return createElement(
     'div',
     { className: 'ne-node-preview ne-node-preview--concat' },
@@ -220,14 +311,25 @@ const PromptConcatPreview: FC<{ node: BaseNode }> = ({ node }) => {
       { className: 'ne-node-preview-caption' },
       `Join ${count} texts with ${sep}`,
     ),
+    combined
+      ? createElement(
+          'div',
+          { className: 'ne-node-preview-text', style: { flex: 1, overflow: 'auto' } },
+          truncate(combined, 400),
+        )
+      : createElement(
+          'div',
+          { className: 'ne-node-preview-empty' },
+          'run to see combined text',
+        ),
   );
 };
 
-const CustomFalPreview: FC<{ node: BaseNode }> = () =>
+const CustomFalPreview: FC<PreviewProps> = () =>
   createElement(
     'div',
     { className: 'ne-node-preview ne-node-preview--stub' },
-    createElement('div', { className: 'ne-node-preview-empty' }, '🧪 custom FAL — coming soon'),
+    createElement('div', { className: 'ne-node-preview-empty' }, '\ud83e\uddea custom FAL \u2014 coming soon'),
   );
 
 // ---------------------------------------------------------------------------
@@ -244,7 +346,7 @@ const TextPromptInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) =
       className: 'ne-inspect-textarea',
       rows: 8,
       value,
-      placeholder: 'Describe the shot…',
+      placeholder: 'Describe the shot\u2026',
       onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) =>
         onChangeData({ text: e.target.value }),
     }),
@@ -319,7 +421,7 @@ const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
         disabled: inFlight,
         onClick: () => onGenerate(),
       },
-      inFlight ? 'Generating…' : 'Generate',
+      inFlight ? 'Generating\u2026' : 'Generate',
     ),
     // Thumbnail
     url
@@ -390,7 +492,7 @@ const MovieGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
         disabled: inFlight,
         onClick: () => onGenerate(),
       },
-      inFlight ? 'Generating… (video takes 1-5 min)' : 'Generate',
+      inFlight ? 'Generating\u2026 (video takes 1-5 min)' : 'Generate',
     ),
     url
       ? createElement(
@@ -414,7 +516,7 @@ const OutInspector: NodeKindDef['Inspector'] = ({ node }) => {
     createElement(
       'div',
       { className: 'ne-inspect-note' },
-      'The Out node writes back to the Panel when you press ⌘S. Whatever image reaches this node becomes the panel image.',
+      'The Out node writes back to the Panel when you press \u2318S. Whatever image reaches this node becomes the panel image.',
     ),
     url
       ? createElement(
@@ -472,28 +574,53 @@ const NullNodeInspector: NodeKindDef['Inspector'] = () =>
     createElement(
       'div',
       { className: 'ne-inspect-note' },
-      'Passthrough — forwards its single input unchanged. Handy for organizing long chains.',
+      'Passthrough \u2014 forwards its single input unchanged. Handy for organizing long chains.',
     ),
   );
 
 const PromptConcatInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) => {
-  const count = Number(node.data.count ?? 2);
+  // Clamp 2\u20138 per the task spec (was 2\u20136 before).
+  const count = Math.max(2, Math.min(8, Number(node.data.count ?? 2)));
   const separator = String(node.data.separator ?? ' ');
   return createElement(
     'div',
     { className: 'ne-inspect-body' },
     createElement('label', { className: 'ne-inspect-label' }, 'Inputs'),
-    createElement('input', {
-      type: 'number',
-      className: 'ne-inspect-input',
-      min: 2,
-      max: 6,
-      value: count,
-      onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
-        const n = Math.max(2, Math.min(6, Number(e.target.value) || 2));
-        onChangeData({ count: n });
-      },
-    }),
+    // +/\u2212 stepper matches the task spec: buttons + clamp 2\u20138. We keep the
+    // number field alongside for direct typing/scrubbing.
+    createElement(
+      Fragment,
+      null,
+      createElement(
+        'div',
+        { className: 'ne-inspect-chip-row' },
+        createElement(
+          'button',
+          {
+            type: 'button',
+            className: 'ne-inspect-chip',
+            disabled: count <= 2,
+            onClick: () => onChangeData({ count: Math.max(2, count - 1) }),
+          },
+          '\u2212 input',
+        ),
+        createElement(
+          'button',
+          {
+            type: 'button',
+            className: 'ne-inspect-chip',
+            disabled: count >= 8,
+            onClick: () => onChangeData({ count: Math.min(8, count + 1) }),
+          },
+          '+ input',
+        ),
+        createElement(
+          'span',
+          { style: { fontSize: '11px', color: '#9a9aa2', alignSelf: 'center' } },
+          `${count} inputs`,
+        ),
+      ),
+    ),
     createElement('label', { className: 'ne-inspect-label' }, 'Separator'),
     createElement('input', {
       type: 'text',
@@ -512,7 +639,7 @@ const CustomFalInspector: NodeKindDef['Inspector'] = () =>
     createElement(
       'div',
       { className: 'ne-inspect-note' },
-      'Custom FAL endpoint — coming in Phase B/2. You will be able to paste a fal.ai model slug and wire it into any graph.',
+      'Custom FAL endpoint \u2014 coming in Phase B/2. You will be able to paste a fal.ai model slug and wire it into any graph.',
     ),
   );
 
@@ -617,7 +744,7 @@ export const NODE_KINDS: Record<NodeKind, NodeKindDef> = {
 
 function truncate(s: string, n: number): string {
   if (s.length <= n) return s;
-  return s.slice(0, n - 1) + '…';
+  return s.slice(0, n - 1) + '\u2026';
 }
 
 function modelLabel(id: string): string {

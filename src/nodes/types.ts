@@ -54,6 +54,21 @@ export type NodeOutput = {
   generatedAt?: number;
 };
 
+// -----------------------------------------------------------------------
+// Internal `data` piggy-back keys (all prefixed with `__` so kind-specific
+// fields never collide). These live on `BaseNode.data` so the existing
+// UPDATE_NODE_DATA reducer path can persist them without new actions:
+//
+//   __size:    { width, height }  — explicit size override from resize
+//                                    handle (graph-utils.readNodeSize).
+//   __history: NodeOutput[]        — prior generations for this node,
+//                                    oldest first, capped at HISTORY_LIMIT
+//                                    (graph-utils.appendHistory).
+//   __runtime: unknown             — reserved for transient exec state.
+//
+// XML export skips all of these; see graph-utils.graphToXml.
+// -----------------------------------------------------------------------
+
 export type BaseNode = {
   id: NodeId;
   kind: NodeKind;
@@ -151,7 +166,9 @@ export function defaultPortsFor(kind: NodeKind, data?: Record<string, unknown>):
         { id: 'out', side: 'out', dataType: 'any', label: 'out' },
       ];
     case 'prompt-concat': {
-      const count = clampInt((data?.count as number) ?? 2, 2, 6);
+      // Concat supports 2–8 input ports (bumped from 6). The Inspector's
+      // +/− stepper is bound to the same range.
+      const count = clampInt((data?.count as number) ?? 2, 2, 8);
       const ins: NodePort[] = [];
       for (let i = 0; i < count; i++) {
         ins.push({ id: `in${i}`, side: 'in', dataType: 'text', label: `text ${i + 1}` });

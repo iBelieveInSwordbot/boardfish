@@ -265,6 +265,90 @@
   white-space: nowrap;
 }
 
+/* --- Resize handle (bottom-right corner of every node) --- */
+.ne-node-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  z-index: 3;
+  /* Diagonal chevron drawn with a background gradient so we don't need
+     inline SVG. Faint by default, pops on hover. */
+  background:
+    linear-gradient(135deg, transparent 0 55%, #6d6d78 55% 62%, transparent 62% 72%, #6d6d78 72% 79%, transparent 79%);
+  opacity: 0.55;
+  transition: opacity 100ms ease;
+  border-radius: 0 0 8px 0;
+}
+.ne-node-resize:hover { opacity: 1; }
+.ne-node.is-selected .ne-node-resize {
+  background:
+    linear-gradient(135deg, transparent 0 55%, #4a9eff 55% 62%, transparent 62% 72%, #4a9eff 72% 79%, transparent 79%);
+  opacity: 0.9;
+}
+
+/* --- Inline node-body textarea (text-prompt in-node editing) --- */
+.ne-node-preview.is-editable { padding: 0; gap: 0; }
+.ne-node-inline-textarea {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  flex: 1;
+  resize: none;
+  background: #0f0f12;
+  color: #eaeaea;
+  border: 1px solid #2b2b32;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  box-sizing: border-box;
+  /* Let the textarea receive keyboard/mouse events without them bubbling to
+     the node-drag or canvas-drag handlers. */
+  cursor: text;
+}
+.ne-node-inline-textarea:focus {
+  outline: none;
+  border-color: #3a76c9;
+}
+
+/* --- Per-node history strip (image-gen / movie-gen) --- */
+.ne-node-history-strip {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 3px 0 1px;
+  margin-top: 4px;
+  scrollbar-width: thin;
+}
+.ne-node-history-strip::-webkit-scrollbar { height: 4px; }
+.ne-node-history-strip::-webkit-scrollbar-thumb {
+  background: #3a76c9;
+  border-radius: 2px;
+}
+.ne-node-history-thumb {
+  flex: 0 0 auto;
+  width: 40px;
+  aspect-ratio: 16 / 9;
+  border-radius: 3px;
+  overflow: hidden;
+  background: #000;
+  border: 1px solid #26262c;
+  cursor: default; /* TODO: click to restore */
+}
+.ne-node-history-thumb img,
+.ne-node-history-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
 /* --- Preview bodies --- */
 .ne-node-preview {
   height: 100%;
