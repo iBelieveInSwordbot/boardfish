@@ -126,7 +126,7 @@ function OutlinerRow({ item, index, selected, dispatch, canDelete }: RowProps) {
 
   const label =
     item.kind === 'slide'
-      ? item.slide.title.trim() || 'Untitled Slide'
+      ? item.slide.titleBox.text.trim() || 'Untitled Slide'
       : (item.overrides?.name?.trim() ||
           `Storyboard · ${item.panels.length} panel${item.panels.length === 1 ? '' : 's'}`);
 

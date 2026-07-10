@@ -492,12 +492,37 @@ function SlideOverrides({
           onChange={(e) => dispatch({ type: 'UPDATE_SLIDE', id: sl.id, patch: { showFooter: e.target.checked } })} />
       </Row>
       <Row label="Title">
-        <input type="text" value={sl.title}
-          onChange={(e) => dispatch({ type: 'UPDATE_SLIDE', id: sl.id, patch: { title: e.target.value } })} />
+        <input
+          type="text"
+          value={sl.titleBox.text}
+          onChange={(e) =>
+            dispatch({
+              type: 'UPDATE_SLIDE_TEXTBOX',
+              slideId: sl.id,
+              which: 'title',
+              patch: { text: e.target.value },
+            })
+          }
+        />
       </Row>
       <Row label="Subtitle">
-        <input type="text" value={sl.subtitle}
-          onChange={(e) => dispatch({ type: 'UPDATE_SLIDE', id: sl.id, patch: { subtitle: e.target.value } })} />
+        <input
+          type="text"
+          value={sl.subtitleBox.text}
+          onChange={(e) =>
+            dispatch({
+              type: 'UPDATE_SLIDE_TEXTBOX',
+              slideId: sl.id,
+              which: 'subtitle',
+              patch: { text: e.target.value },
+            })
+          }
+        />
+      </Row>
+      <Row label="Tip">
+        <span style={{ fontSize: 11, opacity: 0.7 }}>
+          Click a text box on the slide to change fonts, size, weight, alignment and color.
+        </span>
       </Row>
       <div className="button-row" style={{ marginTop: 8 }}>
         <button onClick={() => dispatch({ type: 'REMOVE_ITEM', id: slideItem.id })}>Delete slide</button>

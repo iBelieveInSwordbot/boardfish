@@ -1,7 +1,16 @@
 // Boardfish store — pure state + reducer. Zero deps.
 import { useEffect, useReducer } from 'react';
-import type { DocItem, Panel, ProjectSettings, Slide, StoryboardOverrides, ThemePreset } from './types';
-import { cryptoRandomId, defaultSettings, newSlideItem, newStoryboardItem, themeColors } from './types';
+import type { DocItem, Panel, ProjectSettings, Slide, SlideTextBox, StoryboardOverrides, ThemePreset } from './types';
+import {
+  cryptoRandomId,
+  defaultSettings,
+  migrateSlideFromV3,
+  newSlideItem,
+  newStoryboardItem,
+  newSubtitleTextBox,
+  newTitleTextBox,
+  themeColors,
+} from './types';
 
 /** Normalize settings loaded from persistence to add any fields introduced after the file was saved. */
 function normalizeSettings(s: Partial<ProjectSettings>): ProjectSettings {
@@ -34,15 +43,47 @@ function normalizePanel(p: Partial<Panel>): Panel {
   };
 }
 
-function normalizeSlide(s: Partial<Slide>): Slide {
+function normalizeTextBox(raw: Partial<SlideTextBox> | undefined, fallback: SlideTextBox): SlideTextBox {
+  if (!raw) return fallback;
   return {
-    id: s.id ?? cryptoRandomId(),
+    id: raw.id ?? fallback.id,
+    text: raw.text ?? fallback.text,
+    x: typeof raw.x === 'number' ? raw.x : fallback.x,
+    y: typeof raw.y === 'number' ? raw.y : fallback.y,
+    width: typeof raw.width === 'number' ? raw.width : fallback.width,
+    height: typeof raw.height === 'number' ? raw.height : fallback.height,
+    fontFamily: raw.fontFamily ?? fallback.fontFamily,
+    fontSize: typeof raw.fontSize === 'number' ? raw.fontSize : fallback.fontSize,
+    fontWeight: raw.fontWeight ?? fallback.fontWeight,
+    textAlign: raw.textAlign ?? fallback.textAlign,
+    italic: raw.italic ?? fallback.italic,
+    color: raw.color ?? fallback.color,
+  };
+}
+
+function normalizeSlide(s: Partial<Slide> & { title?: string; subtitle?: string }): Slide {
+  // v4 shape: has titleBox + subtitleBox already.
+  if (s.titleBox && s.subtitleBox) {
+    const defaultTitle = newTitleTextBox();
+    const defaultSubtitle = newSubtitleTextBox();
+    return {
+      id: s.id ?? cryptoRandomId(),
+      titleBox: normalizeTextBox(s.titleBox as Partial<SlideTextBox>, defaultTitle),
+      subtitleBox: normalizeTextBox(s.subtitleBox as Partial<SlideTextBox>, defaultSubtitle),
+      showFooter: s.showFooter ?? true,
+      imageDataUrl: s.imageDataUrl ?? null,
+      imageName: s.imageName ?? null,
+    };
+  }
+  // v3 shape (title/subtitle strings) — migrate.
+  return migrateSlideFromV3({
+    id: s.id,
+    title: (s as { title?: string }).title,
+    subtitle: (s as { subtitle?: string }).subtitle,
+    showFooter: s.showFooter,
     imageDataUrl: s.imageDataUrl ?? null,
     imageName: s.imageName ?? null,
-    title: s.title ?? '',
-    subtitle: s.subtitle ?? '',
-    showFooter: s.showFooter ?? true,
-  };
+  });
 }
 
 function normalizeItems(items: unknown[]): DocItem[] {
@@ -110,6 +151,7 @@ export type Action =
   | { type: 'REMOVE_ITEM'; id: string }
   | { type: 'REORDER_ITEMS'; ids: string[] }
   | { type: 'UPDATE_SLIDE'; id: string; patch: Partial<Slide> }
+  | { type: 'UPDATE_SLIDE_TEXTBOX'; slideId: string; which: 'title' | 'subtitle'; patch: Partial<SlideTextBox> }
   | { type: 'UPDATE_STORYBOARD_OVERRIDES'; id: string; patch: StoryboardOverrides; merge?: boolean }
   | { type: 'CLEAR_STORYBOARD_OVERRIDE'; id: string; section: 'grid' | 'panelAspect' | 'fields' | 'name' }
   | { type: 'SET_LAST_STORYBOARD_PANELS'; panels: Panel[]; name?: string }
@@ -653,6 +695,15 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
           ? { ...it, slide: { ...it.slide, ...action.patch } }
           : it,
       );
+      return { ...state, items };
+    }
+    case 'UPDATE_SLIDE_TEXTBOX': {
+      const items = state.items.map((it) => {
+        if (it.kind !== 'slide' || it.slide.id !== action.slideId) return it;
+        const key = action.which === 'title' ? 'titleBox' : 'subtitleBox';
+        const current = it.slide[key];
+        return { ...it, slide: { ...it.slide, [key]: { ...current, ...action.patch } } };
+      });
       return { ...state, items };
     }
     case 'UPDATE_STORYBOARD_OVERRIDES': {

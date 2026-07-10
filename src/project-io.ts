@@ -6,7 +6,8 @@ import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import type { BoardfishState } from './store';
 import { itemsFromLegacyPanels } from './store';
-import type { DocItem, Panel, ProjectSettings } from './types';
+import type { DocItem, Panel, ProjectSettings, SlideTextBox } from './types';
+import { migrateSlideFromV3 } from './types';
 
 // v1: legacy flat panels[] (pre-outliner, up to 2026-07-05 evening)
 type SavedPanelV1 = {
@@ -19,7 +20,9 @@ type SavedPanelV1 = {
   // AI history: prior generations. Each entry stores its image inside the zip
   // under images/history/<panelId>/<versionId>.<ext>. Loaded as PanelImageVersion.
   imageHistory?: { id: string; imagePath: string; prompt: string; generatedAt: number }[];
-  styleMode?: 'pencil-sketch' | 'none';
+  // Broadened in Boardfish 5 to match the extended PanelStyleMode set.
+  // Older files (v3 with only 'pencil-sketch' | 'none') still validate.
+  styleMode?: 'pencil-sketch' | 'ink-wash' | 'photoreal' | 'noir' | 'anime' | 'watercolor' | 'comic-ink' | 'none';
 };
 type SavedProjectV1 = {
   version: 1;
@@ -30,18 +33,28 @@ type SavedProjectV1 = {
 };
 
 // v2: outliner items[] (slides + storyboards). v3 adds per-storyboard overrides.
+// v3 slide shape (title/subtitle strings + optional image on disk).
+type SavedSlideV3 = {
+  id: string;
+  imageName: string | null;
+  imagePath: string | null;
+  title: string;
+  subtitle: string;
+  showFooter: boolean;
+};
+// v4 slide shape: two floating text boxes, no image. `titleBox`/`subtitleBox`
+// serialize directly (percent-based positions + styling).
+type SavedSlideV4 = {
+  id: string;
+  titleBox: SlideTextBox;
+  subtitleBox: SlideTextBox;
+  showFooter: boolean;
+};
 type SavedItemV2 =
   | {
       id: string;
       kind: 'slide';
-      slide: {
-        id: string;
-        imageName: string | null;
-        imagePath: string | null;
-        title: string;
-        subtitle: string;
-        showFooter: boolean;
-      };
+      slide: SavedSlideV3 | SavedSlideV4;
     }
   | {
       id: string;
@@ -50,7 +63,7 @@ type SavedItemV2 =
       overrides?: import('./types').StoryboardOverrides;
     };
 type SavedProjectV2 = {
-  version: 2 | 3;
+  version: 2 | 3 | 4;
   savedAt: string;
   settings: ProjectSettings;
   items: SavedItemV2[];
@@ -157,29 +170,20 @@ export async function saveProject(
   const images = zip.folder('images')!;
 
   let panelSerial = 0;
-  let slideSerial = 0;
 
   // Note: we process items sequentially to keep memory usage bounded (large data URLs)
   const savedItems: SavedItemV2[] = [];
   for (const it of state.items) {
     if (it.kind === 'slide') {
-      let imagePath: string | null = null;
-      if (it.slide.imageDataUrl) {
-        const dataUrl = (await maybeDownscale(it.slide.imageDataUrl, downscale, maxLongEdgePx)) as string;
-        const ext = extForDataUrl(dataUrl);
-        imagePath = `images/slide-${slideSerial.toString().padStart(4, '0')}-${it.slide.id}.${ext}`;
-        images.file(imagePath.replace(/^images\//, ''), dataUrlToBlob(dataUrl));
-      }
-      slideSerial += 1;
+      // v4 saves the two text boxes verbatim; slide images are gone in v4 and
+      // are intentionally not round-tripped.
       savedItems.push({
         id: it.id,
         kind: 'slide',
         slide: {
           id: it.slide.id,
-          imageName: it.slide.imageName,
-          imagePath,
-          title: it.slide.title,
-          subtitle: it.slide.subtitle,
+          titleBox: it.slide.titleBox,
+          subtitleBox: it.slide.subtitleBox,
           showFooter: it.slide.showFooter,
         },
       });
@@ -237,7 +241,7 @@ export async function saveProject(
   };
 
   const manifest: SavedProjectV2 = {
-    version: 3, // v3 = v2 + storyboard overrides + settings.panelNumbering
+    version: 4, // v4 = v3 + Keynote-style slide text boxes (no more slide image field)
     savedAt: new Date().toISOString(),
     settings: settingsForSave,
     items: savedItems,
@@ -272,21 +276,37 @@ export async function loadProject(
 
   let items: DocItem[];
 
-  if (manifestRaw.version === 2 || manifestRaw.version === 3) {
+  if (manifestRaw.version === 2 || manifestRaw.version === 3 || manifestRaw.version === 4) {
     items = await Promise.all(
       manifestRaw.items.map(async (it): Promise<DocItem> => {
         if (it.kind === 'slide') {
+          const raw = it.slide as SavedSlideV3 & Partial<SavedSlideV4>;
+          // v4: text boxes are present—take them as-is.
+          if (raw.titleBox && raw.subtitleBox) {
+            return {
+              id: it.id,
+              kind: 'slide',
+              slide: {
+                id: raw.id,
+                titleBox: raw.titleBox,
+                subtitleBox: raw.subtitleBox,
+                showFooter: raw.showFooter,
+              },
+            };
+          }
+          // v2/v3 legacy: convert title/subtitle strings into default-positioned text boxes.
+          // Old slide image (if any) is discarded per Matt's v4 spec.
           return {
             id: it.id,
             kind: 'slide',
-            slide: {
-              id: it.slide.id,
-              imageDataUrl: await loadImage(it.slide.imagePath),
-              imageName: it.slide.imageName,
-              title: it.slide.title,
-              subtitle: it.slide.subtitle,
-              showFooter: it.slide.showFooter,
-            },
+            slide: migrateSlideFromV3({
+              id: raw.id,
+              title: raw.title,
+              subtitle: raw.subtitle,
+              showFooter: raw.showFooter,
+              imageDataUrl: null,
+              imageName: raw.imageName,
+            }),
           };
         }
         const panels: Panel[] = await Promise.all(
@@ -409,9 +429,20 @@ export async function exportPdf(settings: ProjectSettings): Promise<void> {
               '.fullscreen-exit',
           ).forEach((n) => ((n as HTMLElement).style.display = 'none'));
 
-          // html2canvas renders <input> elements as a single-line value at the input's declared width,
-          // which mangles slide titles/subtitles (and any other <input>-based editable text).
-          // Replace slide title + subtitle inputs with divs that preserve the same visual styling.
+          // v4 slide text boxes are contentEditable <div>s rather than <input>s; html2canvas renders
+          // them fine, but we still want to strip any residual selection outline / drag handles
+          // that might leak into the print. The .slide-textbox styles below live under the export-
+          // safe class list; hide handles + toolbars explicitly.
+          doc.querySelectorAll<HTMLElement>(
+            '.slide-textbox-handle, .slide-textbox-toolbar, .slide-textbox.selected .slide-textbox-frame',
+          ).forEach((n) => (n.style.display = 'none'));
+          doc.querySelectorAll<HTMLElement>('.slide-textbox').forEach((n) => {
+            n.classList.remove('selected', 'editing');
+            n.style.outline = 'none';
+            n.style.cursor = 'auto';
+          });
+          // Legacy: v3 or earlier slides that rendered as <input> (should no longer exist after
+          // migration on load, but harmless to keep).
           doc.querySelectorAll<HTMLInputElement>('.slide-title, .slide-subtitle').forEach((inp) => {
             const div = doc.createElement('div');
             div.textContent = inp.value;

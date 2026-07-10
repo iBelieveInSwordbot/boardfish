@@ -44,16 +44,55 @@ export type PanelImageVersion = {
   generatedAt: number; // ms since epoch
 };
 
-// Style tag applied to the panel's AI prompt at generation time. 'pencil-sketch'
-// matches the AI Director default so ad-hoc panels look consistent with the
-// scripted-workflow output. 'none' passes the user's prompt through as-is.
-export type PanelStyleMode = 'pencil-sketch' | 'none';
+// Style tag applied to the panel's AI prompt at generation time. Mirrors the
+// ai-proxy's STYLE_PRESETS table so ad-hoc panels can pick the same styles
+// the scripted AI Director flow offers. 'none' passes the prompt through as-is.
+export type PanelStyleMode =
+  | 'pencil-sketch'
+  | 'ink-wash'
+  | 'photoreal'
+  | 'noir'
+  | 'anime'
+  | 'watercolor'
+  | 'comic-ink'
+  | 'none';
 
-export const STYLE_TAG_PENCIL_SKETCH =
-  'Black-and-white pencil-sketch aesthetic, concise line work, greytone shading.';
+// Kept in sync with ai-proxy/server.js STYLE_PRESETS. Client-side copy is
+// used for ad-hoc panel gens where the client sends the fully-styled prompt
+// directly to /api/image/generate (no server-side re-appending happens).
+export const STYLE_PRESET_TAGS: Record<PanelStyleMode, string> = {
+  'pencil-sketch': 'Black-and-white pencil-sketch aesthetic, concise line work, greytone shading.',
+  'ink-wash': 'Black-and-white ink-wash illustration, loose brushwork, high-contrast shadows.',
+  'photoreal': 'Photorealistic cinematic still, natural lighting, shallow depth of field, film grain.',
+  'noir': 'Black-and-white film-noir cinematography, hard chiaroscuro lighting, deep shadows, 35mm grain.',
+  'anime': 'Anime key-frame illustration, clean linework, cel-shaded color, dramatic composition.',
+  'watercolor': 'Loose watercolor illustration, soft edges, muted palette, paper texture.',
+  'comic-ink': 'Comic-book ink illustration, bold outlines, halftone shading, dynamic composition.',
+  'none': '',
+};
+
+export const STYLE_PRESET_LABELS: Record<PanelStyleMode, string> = {
+  'pencil-sketch': 'Pencil sketch',
+  'ink-wash': 'Ink wash',
+  'photoreal': 'Photoreal',
+  'noir': 'Film noir',
+  'anime': 'Anime',
+  'watercolor': 'Watercolor',
+  'comic-ink': 'Comic book ink',
+  'none': 'No style',
+};
+
+export const PANEL_STYLE_ORDER: PanelStyleMode[] = [
+  'pencil-sketch', 'ink-wash', 'photoreal', 'noir', 'anime', 'watercolor', 'comic-ink', 'none',
+];
+
+// Legacy alias kept for any lingering imports.
+export const STYLE_TAG_PENCIL_SKETCH = STYLE_PRESET_TAGS['pencil-sketch'];
 
 export function styleSuffix(mode: PanelStyleMode | undefined): string {
-  return (mode ?? 'pencil-sketch') === 'pencil-sketch' ? ' ' + STYLE_TAG_PENCIL_SKETCH : '';
+  const effective = mode ?? 'pencil-sketch';
+  const tag = STYLE_PRESET_TAGS[effective] ?? '';
+  return tag ? ' ' + tag : '';
 }
 
 export type Panel = {
@@ -67,15 +106,116 @@ export type Panel = {
   styleMode?: PanelStyleMode; // undefined = default (pencil-sketch)
 };
 
-/** Freeform "slide" (Keynote-style): image + title + subtitle. Renders as a single full page. */
+/** Text alignment for a slide text box. */
+export type SlideTextAlign = 'left' | 'center' | 'right';
+
+/** Text weight for a slide text box (numeric CSS font-weight). */
+export type SlideFontWeight = 300 | 400 | 500 | 600 | 700 | 800 | 900;
+
+/**
+ * A single freeform text box on a section title slide. Position + size are in
+ * PERCENTAGES of the slide's inner body (0-100), so slides render correctly at any
+ * zoom level or page size. All styling lives on the text box itself.
+ */
+export type SlideTextBox = {
+  id: string;
+  text: string;
+  /** 0-100 (%) of slide-body width. */
+  x: number;
+  /** 0-100 (%) of slide-body height. */
+  y: number;
+  /** 0-100 (%) of slide-body width. */
+  width: number;
+  /** 0-100 (%) of slide-body height. */
+  height: number;
+  /** CSS font-family stack. */
+  fontFamily: string;
+  /** Font size in pixels of the slide's LOGICAL page (matches page.widthPx units). */
+  fontSize: number;
+  fontWeight: SlideFontWeight;
+  textAlign: SlideTextAlign;
+  italic: boolean;
+  color: string;
+};
+
+/** Freeform "slide" (Keynote-style): two floating, individually styled text boxes.
+ *
+ *  v3 slides had `title`/`subtitle` strings and an `imageDataUrl`. v4 replaces
+ *  those with two `SlideTextBox` entries (titleBox, subtitleBox). The old image
+ *  fields are kept on the type as optional for backward compat during load but
+ *  are no longer rendered.
+ */
 export type Slide = {
   id: string;
-  imageDataUrl: string | null;
-  imageName: string | null;
-  title: string;
-  subtitle: string;
+  titleBox: SlideTextBox;
+  subtitleBox: SlideTextBox;
   showFooter: boolean;
+  /** @deprecated retained only so old v3 saves round-trip; never rendered in v4+. */
+  imageDataUrl?: string | null;
+  /** @deprecated see imageDataUrl. */
+  imageName?: string | null;
 };
+
+/** Font families offered in the slide text-box picker. Web-safe + already-loaded. */
+export const SLIDE_FONT_FAMILIES: { label: string; value: string }[] = [
+  { label: 'Inter', value: 'Inter, -apple-system, sans-serif' },
+  { label: 'Helvetica', value: 'Helvetica, Arial, sans-serif' },
+  { label: 'Georgia', value: 'Georgia, serif' },
+  { label: 'Times New Roman', value: '"Times New Roman", Times, serif' },
+  { label: 'Courier New', value: '"Courier New", Courier, monospace' },
+  { label: 'Menlo', value: 'Menlo, Monaco, monospace' },
+  { label: 'Impact', value: 'Impact, "Haettenschweiler", sans-serif' },
+  { label: 'Comic Sans MS', value: '"Comic Sans MS", "Comic Sans", cursive' },
+];
+
+/** Font sizes offered in the slide text-box picker. Free-form entry is also allowed. */
+export const SLIDE_FONT_SIZES: number[] = [12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 64, 72, 96, 128];
+
+/** Font-weight options offered in the slide text-box picker. */
+export const SLIDE_FONT_WEIGHTS: { label: string; value: SlideFontWeight }[] = [
+  { label: 'Light', value: 300 },
+  { label: 'Regular', value: 400 },
+  { label: 'Medium', value: 500 },
+  { label: 'Semibold', value: 600 },
+  { label: 'Bold', value: 700 },
+  { label: 'Extra Bold', value: 800 },
+  { label: 'Black', value: 900 },
+];
+
+export function newTitleTextBox(text = 'Section Title'): SlideTextBox {
+  return {
+    id: cryptoRandomId(),
+    text,
+    // Centered vertically in the top half, spanning most of the width.
+    x: 10,
+    y: 32,
+    width: 80,
+    height: 20,
+    fontFamily: SLIDE_FONT_FAMILIES[0].value,
+    fontSize: 84,
+    fontWeight: 700,
+    textAlign: 'center',
+    italic: false,
+    color: '#111111',
+  };
+}
+
+export function newSubtitleTextBox(text = ''): SlideTextBox {
+  return {
+    id: cryptoRandomId(),
+    text,
+    x: 15,
+    y: 56,
+    width: 70,
+    height: 12,
+    fontFamily: SLIDE_FONT_FAMILIES[0].value,
+    fontSize: 36,
+    fontWeight: 400,
+    textAlign: 'center',
+    italic: false,
+    color: '#111111',
+  };
+}
 
 /** Per-storyboard overrides. Undefined fields fall back to global settings. */
 export type StoryboardOverrides = {
@@ -105,11 +245,32 @@ export type DocItem =
 export function newSlide(): Slide {
   return {
     id: cryptoRandomId(),
-    imageDataUrl: null,
-    imageName: null,
-    title: 'Section Title',
-    subtitle: '',
+    titleBox: newTitleTextBox('Section Title'),
+    subtitleBox: newSubtitleTextBox(''),
     showFooter: true,
+  };
+}
+
+/**
+ * Migrate a v3-shaped slide (title/subtitle strings) into a v4 Slide with
+ * default-positioned text boxes. Preserves ids where possible so the outliner
+ * doesn't jump around after load.
+ */
+export function migrateSlideFromV3(raw: {
+  id?: string;
+  title?: string;
+  subtitle?: string;
+  showFooter?: boolean;
+  imageDataUrl?: string | null;
+  imageName?: string | null;
+}): Slide {
+  return {
+    id: raw.id ?? cryptoRandomId(),
+    titleBox: newTitleTextBox(raw.title ?? 'Section Title'),
+    subtitleBox: newSubtitleTextBox(raw.subtitle ?? ''),
+    showFooter: raw.showFooter ?? true,
+    imageDataUrl: raw.imageDataUrl ?? null,
+    imageName: raw.imageName ?? null,
   };
 }
 

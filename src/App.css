@@ -214,100 +214,213 @@ input, textarea, select {
 .oi-slide { color: #ffb74a; }
 .oi-storyboard { color: #4a9eff; }
 
-/* --- Slide page --- */
+/* --- Slide page (v4 Keynote-style freeform text boxes) --- */
 .slide-body {
   width: 100%;
   height: calc(100% - 40px);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 40px;
   position: relative;
   overflow: hidden;
 }
-.slide-body.slide-drop { box-shadow: inset 0 0 0 6px #4a9eff; }
-.slide-image-wrap {
-  max-width: 70%;
-  max-height: 55%;
-  position: relative;
+.slide-body-freeform {
+  /* absolute-positioned children use percent coords relative to this box */
+  cursor: default;
+}
+
+.slide-textbox {
+  position: absolute;
+  box-sizing: border-box;
+  cursor: move;
+  user-select: none;
+  /* padding is 0: the content div handles its own alignment/padding so
+     percent-based width/height stays honest for hit testing. */
+  padding: 0;
+}
+.slide-textbox.editing { cursor: text; }
+
+.slide-textbox-frame {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  transition: border-color 80ms ease, background-color 80ms ease;
+}
+.slide-textbox:hover .slide-textbox-frame {
+  border-color: rgba(74, 158, 255, 0.4);
+}
+.slide-textbox.selected .slide-textbox-frame {
+  border-color: #4a9eff;
+  background-color: rgba(74, 158, 255, 0.04);
+}
+.slide-textbox.editing .slide-textbox-frame {
+  border-color: #4a9eff;
+  border-style: dashed;
+  background-color: rgba(74, 158, 255, 0.06);
+}
+
+.slide-textbox-content {
+  position: absolute;
+  inset: 0;
+  padding: 4px 8px;
   display: flex;
+  flex-direction: column;
+  justify-content: center;
+  outline: none;
+  overflow: hidden;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+  line-height: 1.15;
+  letter-spacing: 0.005em;
+}
+.slide-textbox-content.is-placeholder {
+  opacity: 0.32;
+  font-style: italic;
+}
+.slide-textbox.editing .slide-textbox-content {
+  cursor: text;
+  user-select: text;
+}
+
+/* Resize handles */
+.slide-textbox-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: #ffffff;
+  border: 1.5px solid #4a9eff;
+  border-radius: 50%;
+  z-index: 2;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+.slide-textbox-handle-nw { top: -5px;  left: -5px;  cursor: nwse-resize; }
+.slide-textbox-handle-ne { top: -5px;  right: -5px; cursor: nesw-resize; }
+.slide-textbox-handle-sw { bottom: -5px; left: -5px; cursor: nesw-resize; }
+.slide-textbox-handle-se { bottom: -5px; right: -5px; cursor: nwse-resize; }
+.slide-textbox-handle-n  { top: -5px; left: 50%; transform: translateX(-50%); cursor: ns-resize; }
+.slide-textbox-handle-s  { bottom: -5px; left: 50%; transform: translateX(-50%); cursor: ns-resize; }
+.slide-textbox-handle-w  { top: 50%; left: -5px; transform: translateY(-50%); cursor: ew-resize; }
+.slide-textbox-handle-e  { top: 50%; right: -5px; transform: translateY(-50%); cursor: ew-resize; }
+
+/* Floating toolbar */
+.slide-textbox-toolbar {
+  position: absolute;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: rgba(30, 30, 30, 0.96);
+  color: #f0f0f0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 12px;
+  white-space: nowrap;
+  user-select: none;
+}
+.slide-textbox-toolbar-select {
+  background: rgba(255, 255, 255, 0.06);
+  color: #f0f0f0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.slide-textbox-toolbar-size {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  padding: 0 2px;
+}
+.slide-textbox-toolbar-size-input {
+  width: 44px;
+  background: transparent;
+  color: #f0f0f0;
+  border: none;
+  outline: none;
+  text-align: center;
+  font-size: 12px;
+  padding: 3px 0;
+  -moz-appearance: textfield;
+}
+.slide-textbox-toolbar-size-input::-webkit-outer-spin-button,
+.slide-textbox-toolbar-size-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.slide-textbox-toolbar-size-preset {
+  background: transparent;
+  color: #f0f0f0;
+  border: none;
+  outline: none;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+.slide-textbox-toolbar-btn {
+  min-width: 24px;
+  height: 24px;
+  padding: 0 6px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #f0f0f0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
 }
-.slide-image {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-  display: block;
+.slide-textbox-toolbar-btn:hover { background: rgba(255, 255, 255, 0.1); }
+.slide-textbox-toolbar-btn.is-active {
+  background: #4a9eff;
+  border-color: #4a9eff;
+  color: #ffffff;
 }
-.slide-image-replace,
-.slide-image-remove {
-  position: absolute;
-  top: 8px;
-  background: rgba(0,0,0,0.7);
-  color: #fff;
-  border: 1px solid rgba(255,255,255,0.15);
-  font-size: 11px;
-  padding: 4px 10px;
-  border-radius: 4px;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 100ms ease;
-}
-.slide-image-replace { right: 40px; }
-.slide-image-remove { right: 8px; padding: 4px 8px; font-size: 14px; line-height: 1; }
-.slide-image-wrap:hover .slide-image-replace,
-.slide-image-wrap:hover .slide-image-remove { opacity: 1; }
-
-.slide-image-placeholder {
-  background: transparent;
-  border: 2px dashed currentColor;
-  color: inherit;
-  padding: 60px 100px;
-  font-size: 20px;
-  border-radius: 12px;
-  cursor: pointer;
-  opacity: 0.4;
-  font-family: inherit;
-}
-.slide-image-placeholder:hover { opacity: 0.7; }
-.slide-text-stack {
+.slide-textbox-toolbar-align {
   display: flex;
-  flex-direction: column;
-  gap: 12px;
+  gap: 2px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  padding: 1px;
+}
+.slide-textbox-toolbar-align .slide-textbox-toolbar-btn {
+  border: none;
+  border-radius: 3px;
+  min-width: 22px;
+  height: 22px;
+}
+.slide-textbox-toolbar-color {
+  display: inline-flex;
   align-items: center;
-  width: 80%;
-  max-width: 1400px;
+  gap: 4px;
+  cursor: pointer;
+  position: relative;
 }
-.slide-title {
+.slide-textbox-toolbar-color input[type='color'] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
   width: 100%;
-  text-align: center;
-  background: transparent;
-  border: none;
-  outline: none;
-  font-size: 84px;
-  padding: 8px 20px;
-  border-radius: 6px;
-  letter-spacing: 0.02em;
-  font-family: inherit;
+  height: 100%;
+  cursor: pointer;
 }
-.slide-title:focus { background: rgba(128,128,128,0.08); }
-.slide-title::placeholder { opacity: 0.3; font-style: italic; }
-.slide-subtitle {
-  width: 100%;
-  text-align: center;
-  background: transparent;
-  border: none;
-  outline: none;
-  font-size: 36px;
-  padding: 6px 20px;
-  border-radius: 6px;
-  opacity: 0.85;
-  font-family: inherit;
+.slide-textbox-toolbar-color-swatch {
+  display: inline-block;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.4);
 }
-.slide-subtitle:focus { background: rgba(128,128,128,0.08); }
-.slide-subtitle::placeholder { opacity: 0.3; font-style: italic; }
 
 /* --- Zoom HUD (bottom-right of canvas) --- */
 .zoom-hud {
@@ -1583,7 +1696,42 @@ input, textarea, select {
   -webkit-box-orient: vertical;
 }
 
-/* Style-mode toggle inside the panel AI editor */
+/* Style-preset chip picker inside the panel AI editor */
+.panel-ai-style {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 2px 0;
+}
+.panel-ai-style-label {
+  font-size: 10px;
+  color: #bbb;
+  letter-spacing: 0.02em;
+}
+.panel-ai-style-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.panel-ai-style-chip {
+  background: #101013;
+  color: #ddd;
+  border: 1px solid #303035;
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 10px;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.panel-ai-style-chip:hover { background: #17171b; border-color: #4a4a4e; }
+.panel-ai-style-chip.active {
+  background: #3a76c9;
+  border-color: #3a76c9;
+  color: #fff;
+}
+
+/* Legacy style-mode toggle (retained for any callers that still render it) */
 .panel-ai-toggle {
   display: flex;
   align-items: center;
