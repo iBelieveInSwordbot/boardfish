@@ -12,9 +12,10 @@ type Props = {
   selected: boolean;
   settings: ProjectSettings;
   dispatch: React.Dispatch<Action>;
+  onOpenNodeEditor?: (panelId: string) => void;
 };
 
-export function PanelView({ panel, index, selected, settings, dispatch }: Props) {
+export function PanelView({ panel, index, selected, settings, dispatch, onOpenNodeEditor }: Props) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: panel.id });
   const [aiOpen, setAiOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -180,6 +181,13 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
           aspectRatio: `${settings.panelAspectRatio}`,
           background: '#000',
         }}
+        onDoubleClick={(e) => {
+          if (!onOpenNodeEditor) return;
+          e.stopPropagation();
+          e.preventDefault();
+          onOpenNodeEditor(panel.id);
+        }}
+        title={onOpenNodeEditor ? 'Double-click to open node editor' : undefined}
       >
         {panel.imageDataUrl ? (
           <img src={panel.imageDataUrl} alt={panel.imageName ?? ''} style={{ objectFit }} draggable={false} />

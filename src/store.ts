@@ -40,6 +40,7 @@ function normalizePanel(p: Partial<Panel>): Panel {
     aiPrompt: p.aiPrompt,
     imageHistory: p.imageHistory ? p.imageHistory.map((v) => ({ ...v })) : undefined,
     styleMode: p.styleMode,
+    nodeGraph: p.nodeGraph,
   };
 }
 
@@ -163,6 +164,8 @@ export type Action =
   | { type: 'RESTORE_AI_IMAGE'; panelId: string; versionId: string }
   // AI: delete a specific history entry (permanent).
   | { type: 'DELETE_AI_HISTORY'; panelId: string; versionId: string }
+  // Node editor: replace this panel's saved node graph. Fired on NodeEditor save.
+  | { type: 'SET_PANEL_NODE_GRAPH'; panelId: string; graph: unknown }
   | { type: 'LOAD_PROJECT'; state: { settings: ProjectSettings; items: DocItem[] } }
   | { type: 'RESET' };
 
@@ -542,6 +545,15 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
       });
       return { ...state, items: updateStoryboardPanels(state.items, loc.itemIdx, nextPanels) };
     }
+    case 'SET_PANEL_NODE_GRAPH': {
+      const loc = findPanelLocation(state.items, action.panelId);
+      if (!loc) return state;
+      const it = state.items[loc.itemIdx] as Extract<DocItem, { kind: 'storyboard' }>;
+      const nextPanels = it.panels.map((p) =>
+        p.id === action.panelId ? { ...p, nodeGraph: action.graph } : p,
+      );
+      return { ...state, items: updateStoryboardPanels(state.items, loc.itemIdx, nextPanels) };
+    }
     case 'UPDATE_FIELD': {
       const loc = findPanelLocation(state.items, action.panelId);
       if (!loc) return state;
@@ -782,6 +794,7 @@ function deepClonePanel(p: Panel): Panel {
     aiPrompt: p.aiPrompt,
     imageHistory: p.imageHistory ? p.imageHistory.map((v) => ({ ...v })) : undefined,
     styleMode: p.styleMode,
+    nodeGraph: p.nodeGraph,
   };
 }
 

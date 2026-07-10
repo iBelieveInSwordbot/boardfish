@@ -5,18 +5,9 @@
 // local ai-proxy. FAL-CDN URLs get inlined to data URLs so the .boardfish zip
 // is self-contained.
 //
-// The parallel subagent owns `src/nodes/types.ts`. At the time this file was
-// written that file may not exist yet, so we declare a **local minimal shape**
-// of NodeGraph / BaseNode / NodeId here. When the real types land, swap:
-//
-//     import type { NodeGraph, BaseNode, NodeId } from '../nodes/types';
-//
-// and delete the local declarations below. The runtime shape assumed here
-// (id / kind / data / output, plus a flat edges array of {from, to}) matches
-// what the design brief specifies.
-//
-// TODO(wozbot): replace local types with `import type ... from '../nodes/types'`
-// once the parallel node-editor subagent lands `src/nodes/types.ts`.
+// Types come from src/nodes/types.ts. Edges use structured {from,to} with
+// nodeId + portId; the runner treats any incoming edge as an input and
+// exposes `byPort` via `to.portId` so `switch` can pick a/b.
 //
 // TODO(wozbot): unit test — vitest isn't in the current package.json and
 // adding a `.test.ts` would need a runner + tsx/ts-node setup. When we add
@@ -33,63 +24,33 @@ import {
   urlToDataUrl,
 } from './client';
 import { getFalModel } from './fal-models';
+import type { NodeGraph, BaseNode, NodeId, Edge } from '../nodes/types';
 
-// ---------- Local minimal type fallbacks ----------
-
-export type NodeId = string;
-
-export type NodeKind =
-  | 'text-prompt'
-  | 'image-gen'
-  | 'movie-gen'
-  | 'out'
-  | 'switch'
-  | 'null-node'
-  | 'prompt-concat'
-  | 'custom-fal';
-
-// Output shape stored on each node after execution. The real BaseNode.output
-// will be broader than this; we use a permissive shape so we can attach the
-// fields we care about without fighting the type system.
+// The stored per-node output shape used by the executor. This is a superset of
+// what BaseNode.output declares in nodes/types.ts (which has kind/dataUrl/text/
+// mime/generatedAt). Executor-only diagnostic fields (error/requestId/
+// sourceUrl/updatedAt) live in `data.__runtime` on the node to avoid widening
+// the persisted type. In-memory we stash them here and merge back later.
 export type NodeOutput = {
   kind?: 'text' | 'image' | 'video' | 'unknown';
   text?: string;
   dataUrl?: string;
   mime?: string;
-  sourceUrl?: string;   // original FAL CDN URL, before data-URL inlining
-  requestId?: string;   // FAL request id for debugging
+  sourceUrl?: string;
+  requestId?: string;
   error?: string;
   updatedAt?: number;
 };
 
-export type BaseNode = {
-  id: NodeId;
-  kind: NodeKind;
-  data: Record<string, unknown>;
-  output?: NodeOutput;
-  // The real BaseNode will carry more fields (position, label, etc). We only
-  // touch id / kind / data / output here.
-};
-
-export type NodeEdge = {
-  id?: string;
-  from: NodeId;          // source node id
-  to: NodeId;            // target node id
-  fromPort?: string;     // optional named output port
-  toPort?: string;       // optional named input port
-};
-
-export type NodeGraph = {
-  nodes: BaseNode[];
-  edges: NodeEdge[];
-};
+// Local alias for the executor's edge iteration.
+type NodeEdge = Edge;
 
 // ---------- Public API ----------
 
 export type ExecutionEvent =
   | { kind: 'started';  nodeId: NodeId }
   | { kind: 'progress'; nodeId: NodeId; message: string }
-  | { kind: 'output';   nodeId: NodeId; output: NodeOutput }
+  | { kind: 'output';   nodeId: NodeId; output: BaseNode['output'] }
   | { kind: 'failed';   nodeId: NodeId; error: string }
   | { kind: 'done';     graph: NodeGraph };
 
@@ -118,7 +79,7 @@ export async function executeGraph(
   }
   const edges = graph.edges.slice();
 
-  // Build adjacency + reverse adjacency.
+  // Build adjacency + reverse adjacency (edges are structured {nodeId,portId}).
   const outgoing = new Map<NodeId, NodeEdge[]>();
   const incoming = new Map<NodeId, NodeEdge[]>();
   for (const id of nodesById.keys()) {
@@ -126,9 +87,9 @@ export async function executeGraph(
     incoming.set(id, []);
   }
   for (const e of edges) {
-    if (!nodesById.has(e.from) || !nodesById.has(e.to)) continue; // dangling edge
-    outgoing.get(e.from)!.push(e);
-    incoming.get(e.to)!.push(e);
+    if (!nodesById.has(e.from.nodeId) || !nodesById.has(e.to.nodeId)) continue; // dangling edge
+    outgoing.get(e.from.nodeId)!.push(e);
+    incoming.get(e.to.nodeId)!.push(e);
   }
 
   // Decide which nodes participate in this run.
@@ -173,11 +134,14 @@ export async function executeGraph(
           onEvent?.({ kind: 'progress', nodeId, message }),
         signal,
       });
-      node.output = { ...output, updatedAt: Date.now() };
+      node.output = mergeOutput(output, Date.now());
       onEvent?.({ kind: 'output', nodeId, output: node.output });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      node.output = { kind: 'unknown', error: message, updatedAt: Date.now() };
+      // Persisted output type doesn't carry error; store it on node.data.__runtime.
+      const runtime = (node.data.__runtime ?? {}) as Record<string, unknown>;
+      node.data = { ...node.data, __runtime: { ...runtime, error: message } };
+      node.output = { kind: 'text', text: '', generatedAt: Date.now() };
       onEvent?.({ kind: 'failed', nodeId, error: message });
       // Fail-fast: downstream nodes have no meaningful input.
       throw err;
@@ -185,11 +149,24 @@ export async function executeGraph(
   }
 
   const nextGraph: NodeGraph = {
+    ...graph,
     nodes: Array.from(nodesById.values()),
     edges,
   };
   onEvent?.({ kind: 'done', graph: nextGraph });
   return nextGraph;
+}
+
+// Narrow the executor's rich NodeOutput to the persisted BaseNode.output shape.
+// The persisted type only allows kind/dataUrl/text/mime/generatedAt.
+function mergeOutput(out: NodeOutput, generatedAt: number): BaseNode['output'] {
+  return {
+    kind: (out.kind === 'unknown' || !out.kind) ? 'text' : out.kind,
+    dataUrl: out.dataUrl,
+    text: out.text,
+    mime: out.mime,
+    generatedAt,
+  };
 }
 
 // ---------- Graph helpers ----------
@@ -209,7 +186,7 @@ function subgraphFor(
     if (set.has(id)) continue;
     set.add(id);
     for (const e of outgoing.get(id) ?? []) {
-      if (!set.has(e.to)) stack.push(e.to);
+      if (!set.has(e.to.nodeId)) stack.push(e.to.nodeId);
     }
   }
   // + all ancestors (needed to resolve inputs)
@@ -217,9 +194,9 @@ function subgraphFor(
   while (ancStack.length) {
     const id = ancStack.pop()!;
     for (const e of incoming.get(id) ?? []) {
-      if (!set.has(e.from)) {
-        set.add(e.from);
-        ancStack.push(e.from);
+      if (!set.has(e.from.nodeId)) {
+        set.add(e.from.nodeId);
+        ancStack.push(e.from.nodeId);
       }
     }
   }
@@ -232,13 +209,13 @@ function descendantsOf(
 ): Set<NodeId> {
   const set = new Set<NodeId>();
   const stack: NodeId[] = [];
-  for (const e of outgoing.get(startAt) ?? []) stack.push(e.to);
+  for (const e of outgoing.get(startAt) ?? []) stack.push(e.to.nodeId);
   while (stack.length) {
     const id = stack.pop()!;
     if (set.has(id)) continue;
     set.add(id);
     for (const e of outgoing.get(id) ?? []) {
-      if (!set.has(e.to)) stack.push(e.to);
+      if (!set.has(e.to.nodeId)) stack.push(e.to.nodeId);
     }
   }
   return set;
@@ -251,7 +228,7 @@ function topoSort(
 ): NodeId[] {
   const remainingIn = new Map<NodeId, number>();
   for (const id of participants) {
-    const inc = (incoming.get(id) ?? []).filter((e) => participants.has(e.from));
+    const inc = (incoming.get(id) ?? []).filter((e) => participants.has(e.from.nodeId));
     remainingIn.set(id, inc.length);
   }
   const ready: NodeId[] = [];
@@ -261,7 +238,7 @@ function topoSort(
   for (const id of participants) outgoingByFrom.set(id, []);
   for (const id of participants) {
     for (const e of incoming.get(id) ?? []) {
-      if (participants.has(e.from)) outgoingByFrom.get(e.from)!.push(id);
+      if (participants.has(e.from.nodeId)) outgoingByFrom.get(e.from.nodeId)!.push(id);
     }
   }
 
@@ -287,7 +264,10 @@ function topoSort(
 function hasValidOutput(n: BaseNode): boolean {
   const o = n.output;
   if (!o) return false;
-  if (o.error) return false;
+  // Runtime error flag lives on data.__runtime (persisted output shape doesn't
+  // include error). If a previous run set an error, treat the output as stale.
+  const runtime = (n.data.__runtime ?? {}) as { error?: unknown };
+  if (runtime.error) return false;
   return Boolean(o.text || o.dataUrl);
 }
 
@@ -318,10 +298,10 @@ function collectInputs(
     byPort: {},
   };
   for (const e of inc) {
-    const src = nodesById.get(e.from);
+    const src = nodesById.get(e.from.nodeId);
     if (!src?.output) continue;
     const o = src.output;
-    if (e.toPort) inputs.byPort[e.toPort] = o;
+    if (e.to.portId) inputs.byPort[e.to.portId] = o;
     if (o.text) inputs.texts.push(o.text);
     if (o.dataUrl) {
       if (o.kind === 'video') inputs.videos.push(o.dataUrl);
@@ -332,7 +312,6 @@ function collectInputs(
         else inputs.images.push(o.dataUrl);
       }
     }
-    if (o.sourceUrl) inputs.urls.push(o.sourceUrl);
   }
   return inputs;
 }

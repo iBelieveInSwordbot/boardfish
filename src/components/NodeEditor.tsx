@@ -38,6 +38,7 @@ import {
   setNodeOutput,
   updateNodeData,
 } from '../nodes/graph-utils';
+import { executeGraph } from '../ai/dag-executor';
 import { NODE_KINDS } from '../nodes/registry';
 import { NodeView, ContextMenu, type ContextMenuState } from './NodeCanvas';
 import { InspectorPane } from './NodeInspector';
@@ -76,7 +77,8 @@ type Action =
   | { type: 'ADD_EDGE'; from: Edge['from']; to: Edge['to'] }
   | { type: 'REMOVE_EDGE'; edgeId: string }
   | { type: 'SET_VIEWPORT'; panOffset: { x: number; y: number }; zoom: number }
-  | { type: 'SET_NODE_OUTPUT'; id: NodeId; output: BaseNode['output'] };
+  | { type: 'SET_NODE_OUTPUT'; id: NodeId; output: BaseNode['output'] }
+  | { type: 'SET_GRAPH'; graph: NodeGraph; dirty?: boolean };
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
@@ -106,6 +108,8 @@ function reducer(state: State, action: Action): State {
       };
     case 'SET_NODE_OUTPUT':
       return { graph: setNodeOutput(state.graph, action.id, action.output), dirty: true };
+    case 'SET_GRAPH':
+      return { graph: action.graph, dirty: action.dirty ?? true };
   }
 }
 
@@ -117,9 +121,6 @@ const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 3.0;
 const NODE_HEADER_H = 32;
 const PORT_ROW_H = 18;
-
-// Simulated in-flight duration for the stub Generate action.
-const SIM_GENERATE_MS = 2000;
 
 // ---------------------------------------------------------------------------
 // Component
@@ -135,7 +136,7 @@ export function NodeEditor(props: NodeEditorProps) {
     // Also seed the image-gen aspect from panelAspect if provided.
     if (panelAspect) {
       const imgGen = g.nodes.find((n) => n.kind === 'image-gen');
-      if (imgGen) imgGen.data = { ...imgGen.data, aspect: panelAspect };
+      if (imgGen) imgGen.data = { ...imgGen.data, aspect_ratio: panelAspect };
     }
     return g;
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -485,23 +486,63 @@ export function NodeEditor(props: NodeEditorProps) {
   }
 
   // -------------------------------------------------------------------------
-  // Generate (stub — sets inFlight for 2s, no actual FAL call)
+  // Generate — execute the graph starting at this node via the FAL DAG executor
   // -------------------------------------------------------------------------
 
-  const onGenerate = useCallback((node: BaseNode) => {
-    console.log('[NodeEditor] would execute node', node.id, node.kind);
+  const [execError, setExecError] = useState<string | null>(null);
+  // Latest graph is stashed in a ref so onGenerate can start from current state
+  // without needing to be re-created every reducer tick.
+  const graphRef = useRef<NodeGraph>(state.graph);
+  useEffect(() => { graphRef.current = state.graph; }, [state.graph]);
+
+  const onGenerate = useCallback(async (node: BaseNode) => {
+    setExecError(null);
     setInFlight((prev) => {
       const next = new Set(prev);
       next.add(node.id);
       return next;
     });
-    window.setTimeout(() => {
+    try {
+      const nextGraph = await executeGraph(graphRef.current, {
+        startAt: node.id,
+        onEvent: (e) => {
+          if (e.kind === 'started') {
+            setInFlight((prev) => {
+              const next = new Set(prev);
+              next.add(e.nodeId);
+              return next;
+            });
+          } else if (e.kind === 'output') {
+            // Live-update the node's output so previews refresh mid-execution.
+            dispatch({ type: 'SET_NODE_OUTPUT', id: e.nodeId, output: e.output });
+            setInFlight((prev) => {
+              const next = new Set(prev);
+              next.delete(e.nodeId);
+              return next;
+            });
+          } else if (e.kind === 'failed') {
+            setInFlight((prev) => {
+              const next = new Set(prev);
+              next.delete(e.nodeId);
+              return next;
+            });
+            setExecError(`${e.nodeId}: ${e.error}`);
+          }
+        },
+      });
+      dispatch({ type: 'SET_GRAPH', graph: nextGraph, dirty: true });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setExecError(msg);
+      console.error('[NodeEditor] executeGraph failed', err);
+    } finally {
+      // Always clear inFlight for this node (defensive).
       setInFlight((prev) => {
         const next = new Set(prev);
         next.delete(node.id);
         return next;
       });
-    }, SIM_GENERATE_MS);
+    }
   }, []);
 
   // -------------------------------------------------------------------------
@@ -524,6 +565,11 @@ export function NodeEditor(props: NodeEditorProps) {
         <div className="ne-topbar-sub">
           {graph.nodes.length} node{graph.nodes.length === 1 ? '' : 's'} · {graph.edges.length} edge{graph.edges.length === 1 ? '' : 's'}
           {state.dirty ? ' · unsaved' : ''}
+          {execError && (
+            <span className="ne-topbar-err" title={execError} onClick={() => setExecError(null)}>
+              ⚠ execution error — click to dismiss
+            </span>
+          )}
         </div>
         <div className="ne-topbar-spacer" />
         <button className="ne-topbar-btn ghost" onClick={triggerClose} title="Close (Esc)">

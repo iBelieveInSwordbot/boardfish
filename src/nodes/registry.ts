@@ -20,22 +20,33 @@
 import { createElement, type FC } from 'react';
 import type { BaseNode, NodeKind, NodePort } from './types';
 import { defaultDataFor, defaultPortsFor } from './types';
+import { FAL_MODELS } from '../ai/fal-models';
 
-// Placeholder type: the parallel subagent will produce the real FAL model
-// list in src/ai/fal-models.ts. Kept intentionally minimal so this file
-// stays self-contained until wiring day.
+// Local view of a FAL model as this file needs it (id + label + coming-soon flag).
+// Sourced from src/ai/fal-models.ts, filtered by kind.
 export type FalImageModel = {
   id: string;
   label: string;
   comingSoon?: boolean;
 };
 
-const HARD_CODED_IMAGE_MODELS: FalImageModel[] = [
-  { id: 'nano-banana-pro', label: 'Nano Banana Pro' },
-  { id: 'nano-banana-1', label: 'Nano Banana 1', comingSoon: true },
-  { id: 'nano-banana-2', label: 'Nano Banana 2', comingSoon: true },
-  { id: 'gpt-image-2', label: 'GPT-image 2', comingSoon: true },
-];
+const IMAGE_MODELS: FalImageModel[] = FAL_MODELS
+  .filter((m) => m.kind === 'image')
+  .map((m) => ({
+    id: m.id,
+    label: m.label,
+    comingSoon: m.status === 'coming-soon',
+  }));
+
+const VIDEO_MODELS: FalImageModel[] = FAL_MODELS
+  .filter((m) => m.kind === 'video')
+  .map((m) => ({
+    id: m.id,
+    label: m.label,
+    comingSoon: m.status === 'coming-soon',
+  }));
+
+// (Historic HARD_CODED_IMAGE_MODELS alias removed after migration to FAL_MODELS.)
 
 const ASPECT_RATIOS: string[] = [
   '16:9', '9:16', '1:1', '4:3', '3:4', '3:2', '2:3', '4:5', '5:4', '21:9',
@@ -75,8 +86,8 @@ const TextPromptPreview: FC<{ node: BaseNode }> = ({ node }) => {
 
 const ImageGenPreview: FC<{ node: BaseNode }> = ({ node }) => {
   const url = node.output?.dataUrl;
-  const model = String(node.data.model ?? 'nano-banana-pro');
-  const aspect = String(node.data.aspect ?? '16:9');
+  const model = String(node.data.modelId ?? 'nano-banana-pro');
+  const aspect = String(node.data.aspect_ratio ?? '16:9');
   if (url) {
     return createElement(
       'div',
@@ -106,12 +117,41 @@ const ImageGenPreview: FC<{ node: BaseNode }> = ({ node }) => {
   );
 };
 
-const MovieGenPreview: FC<{ node: BaseNode }> = () =>
-  createElement(
+const MovieGenPreview: FC<{ node: BaseNode }> = ({ node }) => {
+  const url = node.output?.dataUrl;
+  const model = String(node.data.modelId ?? 'veo-3');
+  const aspect = String(node.data.aspect_ratio ?? '16:9');
+  const duration = Number(node.data.duration ?? 5);
+  if (url) {
+    return createElement(
+      'div',
+      { className: 'ne-node-preview ne-node-preview--video' },
+      createElement('video', {
+        src: url,
+        muted: true,
+        loop: true,
+        autoPlay: true,
+        playsInline: true,
+        className: 'ne-node-preview-thumb',
+      }),
+      createElement(
+        'div',
+        { className: 'ne-node-preview-caption' },
+        `${modelLabel(model)} · ${aspect} · ${duration}s`,
+      ),
+    );
+  }
+  return createElement(
     'div',
-    { className: 'ne-node-preview ne-node-preview--stub' },
-    createElement('div', { className: 'ne-node-preview-empty' }, '🎬 video — coming soon'),
+    { className: 'ne-node-preview ne-node-preview--video is-empty' },
+    createElement('div', { className: 'ne-node-preview-empty' }, '🎬 no video yet'),
+    createElement(
+      'div',
+      { className: 'ne-node-preview-caption' },
+      `${modelLabel(model)} · ${aspect} · ${duration}s`,
+    ),
   );
+};
 
 const OutPreview: FC<{ node: BaseNode }> = ({ node }) => {
   const url = node.output?.dataUrl;
@@ -199,9 +239,9 @@ const TextPromptInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) =
 };
 
 const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
-  const model = String(node.data.model ?? 'nano-banana-pro');
-  const aspect = String(node.data.aspect ?? '16:9');
-  const variants = Number(node.data.variants ?? 1);
+  const modelId = String(node.data.modelId ?? 'nano-banana-pro');
+  const aspect = String(node.data.aspect_ratio ?? '16:9');
+  const variants = Number(node.data.num_images ?? 1);
   const url = node.output?.dataUrl;
 
   return createElement(
@@ -213,18 +253,14 @@ const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
       'select',
       {
         className: 'ne-inspect-select',
-        value: model,
+        value: modelId,
         onChange: (e: React.ChangeEvent<HTMLSelectElement>) =>
-          onChangeData({ model: e.target.value }),
+          onChangeData({ modelId: e.target.value }),
       },
-      ...HARD_CODED_IMAGE_MODELS.map((m) =>
+      ...IMAGE_MODELS.map((m) =>
         createElement(
           'option',
-          {
-            key: m.id,
-            value: m.id,
-            disabled: m.comingSoon,
-          },
+          { key: m.id, value: m.id, disabled: m.comingSoon },
           m.comingSoon ? `${m.label} (coming soon)` : m.label,
         ),
       ),
@@ -237,7 +273,7 @@ const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
         className: 'ne-inspect-select',
         value: aspect,
         onChange: (e: React.ChangeEvent<HTMLSelectElement>) =>
-          onChangeData({ aspect: e.target.value }),
+          onChangeData({ aspect_ratio: e.target.value }),
       },
       ...ASPECT_RATIOS.map((a) =>
         createElement('option', { key: a, value: a }, a),
@@ -255,7 +291,7 @@ const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
             key: n,
             type: 'button',
             className: 'ne-inspect-chip' + (variants === n ? ' is-active' : ''),
-            onClick: () => onChangeData({ variants: n }),
+            onClick: () => onChangeData({ num_images: n }),
           },
           String(n),
         ),
@@ -283,16 +319,79 @@ const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
   );
 };
 
-const MovieGenInspector: NodeKindDef['Inspector'] = () =>
-  createElement(
+const MovieGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
+  const modelId = String(node.data.modelId ?? 'veo-3');
+  const aspect = String(node.data.aspect_ratio ?? '16:9');
+  const duration = Number(node.data.duration ?? 5);
+  const url = node.output?.dataUrl;
+
+  return createElement(
     'div',
     { className: 'ne-inspect-body' },
+    createElement('label', { className: 'ne-inspect-label' }, 'Model'),
     createElement(
-      'div',
-      { className: 'ne-inspect-note' },
-      'Video generation is coming next. The node exists so graphs can round-trip today; wiring lands in Phase B/2.',
+      'select',
+      {
+        className: 'ne-inspect-select',
+        value: modelId,
+        onChange: (e: React.ChangeEvent<HTMLSelectElement>) =>
+          onChangeData({ modelId: e.target.value }),
+      },
+      ...VIDEO_MODELS.map((m) =>
+        createElement(
+          'option',
+          { key: m.id, value: m.id, disabled: m.comingSoon },
+          m.comingSoon ? `${m.label} (coming soon)` : m.label,
+        ),
+      ),
     ),
+    createElement('label', { className: 'ne-inspect-label' }, 'Aspect Ratio'),
+    createElement(
+      'select',
+      {
+        className: 'ne-inspect-select',
+        value: aspect,
+        onChange: (e: React.ChangeEvent<HTMLSelectElement>) =>
+          onChangeData({ aspect_ratio: e.target.value }),
+      },
+      ...['16:9', '9:16', '1:1'].map((a) =>
+        createElement('option', { key: a, value: a }, a),
+      ),
+    ),
+    createElement('label', { className: 'ne-inspect-label' }, 'Duration (seconds)'),
+    createElement('input', {
+      className: 'ne-inspect-input',
+      type: 'number',
+      min: 1,
+      max: 30,
+      step: 1,
+      value: duration,
+      onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
+        onChangeData({ duration: Number(e.target.value) || 5 }),
+    }),
+    createElement(
+      'button',
+      {
+        type: 'button',
+        className: 'ne-inspect-generate',
+        disabled: inFlight,
+        onClick: () => onGenerate(),
+      },
+      inFlight ? 'Generating… (video takes 1-5 min)' : 'Generate',
+    ),
+    url
+      ? createElement(
+          'div',
+          { className: 'ne-inspect-thumb' },
+          createElement('video', {
+            src: url,
+            controls: true,
+            style: { maxWidth: '100%', maxHeight: '240px', borderRadius: '6px' },
+          }),
+        )
+      : null,
   );
+};
 
 const OutInspector: NodeKindDef['Inspector'] = ({ node }) => {
   const url = node.output?.dataUrl;
@@ -509,6 +608,6 @@ function truncate(s: string, n: number): string {
 }
 
 function modelLabel(id: string): string {
-  const m = HARD_CODED_IMAGE_MODELS.find((x) => x.id === id);
+  const m = FAL_MODELS.find((x) => x.id === id);
   return m ? m.label : id;
 }

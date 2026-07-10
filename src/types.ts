@@ -95,6 +95,12 @@ export function styleSuffix(mode: PanelStyleMode | undefined): string {
   return tag ? ' ' + tag : '';
 }
 
+// The node-editor graph attached to a panel. Optional — opened on demand by
+// double-clicking a panel image. Stored as `unknown` on Panel to avoid a
+// circular import (Panel is used inside project-io, which shouldn't reach into
+// the node editor's type surface). Callers cast to NodeGraph from ../nodes/types.
+export type PanelNodeGraph = unknown;
+
 export type Panel = {
   id: string;
   imageDataUrl: string | null;
@@ -104,6 +110,7 @@ export type Panel = {
   aiPrompt?: string; // last prompt used to generate the panel image (editable, re-gennable)
   imageHistory?: PanelImageVersion[]; // prior AI generations, oldest first. Current image is NOT in this list.
   styleMode?: PanelStyleMode; // undefined = default (pencil-sketch)
+  nodeGraph?: PanelNodeGraph; // Saved node-editor graph. Opened on double-click.
 };
 
 /** Text alignment for a slide text box. */

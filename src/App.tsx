@@ -5,8 +5,13 @@ import { Outliner } from './components/Outliner';
 import { Toolbar } from './components/Toolbar';
 import { PanelLightbox } from './components/PanelLightbox';
 import { AIDrawer } from './components/AIDrawer';
+import { NodeEditor } from './components/NodeEditor';
+import { emptyGraph } from './nodes/types';
+import type { NodeGraph } from './nodes/types';
+import { ratioToLabel } from './ai/client';
 import { allStoryboardPanels, primarySelectedPanelId, useBoardfish } from './store';
 import './App.css';
+import './components/NodeEditor.css';
 
 function App() {
   const { state, dispatch } = useBoardfish();
@@ -28,6 +33,8 @@ function App() {
     }
   });
   const [lightboxOpen, setLightboxOpen] = useState(false);
+  // Panel id currently opened in the node editor (null = closed).
+  const [nodeEditorPanelId, setNodeEditorPanelId] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
 
@@ -187,7 +194,11 @@ function App() {
         {effectiveOutlinerOpen && (
           <Outliner state={state} dispatch={dispatch} onClose={() => setOutlinerOpen(false)} />
         )}
-        <Canvas state={state} dispatch={dispatch} />
+        <Canvas
+          state={state}
+          dispatch={dispatch}
+          onOpenNodeEditor={(panelId) => setNodeEditorPanelId(panelId)}
+        />
         {effectiveInspectorOpen && <Inspector state={state} dispatch={dispatch} />}
       </div>
       {!effectiveOutlinerOpen && !fullscreen && (
@@ -212,6 +223,39 @@ function App() {
       {aiOpen && (
         <AIDrawer state={state} dispatch={dispatch} onClose={() => setAiOpen(false)} />
       )}
+      {nodeEditorPanelId && (() => {
+        const editing = flatPanels.find((p) => p.id === nodeEditorPanelId);
+        if (!editing) return null;
+        const savedGraph = (editing.nodeGraph as NodeGraph | undefined) ?? emptyGraph();
+        const seedPrompt =
+          editing.aiPrompt ??
+          editing.fields.find((f) => f.label.toLowerCase() === 'description')?.value ??
+          editing.fields.map((f) => f.value).filter(Boolean).join('. ');
+        return (
+          <NodeEditor
+            initialGraph={savedGraph}
+            panelPrompt={seedPrompt}
+            panelAspect={ratioToLabel(state.settings.panelAspectRatio)}
+            onSave={(nextGraph, outImage) => {
+              // Persist the graph on the panel.
+              dispatch({ type: 'SET_PANEL_NODE_GRAPH', panelId: editing.id, graph: nextGraph });
+              // If the Out node produced an image, apply it as the panel's current image.
+              if (outImage?.dataUrl) {
+                dispatch({
+                  type: 'APPLY_AI_IMAGE',
+                  panelId: editing.id,
+                  dataUrl: outImage.dataUrl,
+                  imageName: `Node ${new Date().toISOString().slice(0, 10)} ${editing.id.slice(0, 6)}.jpg`,
+                  prompt: seedPrompt,
+                  generatedAt: Date.now(),
+                });
+              }
+              setNodeEditorPanelId(null);
+            }}
+            onClose={() => setNodeEditorPanelId(null)}
+          />
+        );
+      })()}
       {lightboxOpen && selectedPanel && (
         <PanelLightbox
           panel={selectedPanel}

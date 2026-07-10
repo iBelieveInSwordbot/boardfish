@@ -471,3 +471,17 @@
   gap: 8px;
   justify-content: flex-end;
 }
+
+/* Execution-error tag in the top bar. Compact, clickable-to-dismiss. */
+.ne-topbar-err {
+  margin-left: 12px;
+  padding: 2px 8px;
+  background: rgba(228, 82, 82, 0.15);
+  color: #ff9c9c;
+  border: 1px solid rgba(228, 82, 82, 0.4);
+  border-radius: 999px;
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+.ne-topbar-err:hover { background: rgba(228, 82, 82, 0.25); }

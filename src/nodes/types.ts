@@ -179,14 +179,17 @@ export function defaultDataFor(kind: NodeKind): Record<string, unknown> {
       return { text: '' };
     case 'image-gen':
       return {
-        model: 'nano-banana-pro',
-        aspect: '16:9',
-        variants: 1,
+        // Field names align with dag-executor: modelId + aspect_ratio + num_images.
+        // FAL's Nano Banana Pro (and most image endpoints) accept these directly.
+        modelId: 'nano-banana-pro',
+        aspect_ratio: '16:9',
+        num_images: 1,
       };
     case 'movie-gen':
       return {
-        model: 'coming-soon',
-        durationSec: 5,
+        modelId: 'veo-3',
+        aspect_ratio: '16:9',
+        duration: 5,
       };
     case 'out':
       return {};

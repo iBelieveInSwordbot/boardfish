@@ -34,9 +34,10 @@ function pickDefaultLogo(pageBg: string): string {
 type Props = {
   state: BoardfishState;
   dispatch: React.Dispatch<Action>;
+  onOpenNodeEditor?: (panelId: string) => void;
 };
 
-export function Canvas({ state, dispatch }: Props) {
+export function Canvas({ state, dispatch, onOpenNodeEditor }: Props) {
   const { settings, items, selectedPanelIds } = state;
   const selectedSet = new Set(selectedPanelIds);
   const pages = itemsToPages(items, settings);
@@ -304,6 +305,7 @@ export function Canvas({ state, dispatch }: Props) {
                 items={items}
                 selectedSet={selectedSet}
                 dispatch={dispatch}
+                onOpenNodeEditor={onOpenNodeEditor}
               />
             ))}
           </SortableContext>
@@ -335,6 +337,7 @@ type PageWrapperProps = {
   items: BoardfishState['items'];
   selectedSet: Set<string>;
   dispatch: React.Dispatch<Action>;
+  onOpenNodeEditor?: (panelId: string) => void;
 };
 
 function PageWrapper({
@@ -346,6 +349,7 @@ function PageWrapper({
   items,
   selectedSet,
   dispatch,
+  onOpenNodeEditor,
 }: PageWrapperProps) {
   if (page.kind === 'slide') {
     return (
@@ -373,6 +377,7 @@ function PageWrapper({
       effective={eff}
       selectedSet={selectedSet}
       dispatch={dispatch}
+      onOpenNodeEditor={onOpenNodeEditor}
     />
   );
 }
@@ -386,6 +391,7 @@ type StoryboardPageProps = {
   effective: ReturnType<typeof resolveStoryboardSettings> | null;
   selectedSet: Set<string>;
   dispatch: React.Dispatch<Action>;
+  onOpenNodeEditor?: (panelId: string) => void;
 };
 
 function StoryboardPageView({
@@ -397,6 +403,7 @@ function StoryboardPageView({
   effective,
   selectedSet,
   dispatch,
+  onOpenNodeEditor,
 }: StoryboardPageProps) {
   const eff = effective ?? {
     panelsHorizontal: settings.panelsHorizontal,
@@ -452,6 +459,7 @@ function StoryboardPageView({
                 selected={selectedSet.has(panel.id)}
                 settings={panelViewSettings}
                 dispatch={dispatch}
+                onOpenNodeEditor={onOpenNodeEditor}
               />
             ))}
             {Array.from({ length: Math.max(0, cols * rows - panels.length) }).map((_, i) => (
