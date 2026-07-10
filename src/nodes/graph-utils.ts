@@ -7,6 +7,12 @@
 import type { BaseNode, Edge, NodeGraph, NodeId, NodeKind, NodePort, PortId } from './types';
 import { defaultDataFor, defaultPortsFor, newId } from './types';
 
+// ---------------------------------------------------------------------------
+// Bulk operations added for FiCal-parity UX (multi-select move/delete, paste,
+// wire-insert). All immutable — return a fresh NodeGraph. Individual helpers
+// above are kept intact so single-node reducer actions don't need to change.
+// ---------------------------------------------------------------------------
+
 /** Insert a new node at the given canvas coord. */
 export function addNode(g: NodeGraph, kind: NodeKind, at: { x: number; y: number }): NodeGraph {
   const data = defaultDataFor(kind);
@@ -107,6 +113,227 @@ export function disconnectNode(g: NodeGraph, id: NodeId): NodeGraph {
     ...g,
     edges: g.edges.filter((e) => e.from.nodeId !== id && e.to.nodeId !== id),
   };
+}
+
+/**
+ * Move multiple nodes by a shared delta. Used when dragging a multi-selection
+ * so we don't reduce N times per pointer-move frame.
+ */
+export function moveNodesBy(
+  g: NodeGraph,
+  ids: Set<NodeId> | NodeId[],
+  dx: number,
+  dy: number,
+): NodeGraph {
+  const idSet = ids instanceof Set ? ids : new Set(ids);
+  if (idSet.size === 0 || (dx === 0 && dy === 0)) return g;
+  return {
+    ...g,
+    nodes: g.nodes.map((n) =>
+      idSet.has(n.id) ? { ...n, x: n.x + dx, y: n.y + dy } : n,
+    ),
+  };
+}
+
+/**
+ * Move multiple nodes to absolute positions (id -> {x,y}). Used when we know
+ * the starting positions and can compute final coords directly (avoids drift
+ * from repeated delta application in React reducer batching).
+ */
+export function moveNodesTo(
+  g: NodeGraph,
+  positions: Map<NodeId, { x: number; y: number }>,
+): NodeGraph {
+  if (positions.size === 0) return g;
+  return {
+    ...g,
+    nodes: g.nodes.map((n) => {
+      const p = positions.get(n.id);
+      return p ? { ...n, x: p.x, y: p.y } : n;
+    }),
+  };
+}
+
+/** Bulk remove nodes and any edges touching them. */
+export function removeNodes(g: NodeGraph, ids: Set<NodeId> | NodeId[]): NodeGraph {
+  const idSet = ids instanceof Set ? ids : new Set(ids);
+  if (idSet.size === 0) return g;
+  return {
+    ...g,
+    nodes: g.nodes.filter((n) => !idSet.has(n.id)),
+    edges: g.edges.filter(
+      (e) => !idSet.has(e.from.nodeId) && !idSet.has(e.to.nodeId),
+    ),
+  };
+}
+
+export type NodeClipboard = {
+  nodes: BaseNode[];
+  // Edges are stored with the original (pre-remap) node ids; paste remaps.
+  edges: Edge[];
+};
+
+/**
+ * Build a clipboard snapshot from the current selection: deep copies of the
+ * selected nodes plus any edges whose BOTH endpoints are inside the selection.
+ * Outputs are dropped from the copies (they belong to the original run).
+ */
+export function copyNodesToClipboard(
+  g: NodeGraph,
+  selection: Set<NodeId> | NodeId[],
+): NodeClipboard {
+  const idSet = selection instanceof Set ? selection : new Set(selection);
+  const nodes = g.nodes
+    .filter((n) => idSet.has(n.id))
+    .map((n) => ({
+      ...n,
+      data: { ...n.data },
+      ports: n.ports.map((p) => ({ ...p })),
+      output: undefined,
+    }));
+  const edges = g.edges
+    .filter((e) => idSet.has(e.from.nodeId) && idSet.has(e.to.nodeId))
+    .map((e) => ({ ...e, from: { ...e.from }, to: { ...e.to } }));
+  return { nodes, edges };
+}
+
+/**
+ * Paste clipboard contents into the graph. Every node gets a fresh id and is
+ * offset by (dx, dy). Only edges fully inside the clipboard survive, remapped
+ * to the new ids. Returns { graph, newIds } so the caller can set selection
+ * to the freshly-pasted set.
+ */
+export function pasteClipboard(
+  g: NodeGraph,
+  clip: NodeClipboard,
+  dx: number,
+  dy: number,
+): { graph: NodeGraph; newIds: NodeId[] } {
+  if (!clip || clip.nodes.length === 0) return { graph: g, newIds: [] };
+  const idMap = new Map<NodeId, NodeId>();
+  const pastedNodes: BaseNode[] = clip.nodes.map((src) => {
+    const nid = newId('n');
+    idMap.set(src.id, nid);
+    return {
+      ...src,
+      id: nid,
+      x: src.x + dx,
+      y: src.y + dy,
+      data: { ...src.data },
+      ports: src.ports.map((p) => ({ ...p })),
+      output: undefined,
+    };
+  });
+  const pastedEdges: Edge[] = [];
+  for (const e of clip.edges) {
+    const fromId = idMap.get(e.from.nodeId);
+    const toId = idMap.get(e.to.nodeId);
+    if (!fromId || !toId) continue;
+    pastedEdges.push({
+      id: newId('e'),
+      from: { nodeId: fromId, portId: e.from.portId },
+      to: { nodeId: toId, portId: e.to.portId },
+    });
+  }
+  return {
+    graph: {
+      ...g,
+      nodes: [...g.nodes, ...pastedNodes],
+      edges: [...g.edges, ...pastedEdges],
+    },
+    newIds: [...idMap.values()],
+  };
+}
+
+/**
+ * Insert `nodeId` inline on `edgeId`, splitting the wire into two. The node
+ * needs one compatible input and one compatible output port matching the
+ * source edge's dataTypes.
+ *
+ * Returns the mutated graph, or the original graph if the split isn't valid.
+ */
+export function insertNodeOnEdge(
+  g: NodeGraph,
+  edgeId: string,
+  nodeId: NodeId,
+): NodeGraph {
+  const edge = g.edges.find((e) => e.id === edgeId);
+  const node = g.nodes.find((n) => n.id === nodeId);
+  if (!edge || !node) return g;
+  const fromNode = g.nodes.find((n) => n.id === edge.from.nodeId);
+  const toNode = g.nodes.find((n) => n.id === edge.to.nodeId);
+  if (!fromNode || !toNode) return g;
+  const outPort = fromNode.ports.find((p) => p.id === edge.from.portId);
+  const inPort = toNode.ports.find((p) => p.id === edge.to.portId);
+  if (!outPort || !inPort) return g;
+
+  // Find compatible in/out ports on the target node.
+  const nodeIn = node.ports.find(
+    (p) => p.side === 'in' && typesCompatible(outPort, p),
+  );
+  const nodeOut = node.ports.find(
+    (p) => p.side === 'out' && typesCompatible(p, inPort),
+  );
+  if (!nodeIn || !nodeOut) return g;
+
+  // Refuse if the node is one of the endpoints already.
+  if (edge.from.nodeId === nodeId || edge.to.nodeId === nodeId) return g;
+  // Cycle checks against the graph WITHOUT the split edge (since we'll
+  // remove it during the swap):
+  //   * from -> node would loop if `node` reaches `from`
+  //   * node -> to would loop if `to`   reaches `node`
+  const withoutSplit: NodeGraph = { ...g, edges: g.edges.filter((e) => e.id !== edgeId) };
+  if (reaches(withoutSplit, nodeId, edge.from.nodeId)) return g;
+  if (reaches(withoutSplit, edge.to.nodeId, nodeId)) return g;
+
+  const withoutEdge = { ...g, edges: g.edges.filter((e) => e.id !== edgeId) };
+  const withFirst: Edge = {
+    id: newId('e'),
+    from: { nodeId: edge.from.nodeId, portId: edge.from.portId },
+    to: { nodeId: nodeId, portId: nodeIn.id },
+  };
+  const withSecond: Edge = {
+    id: newId('e'),
+    from: { nodeId: nodeId, portId: nodeOut.id },
+    to: { nodeId: edge.to.nodeId, portId: edge.to.portId },
+  };
+  // Also strip any pre-existing edge on the target input port of `nodeIn`
+  // and on the input port that the second edge lands on. addEdge normally
+  // handles that; do the same here to keep single-in invariants.
+  const cleaned = withoutEdge.edges.filter(
+    (e) =>
+      !(e.to.nodeId === nodeId && e.to.portId === nodeIn.id) &&
+      !(e.to.nodeId === edge.to.nodeId && e.to.portId === edge.to.portId),
+  );
+  return { ...withoutEdge, edges: [...cleaned, withFirst, withSecond] };
+}
+
+/**
+ * Does the given node have at least one input port and one output port with
+ * compatible dataTypes? Used to decide whether a node is a candidate for
+ * inline drop-on-wire insertion.
+ */
+export function canInsertInline(node: BaseNode): boolean {
+  const hasIn = node.ports.some((p) => p.side === 'in');
+  const hasOut = node.ports.some((p) => p.side === 'out');
+  return hasIn && hasOut;
+}
+
+/**
+ * Return the set of edges connected to the given (nodeId, portId). Used by
+ * the endpoint-drag (rewire) logic to figure out if a port already has
+ * exactly one wire we can pick up.
+ */
+export function edgesOnPort(
+  g: NodeGraph,
+  nodeId: NodeId,
+  portId: PortId,
+): Edge[] {
+  return g.edges.filter(
+    (e) =>
+      (e.from.nodeId === nodeId && e.from.portId === portId) ||
+      (e.to.nodeId === nodeId && e.to.portId === portId),
+  );
 }
 
 /** Duplicate a node with a small offset; no edges copied. */

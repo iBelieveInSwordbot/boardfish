@@ -2,8 +2,7 @@
 //
 // Weavy.ai-style graph editor built as a self-contained React overlay. Modeled
 // on the FiCal retirement-calculator canvas (raw-DOM, single-file) but
-// react-ified and split into a reducer + one component. Kept intentionally
-// under ~700 lines — if it needs to grow, split into NodeCanvas/NodeInspector.
+// react-ified and split into a reducer + one component.
 //
 // Coord model (matches FiCal):
 //   screen -> canvas: (clientX - rect.left - panOffset.x) / zoom
@@ -13,6 +12,17 @@
 // nodes are positioned in canvas coords inside it. Edges are drawn as a single
 // SVG that sits inside the world layer, so they auto-transform with everything
 // else.
+//
+// FiCal-parity interactions (see task boardfish-5-nodeeditor-fical-ux):
+//   * Cut / Copy / Paste of node selections with internal edges (⌘X/⌘C/⌘V).
+//   * Multi-select: shift-click toggle, drag-select marquee on empty canvas.
+//   * Multi-node drag: dragging any selected node moves the whole set.
+//   * Wire re-routing: pointerdown on a port with an existing wire "rips" it
+//     into a rubber band anchored at the OTHER endpoint. Drop on any valid
+//     target to re-route; drop on empty canvas to delete.
+//   * Drop-node-on-wire: while dragging a node, if its center is close to a
+//     wire and the node has compatible in+out ports, the wire highlights green
+//     and, on release, is split into two edges through the node.
 
 import {
   useCallback,
@@ -29,14 +39,22 @@ import {
   addEdge,
   addNode,
   canConnect,
+  canInsertInline,
+  copyNodesToClipboard,
   disconnectNode,
   duplicateNode,
+  edgesOnPort,
   findOutNode,
+  insertNodeOnEdge,
   moveNode,
+  moveNodesTo,
+  pasteClipboard,
   removeEdge,
   removeNode,
+  removeNodes,
   setNodeOutput,
   updateNodeData,
+  type NodeClipboard,
 } from '../nodes/graph-utils';
 import { executeGraph } from '../ai/dag-executor';
 import { NODE_KINDS } from '../nodes/registry';
@@ -69,13 +87,17 @@ type State = {
 
 type Action =
   | { type: 'MOVE_NODE'; id: NodeId; x: number; y: number }
+  | { type: 'MOVE_NODES'; positions: Map<NodeId, { x: number; y: number }> }
   | { type: 'ADD_NODE'; kind: NodeKind; at: { x: number; y: number } }
   | { type: 'REMOVE_NODE'; id: NodeId }
+  | { type: 'REMOVE_NODES'; ids: Set<NodeId> }
   | { type: 'DUPLICATE_NODE'; id: NodeId }
   | { type: 'DISCONNECT_NODE'; id: NodeId }
   | { type: 'UPDATE_NODE_DATA'; id: NodeId; patch: Record<string, unknown> }
   | { type: 'ADD_EDGE'; from: Edge['from']; to: Edge['to'] }
   | { type: 'REMOVE_EDGE'; edgeId: string }
+  | { type: 'INSERT_ON_EDGE'; edgeId: string; nodeId: NodeId }
+  | { type: 'PASTE_GRAPH'; graph: NodeGraph }
   | { type: 'SET_VIEWPORT'; panOffset: { x: number; y: number }; zoom: number }
   | { type: 'SET_NODE_OUTPUT'; id: NodeId; output: BaseNode['output'] }
   | { type: 'SET_GRAPH'; graph: NodeGraph; dirty?: boolean };
@@ -84,10 +106,14 @@ function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'MOVE_NODE':
       return { graph: moveNode(state.graph, action.id, action.x, action.y), dirty: true };
+    case 'MOVE_NODES':
+      return { graph: moveNodesTo(state.graph, action.positions), dirty: true };
     case 'ADD_NODE':
       return { graph: addNode(state.graph, action.kind, action.at), dirty: true };
     case 'REMOVE_NODE':
       return { graph: removeNode(state.graph, action.id), dirty: true };
+    case 'REMOVE_NODES':
+      return { graph: removeNodes(state.graph, action.ids), dirty: true };
     case 'DUPLICATE_NODE':
       return { graph: duplicateNode(state.graph, action.id), dirty: true };
     case 'DISCONNECT_NODE':
@@ -100,6 +126,14 @@ function reducer(state: State, action: Action): State {
     }
     case 'REMOVE_EDGE':
       return { graph: removeEdge(state.graph, action.edgeId), dirty: true };
+    case 'INSERT_ON_EDGE': {
+      const next = insertNodeOnEdge(state.graph, action.edgeId, action.nodeId);
+      // insertNodeOnEdge returns the same graph if the split isn't valid.
+      if (next === state.graph) return state;
+      return { graph: next, dirty: true };
+    }
+    case 'PASTE_GRAPH':
+      return { graph: action.graph, dirty: true };
     case 'SET_VIEWPORT':
       // Viewport is not "user work"; don't flip dirty for pan/zoom.
       return {
@@ -121,6 +155,8 @@ const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 3.0;
 const NODE_HEADER_H = 32;
 const PORT_ROW_H = 18;
+/** Max distance (canvas px) from a node center to an edge midpoint to trigger the drop-on-wire highlight. */
+const DROP_ON_WIRE_RADIUS = 40;
 
 // ---------------------------------------------------------------------------
 // Component
@@ -145,9 +181,33 @@ export function NodeEditor(props: NodeEditorProps) {
   const [state, dispatch] = useReducer(reducer, { graph: seeded, dirty: false });
   const graph = state.graph;
 
-  // Selection + inspector state.
-  const [selectedNodeId, setSelectedNodeId] = useState<NodeId | null>(null);
+  // Selection state. `selectedIds` is the multi-selection set; `primaryId` is
+  // whichever node currently drives the inspector (last-selected). Kept in
+  // parallel so we don't have to peek into the Set for the inspector.
+  const [selectedIds, setSelectedIds] = useState<Set<NodeId>>(new Set());
+  const [primaryId, setPrimaryId] = useState<NodeId | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+
+  const setSelection = useCallback((ids: Iterable<NodeId>) => {
+    const next = new Set(ids);
+    setSelectedIds(next);
+    if (next.size === 0) setPrimaryId(null);
+    else if (next.size === 1) setPrimaryId(next.values().next().value ?? null);
+    // If the previous primary is still in the set, keep it.
+    else {
+      setPrimaryId((prev) => (prev && next.has(prev) ? prev : next.values().next().value ?? null));
+    }
+  }, []);
+
+  // Refs mirror the latest selection so callbacks that shouldn't re-bind (like
+  // window-level keyboard handlers) can read the current value.
+  const selectedIdsRef = useRef(selectedIds);
+  useEffect(() => { selectedIdsRef.current = selectedIds; }, [selectedIds]);
+  const primaryIdRef = useRef(primaryId);
+  useEffect(() => { primaryIdRef.current = primaryId; }, [primaryId]);
+
+  // Clipboard (a normal ref — no need to re-render when it changes).
+  const clipboardRef = useRef<NodeClipboard | null>(null);
 
   // In-flight simulation set — nodes currently "executing" (spinner overlay).
   const [inFlight, setInFlight] = useState<Set<NodeId>>(new Set());
@@ -161,16 +221,50 @@ export function NodeEditor(props: NodeEditorProps) {
   // Refs for DOM / interaction state that shouldn't cause re-renders.
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const panningRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
-  const draggingRef = useRef<{ nodeId: NodeId; offsetX: number; offsetY: number } | null>(null);
+  const draggingRef = useRef<{
+    /** The node that received the pointerdown (drag anchor). */
+    anchorId: NodeId;
+    /** Offset from pointerdown point to anchor node's (x,y) in canvas coords. */
+    offsetX: number;
+    offsetY: number;
+    /** Original positions for every node in the drag set. */
+    startPositions: Map<NodeId, { x: number; y: number }>;
+    /** Anchor's current center (for drop-on-wire hit-test). */
+    anchorCenter: { x: number; y: number };
+    /** Bounding size of the anchor node (so center is correct). */
+    anchorSize: { w: number; h: number };
+    /** Whether we've moved past the drag threshold; below it we treat as click. */
+    started: boolean;
+    /** Screen coord of pointerdown; used to detect "started". */
+    downClient: { x: number; y: number };
+    /** True if the shift/meta was held on pointerdown (so a click "toggles" instead of "replaces"). */
+    additive: boolean;
+  } | null>(null);
   const connectRef = useRef<{
-    from: { nodeId: NodeId; portId: PortId };
+    /** Where the rubber band is anchored (the port that STAYS). */
+    from: { nodeId: NodeId; portId: PortId; side: 'in' | 'out' };
     startX: number;
     startY: number;
     curX: number;
     curY: number;
+    /** If truthy, this drag started by ripping an existing edge; drop-on-empty deletes it. */
+    ripEdgeId: string | null;
   } | null>(null);
-  // Force a re-render during rubber-band drag without spamming reducer state.
-  const [connectTick, setConnectTick] = useState(0);
+  // Force a re-render during rubber-band / marquee drag without spamming reducer state.
+  const [interactionTick, setInteractionTick] = useState(0);
+  const bumpTick = useCallback(() => setInteractionTick((t) => t + 1), []);
+
+  // Marquee selection state (drag-select rectangle).
+  const marqueeRef = useRef<{ startX: number; startY: number; curX: number; curY: number; additive: boolean } | null>(null);
+
+  // After a header pointerdown/pointerup pair, the browser also fires a click.
+  // We already handled the selection change in pointerdown, so tell the click
+  // handler to skip. Cleared on the next pointerdown so subsequent clicks work.
+  const suppressNextClickRef = useRef<NodeId | null>(null);
+
+  // Drop-on-wire candidate — the edge that will be replaced with two if the
+  // current drag releases now. Kept in state so the wire re-colors.
+  const [insertCandidateEdgeId, setInsertCandidateEdgeId] = useState<string | null>(null);
 
   // Confirm-close dialog.
   const [confirmClose, setConfirmClose] = useState(false);
@@ -213,6 +307,17 @@ export function NodeEditor(props: NodeEditorProps) {
     [],
   );
 
+  const nodeCenter = useCallback((node: BaseNode) => {
+    const def = NODE_KINDS[node.kind];
+    const w = node.width ?? def.defaultWidth;
+    const h = node.height ?? def.defaultHeight;
+    return { x: node.x + w / 2, y: node.y + h / 2, w, h };
+  }, []);
+
+  // Latest graph in a ref so callbacks can read fresh values without re-binding.
+  const graphRef = useRef<NodeGraph>(state.graph);
+  useEffect(() => { graphRef.current = state.graph; }, [state.graph]);
+
   // -------------------------------------------------------------------------
   // Save / close
   // -------------------------------------------------------------------------
@@ -235,6 +340,36 @@ export function NodeEditor(props: NodeEditorProps) {
   }, [onClose]);
 
   // -------------------------------------------------------------------------
+  // Clipboard actions (⌘X / ⌘C / ⌘V)
+  // -------------------------------------------------------------------------
+
+  const doCopy = useCallback(() => {
+    const ids = selectedIdsRef.current;
+    if (ids.size === 0) return;
+    clipboardRef.current = copyNodesToClipboard(graphRef.current, ids);
+  }, []);
+
+  const doCut = useCallback(() => {
+    const ids = selectedIdsRef.current;
+    if (ids.size === 0) return;
+    clipboardRef.current = copyNodesToClipboard(graphRef.current, ids);
+    dispatch({ type: 'REMOVE_NODES', ids: new Set(ids) });
+    setSelection([]);
+  }, [setSelection]);
+
+  const doPaste = useCallback(() => {
+    const clip = clipboardRef.current;
+    if (!clip || clip.nodes.length === 0) return;
+    const { graph: next, newIds } = pasteClipboard(graphRef.current, clip, 20, 20);
+    dispatch({ type: 'PASTE_GRAPH', graph: next });
+    setSelection(newIds);
+  }, [setSelection]);
+
+  const doSelectAll = useCallback(() => {
+    setSelection(graphRef.current.nodes.map((n) => n.id));
+  }, [setSelection]);
+
+  // -------------------------------------------------------------------------
   // Keyboard shortcuts
   // -------------------------------------------------------------------------
 
@@ -246,17 +381,22 @@ export function NodeEditor(props: NodeEditorProps) {
         (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
 
       // Global (fire even in fields):
-      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
         triggerSave();
         return;
       }
 
       if (e.key === 'Escape') {
-        // Prefer dismissing overlays first.
         if (contextMenu) { setContextMenu(null); return; }
         if (!inField) {
           e.preventDefault();
+          // If we have a multi-selection, clear it first; else close the editor.
+          if (selectedIdsRef.current.size > 0 || selectedEdgeId) {
+            setSelection([]);
+            setSelectedEdgeId(null);
+            return;
+          }
           triggerClose();
         }
         return;
@@ -264,16 +404,25 @@ export function NodeEditor(props: NodeEditorProps) {
 
       if (inField) return; // don't hijack typing
 
+      // Clipboard shortcuts.
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey) {
+        const k = e.key.toLowerCase();
+        if (k === 'c') { e.preventDefault(); doCopy();  return; }
+        if (k === 'x') { e.preventDefault(); doCut();   return; }
+        if (k === 'v') { e.preventDefault(); doPaste(); return; }
+        if (k === 'a') { e.preventDefault(); doSelectAll(); return; }
+      }
+
       if (e.key === ' ') {
         setSpaceDown(true);
         return;
       }
 
       if ((e.key === 'Delete' || e.key === 'Backspace')) {
-        if (selectedNodeId) {
+        if (selectedIdsRef.current.size > 0) {
           e.preventDefault();
-          dispatch({ type: 'REMOVE_NODE', id: selectedNodeId });
-          setSelectedNodeId(null);
+          dispatch({ type: 'REMOVE_NODES', ids: new Set(selectedIdsRef.current) });
+          setSelection([]);
           return;
         }
         if (selectedEdgeId) {
@@ -293,14 +442,13 @@ export function NodeEditor(props: NodeEditorProps) {
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [triggerSave, triggerClose, selectedNodeId, selectedEdgeId, contextMenu]);
+  }, [triggerSave, triggerClose, selectedEdgeId, contextMenu, doCopy, doCut, doPaste, doSelectAll, setSelection]);
 
   // -------------------------------------------------------------------------
-  // Pan / zoom
+  // Pan / zoom / marquee
   // -------------------------------------------------------------------------
 
   function onCanvasPointerDown(e: ReactPointerEvent<HTMLDivElement>) {
-    // Only start pan when clicking on empty canvas (not on a node/port/edge).
     const target = e.target as HTMLElement;
     const onEmpty =
       target === canvasRef.current ||
@@ -309,8 +457,7 @@ export function NodeEditor(props: NodeEditorProps) {
       target.classList.contains('ne-edges');
     if (!onEmpty) return;
 
-    // Middle-button or space+drag or right-button starts pan. Left-click on
-    // empty canvas deselects.
+    // Middle-button or space+drag starts pan.
     const wantsPan = e.button === 1 || (e.button === 0 && spaceDown);
     if (wantsPan) {
       panningRef.current = {
@@ -323,9 +470,18 @@ export function NodeEditor(props: NodeEditorProps) {
       return;
     }
     if (e.button === 0) {
-      setSelectedNodeId(null);
-      setSelectedEdgeId(null);
+      // Start a marquee. If the user isn't holding shift, clear existing
+      // selection right away — feels more responsive than waiting for release.
+      const additive = e.shiftKey || e.metaKey;
+      if (!additive) {
+        setSelection([]);
+        setSelectedEdgeId(null);
+      }
       setContextMenu(null);
+      const c = screenToCanvas(e.clientX, e.clientY);
+      marqueeRef.current = { startX: c.x, startY: c.y, curX: c.x, curY: c.y, additive };
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      bumpTick();
     }
   }
 
@@ -341,12 +497,53 @@ export function NodeEditor(props: NodeEditorProps) {
       });
       return;
     }
+    // Marquee update.
+    if (marqueeRef.current) {
+      const c = screenToCanvas(e.clientX, e.clientY);
+      marqueeRef.current.curX = c.x;
+      marqueeRef.current.curY = c.y;
+      bumpTick();
+      return;
+    }
     // Node drag.
     if (draggingRef.current) {
+      const dr = draggingRef.current;
+      // Consider the drag "started" after a small threshold so a plain click
+      // doesn't move the node by a subpixel.
+      if (!dr.started) {
+        const dx = e.clientX - dr.downClient.x;
+        const dy = e.clientY - dr.downClient.y;
+        if (dx * dx + dy * dy < 9) return; // 3px threshold
+        dr.started = true;
+      }
       const cur = screenToCanvas(e.clientX, e.clientY);
-      const nx = cur.x - draggingRef.current.offsetX;
-      const ny = cur.y - draggingRef.current.offsetY;
-      dispatch({ type: 'MOVE_NODE', id: draggingRef.current.nodeId, x: nx, y: ny });
+      const anchorStart = dr.startPositions.get(dr.anchorId);
+      if (!anchorStart) return;
+      const targetAnchorX = cur.x - dr.offsetX;
+      const targetAnchorY = cur.y - dr.offsetY;
+      const dx = targetAnchorX - anchorStart.x;
+      const dy = targetAnchorY - anchorStart.y;
+      const positions = new Map<NodeId, { x: number; y: number }>();
+      for (const [id, p] of dr.startPositions) {
+        positions.set(id, { x: p.x + dx, y: p.y + dy });
+      }
+      dr.anchorCenter = {
+        x: targetAnchorX + dr.anchorSize.w / 2,
+        y: targetAnchorY + dr.anchorSize.h / 2,
+      };
+      dispatch({ type: 'MOVE_NODES', positions });
+
+      // Drop-on-wire hit test: only when dragging a single node that can be
+      // inserted inline (both in-port and out-port exist).
+      if (dr.startPositions.size === 1) {
+        const anchor = graphRef.current.nodes.find((n) => n.id === dr.anchorId);
+        if (anchor && canInsertInline(anchor)) {
+          const cand = pickWireForInsert(anchor, dr.anchorCenter);
+          setInsertCandidateEdgeId(cand);
+        } else if (insertCandidateEdgeId) {
+          setInsertCandidateEdgeId(null);
+        }
+      }
       return;
     }
     // Rubber-band connection drag.
@@ -354,7 +551,7 @@ export function NodeEditor(props: NodeEditorProps) {
       const cur = screenToCanvas(e.clientX, e.clientY);
       connectRef.current.curX = cur.x;
       connectRef.current.curY = cur.y;
-      setConnectTick((t) => t + 1);
+      bumpTick();
     }
   }
 
@@ -363,10 +560,48 @@ export function NodeEditor(props: NodeEditorProps) {
       panningRef.current = null;
       try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* noop */ }
     }
+    if (marqueeRef.current) {
+      const m = marqueeRef.current;
+      const x1 = Math.min(m.startX, m.curX);
+      const y1 = Math.min(m.startY, m.curY);
+      const x2 = Math.max(m.startX, m.curX);
+      const y2 = Math.max(m.startY, m.curY);
+      // Empty (or near-empty) drag: treat as click on empty canvas, don't select anything.
+      if ((x2 - x1) > 3 || (y2 - y1) > 3) {
+        const hits: NodeId[] = [];
+        for (const n of graphRef.current.nodes) {
+          const c = nodeCenter(n);
+          const nx1 = n.x, ny1 = n.y, nx2 = n.x + c.w, ny2 = n.y + c.h;
+          const intersects = !(nx2 < x1 || nx1 > x2 || ny2 < y1 || ny1 > y2);
+          if (intersects) hits.push(n.id);
+        }
+        if (m.additive) {
+          const merged = new Set(selectedIdsRef.current);
+          for (const id of hits) merged.add(id);
+          setSelection(merged);
+        } else {
+          setSelection(hits);
+        }
+      }
+      marqueeRef.current = null;
+      bumpTick();
+      try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* noop */ }
+    }
     if (draggingRef.current) {
+      const dr = draggingRef.current;
       draggingRef.current = null;
+      // If we didn't move past threshold, treat this pointerup as a click.
+      if (!dr.started) {
+        // Handled by the header click handler already; nothing to do here.
+      } else if (insertCandidateEdgeId && dr.startPositions.size === 1) {
+        // Commit the drop-on-wire insert.
+        dispatch({ type: 'INSERT_ON_EDGE', edgeId: insertCandidateEdgeId, nodeId: dr.anchorId });
+      }
+      setInsertCandidateEdgeId(null);
     }
     if (connectRef.current) {
+      const cr = connectRef.current;
+      connectRef.current = null;
       // Hit-test whatever's under the cursor: is it a port dot?
       const el = document.elementFromPoint(e.clientX, e.clientY);
       const portEl = el && (el as HTMLElement).closest('[data-port-node][data-port-id]');
@@ -374,16 +609,52 @@ export function NodeEditor(props: NodeEditorProps) {
         const targetNodeId = (portEl as HTMLElement).dataset.portNode!;
         const targetPortId = (portEl as HTMLElement).dataset.portId!;
         const targetSide = (portEl as HTMLElement).dataset.portSide as 'in' | 'out';
-        if (targetSide === 'in') {
-          dispatch({
-            type: 'ADD_EDGE',
-            from: connectRef.current.from,
-            to: { nodeId: targetNodeId, portId: targetPortId },
-          });
+        // The rubber band is anchored at `cr.from`. Which end lands on the
+        // dropped port depends on the anchor's side.
+        //   anchor is 'out'  -> new/re-routed edge from anchor -> target (must be 'in')
+        //   anchor is 'in'   -> new/re-routed edge from target (must be 'out') -> anchor
+        let addedOrKept = false;
+        if (cr.from.side === 'out' && targetSide === 'in') {
+          // First, if we ripped an edge, remove it so the cycle check doesn't fail against it.
+          const workingGraph = cr.ripEdgeId
+            ? { ...graphRef.current, edges: graphRef.current.edges.filter((ed) => ed.id !== cr.ripEdgeId) }
+            : graphRef.current;
+          const ok = canConnect(workingGraph, cr.from, { nodeId: targetNodeId, portId: targetPortId });
+          if (ok) {
+            if (cr.ripEdgeId) dispatch({ type: 'REMOVE_EDGE', edgeId: cr.ripEdgeId });
+            dispatch({
+              type: 'ADD_EDGE',
+              from: cr.from,
+              to: { nodeId: targetNodeId, portId: targetPortId },
+            });
+            addedOrKept = true;
+          }
+        } else if (cr.from.side === 'in' && targetSide === 'out') {
+          const workingGraph = cr.ripEdgeId
+            ? { ...graphRef.current, edges: graphRef.current.edges.filter((ed) => ed.id !== cr.ripEdgeId) }
+            : graphRef.current;
+          const proposed = {
+            from: { nodeId: targetNodeId, portId: targetPortId },
+            to: { nodeId: cr.from.nodeId, portId: cr.from.portId },
+          };
+          const ok = canConnect(workingGraph, proposed.from, proposed.to);
+          if (ok) {
+            if (cr.ripEdgeId) dispatch({ type: 'REMOVE_EDGE', edgeId: cr.ripEdgeId });
+            dispatch({ type: 'ADD_EDGE', from: proposed.from, to: proposed.to });
+            addedOrKept = true;
+          }
         }
+        // If we were ripping and didn't successfully attach, delete the wire.
+        // (Rip + drop on invalid target == delete, matching the wire-drag feel
+        // where letting go over empty space discards the connection.)
+        if (!addedOrKept && cr.ripEdgeId) {
+          dispatch({ type: 'REMOVE_EDGE', edgeId: cr.ripEdgeId });
+        }
+      } else if (cr.ripEdgeId) {
+        // Dropped on empty canvas while ripping -> delete the edge.
+        dispatch({ type: 'REMOVE_EDGE', edgeId: cr.ripEdgeId });
       }
-      connectRef.current = null;
-      setConnectTick((t) => t + 1);
+      bumpTick();
     }
   }
 
@@ -394,7 +665,6 @@ export function NodeEditor(props: NodeEditorProps) {
     if (!rect) return;
     const factor = 1 + (-e.deltaY / 500);
     const nextZoom = clamp(graph.zoom * factor, MIN_ZOOM, MAX_ZOOM);
-    // Anchor so the canvas point under the cursor stays put.
     const cx = e.clientX - rect.left;
     const cy = e.clientY - rect.top;
     const worldX = (cx - graph.panOffset.x) / graph.zoom;
@@ -407,33 +677,146 @@ export function NodeEditor(props: NodeEditorProps) {
   }
 
   // -------------------------------------------------------------------------
+  // Drop-on-wire hit test — closest bezier midpoint within a fixed radius.
+  // -------------------------------------------------------------------------
+
+  /** Return the edge id that would be split if `anchor` released now, or null. */
+  const pickWireForInsert = useCallback(
+    (anchor: BaseNode, anchorCenter: { x: number; y: number }): string | null => {
+      const g = graphRef.current;
+      let best: { id: string; d2: number } | null = null;
+      for (const edge of g.edges) {
+        // Never target an edge that already touches this node.
+        if (edge.from.nodeId === anchor.id || edge.to.nodeId === anchor.id) continue;
+        const fromNode = g.nodes.find((n) => n.id === edge.from.nodeId);
+        const toNode = g.nodes.find((n) => n.id === edge.to.nodeId);
+        if (!fromNode || !toNode) continue;
+        const a = portCanvasPos(fromNode, edge.from.portId);
+        const b = portCanvasPos(toNode, edge.to.portId);
+        if (!a || !b) continue;
+        // Midpoint of the cubic — for the wire style we use, this is close
+        // enough to the visual midpoint for hit-testing purposes.
+        const mx = (a.x + b.x) / 2;
+        const my = (a.y + b.y) / 2;
+        const dxp = anchorCenter.x - mx;
+        const dyp = anchorCenter.y - my;
+        const d2 = dxp * dxp + dyp * dyp;
+        if (d2 > DROP_ON_WIRE_RADIUS * DROP_ON_WIRE_RADIUS) continue;
+        // Type-compat quick reject: does `anchor` have compatible in and out?
+        const outPort = fromNode.ports.find((p) => p.id === edge.from.portId);
+        const inPort = toNode.ports.find((p) => p.id === edge.to.portId);
+        if (!outPort || !inPort) continue;
+        const hasInCompat = anchor.ports.some(
+          (p) => p.side === 'in' && (p.dataType === 'any' || outPort.dataType === 'any' || p.dataType === outPort.dataType),
+        );
+        const hasOutCompat = anchor.ports.some(
+          (p) => p.side === 'out' && (p.dataType === 'any' || inPort.dataType === 'any' || p.dataType === inPort.dataType),
+        );
+        if (!hasInCompat || !hasOutCompat) continue;
+        if (!best || d2 < best.d2) best = { id: edge.id, d2 };
+      }
+      return best?.id ?? null;
+    },
+    [portCanvasPos],
+  );
+
+  // -------------------------------------------------------------------------
   // Node drag / selection
   // -------------------------------------------------------------------------
 
   function onNodeHeaderPointerDown(e: ReactPointerEvent<HTMLDivElement>, node: BaseNode) {
     if (e.button !== 0) return;
     e.stopPropagation();
-    setSelectedNodeId(node.id);
+
+    const additive = e.shiftKey || e.metaKey;
+    // Selection semantics:
+    //   - plain click on unselected: replace selection with [node]
+    //   - plain click on already-selected: keep selection (allows group drag)
+    //   - shift-click on unselected: add to selection
+    //   - shift-click on already-selected: defer to click handler (may toggle off
+    //     unless a drag started, in which case the toggle-off is suppressed).
+    const cur = selectedIdsRef.current;
+    let deferSelection = false;
+    let nextSelection: Set<NodeId>;
+    if (additive) {
+      if (cur.has(node.id)) {
+        // Toggle-off decision deferred to click handler.
+        nextSelection = cur;
+        deferSelection = true;
+      } else {
+        const merged = new Set(cur);
+        merged.add(node.id);
+        nextSelection = merged;
+      }
+    } else if (cur.has(node.id) && cur.size > 1) {
+      nextSelection = new Set(cur);
+    } else {
+      nextSelection = new Set([node.id]);
+    }
+    if (!deferSelection) {
+      let changed = nextSelection.size !== cur.size;
+      if (!changed) {
+        for (const id of nextSelection) if (!cur.has(id)) { changed = true; break; }
+      }
+      if (changed) setSelection(nextSelection);
+      else setPrimaryId(node.id);
+    }
     setSelectedEdgeId(null);
-    const cur = screenToCanvas(e.clientX, e.clientY);
+
+    // Prep drag with start positions for every node currently in the selection.
+    const dragIds = nextSelection.has(node.id) ? nextSelection : new Set([node.id]);
+    const startPositions = new Map<NodeId, { x: number; y: number }>();
+    for (const id of dragIds) {
+      const n = graphRef.current.nodes.find((nn) => nn.id === id);
+      if (n) startPositions.set(id, { x: n.x, y: n.y });
+    }
+    const c = screenToCanvas(e.clientX, e.clientY);
+    const nc = nodeCenter(node);
     draggingRef.current = {
-      nodeId: node.id,
-      offsetX: cur.x - node.x,
-      offsetY: cur.y - node.y,
+      anchorId: node.id,
+      offsetX: c.x - node.x,
+      offsetY: c.y - node.y,
+      startPositions,
+      anchorCenter: { x: nc.x, y: nc.y },
+      anchorSize: { w: nc.w, h: nc.h },
+      started: false,
+      downClient: { x: e.clientX, y: e.clientY },
+      additive,
     };
-    // Capture pointer on the canvas so move/up keep flowing there.
+    // Suppress the follow-up click's selection change UNLESS we deferred (in
+    // which case we WANT the click handler to run for the shift-toggle-off).
+    suppressNextClickRef.current = deferSelection ? null : node.id;
     canvasRef.current?.setPointerCapture(e.pointerId);
   }
 
   function onNodeClick(e: React.MouseEvent, nodeId: NodeId) {
     e.stopPropagation();
-    setSelectedNodeId(nodeId);
+    // If we JUST completed a real drag on this node, don't treat the click as
+    // a selection change — the drag was the interaction.
+    // (draggingRef is nulled in pointerup so we lean on suppressNextClickRef.)
+    if (suppressNextClickRef.current === nodeId) {
+      suppressNextClickRef.current = null;
+      return;
+    }
+    if (draggingRef.current) return;
+    const additive = (e.shiftKey || e.metaKey);
+    if (additive) {
+      const merged = new Set(selectedIdsRef.current);
+      if (merged.has(nodeId)) merged.delete(nodeId);
+      else merged.add(nodeId);
+      setSelection(merged);
+    } else if (!selectedIdsRef.current.has(nodeId) || selectedIdsRef.current.size > 1) {
+      setSelection([nodeId]);
+    }
     setSelectedEdgeId(null);
   }
 
   function onNodeContextMenu(e: React.MouseEvent, nodeId: NodeId) {
     e.preventDefault();
     e.stopPropagation();
+    // Right-clicking a node: ensure it's in the selection so context actions
+    // operate on the expected set.
+    if (!selectedIdsRef.current.has(nodeId)) setSelection([nodeId]);
     setContextMenu({ kind: 'node', nodeId, x: e.clientX, y: e.clientY });
   }
 
@@ -451,7 +834,7 @@ export function NodeEditor(props: NodeEditorProps) {
   }
 
   // -------------------------------------------------------------------------
-  // Ports / connection drag
+  // Ports / connection + endpoint drag (rewire)
   // -------------------------------------------------------------------------
 
   function onPortPointerDown(e: ReactPointerEvent<HTMLDivElement>, node: BaseNode, portId: PortId) {
@@ -459,20 +842,51 @@ export function NodeEditor(props: NodeEditorProps) {
     e.stopPropagation();
     const port = node.ports.find((p) => p.id === portId);
     if (!port) return;
-    // Only allow initiating a drag from OUTPUT ports (spec: click-drag from
-    // output → drop on input). Input ports still get connected via drop.
+
+    // Endpoint rewire: if this port has exactly one connected edge, rip it
+    // and start a rubber-band drag from the OTHER end. This works for both
+    // input and output ports — FiCal-style feel.
+    const attached = edgesOnPort(graphRef.current, node.id, portId);
+    if (attached.length === 1) {
+      const edge = attached[0];
+      const thisIsFrom = edge.from.nodeId === node.id && edge.from.portId === portId;
+      // Compute the OTHER endpoint (that becomes the rubber-band anchor).
+      const otherEnd = thisIsFrom ? edge.to : edge.from;
+      const otherNode = graphRef.current.nodes.find((n) => n.id === otherEnd.nodeId);
+      if (!otherNode) return;
+      const otherPort = otherNode.ports.find((p) => p.id === otherEnd.portId);
+      if (!otherPort) return;
+      const pos = portCanvasPos(otherNode, otherEnd.portId);
+      if (!pos) return;
+      const cur = screenToCanvas(e.clientX, e.clientY);
+      connectRef.current = {
+        from: { nodeId: otherNode.id, portId: otherEnd.portId, side: otherPort.side },
+        startX: pos.x,
+        startY: pos.y,
+        curX: cur.x,
+        curY: cur.y,
+        ripEdgeId: edge.id,
+      };
+      canvasRef.current?.setPointerCapture(e.pointerId);
+      bumpTick();
+      return;
+    }
+
+    // Fresh drag: only allow initiating from OUTPUT ports (spec).
     if (port.side !== 'out') return;
     const pos = portCanvasPos(node, portId);
     if (!pos) return;
+    const cur = screenToCanvas(e.clientX, e.clientY);
     connectRef.current = {
-      from: { nodeId: node.id, portId },
+      from: { nodeId: node.id, portId, side: 'out' },
       startX: pos.x,
       startY: pos.y,
-      curX: pos.x,
-      curY: pos.y,
+      curX: cur.x,
+      curY: cur.y,
+      ripEdgeId: null,
     };
     canvasRef.current?.setPointerCapture(e.pointerId);
-    setConnectTick((t) => t + 1);
+    bumpTick();
   }
 
   // -------------------------------------------------------------------------
@@ -482,7 +896,7 @@ export function NodeEditor(props: NodeEditorProps) {
   function onEdgeClick(e: React.MouseEvent, edgeId: string) {
     e.stopPropagation();
     setSelectedEdgeId(edgeId);
-    setSelectedNodeId(null);
+    setSelection([]);
   }
 
   // -------------------------------------------------------------------------
@@ -490,10 +904,6 @@ export function NodeEditor(props: NodeEditorProps) {
   // -------------------------------------------------------------------------
 
   const [execError, setExecError] = useState<string | null>(null);
-  // Latest graph is stashed in a ref so onGenerate can start from current state
-  // without needing to be re-created every reducer tick.
-  const graphRef = useRef<NodeGraph>(state.graph);
-  useEffect(() => { graphRef.current = state.graph; }, [state.graph]);
 
   const onGenerate = useCallback(async (node: BaseNode) => {
     setExecError(null);
@@ -513,7 +923,6 @@ export function NodeEditor(props: NodeEditorProps) {
               return next;
             });
           } else if (e.kind === 'output') {
-            // Live-update the node's output so previews refresh mid-execution.
             dispatch({ type: 'SET_NODE_OUTPUT', id: e.nodeId, output: e.output });
             setInFlight((prev) => {
               const next = new Set(prev);
@@ -536,7 +945,6 @@ export function NodeEditor(props: NodeEditorProps) {
       setExecError(msg);
       console.error('[NodeEditor] executeGraph failed', err);
     } finally {
-      // Always clear inFlight for this node (defensive).
       setInFlight((prev) => {
         const next = new Set(prev);
         next.delete(node.id);
@@ -549,9 +957,20 @@ export function NodeEditor(props: NodeEditorProps) {
   // Derived
   // -------------------------------------------------------------------------
 
-  const selectedNode = selectedNodeId
-    ? graph.nodes.find((n) => n.id === selectedNodeId) ?? null
-    : null;
+  const selectedNode = primaryId ? graph.nodes.find((n) => n.id === primaryId) ?? null : null;
+
+  // Marquee rectangle in canvas coords (for rendering).
+  const marqueeRect = (() => {
+    const m = marqueeRef.current;
+    if (!m) return null;
+    void interactionTick;
+    const x = Math.min(m.startX, m.curX);
+    const y = Math.min(m.startY, m.curY);
+    const w = Math.abs(m.curX - m.startX);
+    const h = Math.abs(m.curY - m.startY);
+    if (w < 2 && h < 2) return null;
+    return { x, y, w, h };
+  })();
 
   // -------------------------------------------------------------------------
   // Rendering
@@ -564,6 +983,7 @@ export function NodeEditor(props: NodeEditorProps) {
         <div className="ne-topbar-title">Node Editor</div>
         <div className="ne-topbar-sub">
           {graph.nodes.length} node{graph.nodes.length === 1 ? '' : 's'} · {graph.edges.length} edge{graph.edges.length === 1 ? '' : 's'}
+          {selectedIds.size > 1 ? ` · ${selectedIds.size} selected` : ''}
           {state.dirty ? ' · unsaved' : ''}
           {execError && (
             <span className="ne-topbar-err" title={execError} onClick={() => setExecError(null)}>
@@ -619,10 +1039,12 @@ export function NodeEditor(props: NodeEditorProps) {
                 const b = portCanvasPos(toNode, edge.to.portId);
                 if (!a || !b) return null;
                 const d = bezierPath(a.x, a.y, b.x, b.y);
+                const isSelected = selectedEdgeId === edge.id;
+                const isInsertCand = insertCandidateEdgeId === edge.id;
                 return (
                   <path
                     key={edge.id}
-                    className={`ne-edge ${selectedEdgeId === edge.id ? 'is-selected' : ''}`}
+                    className={`ne-edge ${isSelected ? 'is-selected' : ''} ${isInsertCand ? 'is-insert-candidate' : ''}`}
                     d={d}
                     onClick={(e) => onEdgeClick(e, edge.id)}
                   />
@@ -632,7 +1054,7 @@ export function NodeEditor(props: NodeEditorProps) {
               {connectRef.current
                 ? (() => {
                     const c = connectRef.current!;
-                    void connectTick; // ensure re-render dependency
+                    void interactionTick;
                     return (
                       <path
                         className="ne-edge is-temp"
@@ -641,6 +1063,16 @@ export function NodeEditor(props: NodeEditorProps) {
                     );
                   })()
                 : null}
+              {/* Marquee rect */}
+              {marqueeRect && (
+                <rect
+                  className="ne-marquee"
+                  x={marqueeRect.x}
+                  y={marqueeRect.y}
+                  width={marqueeRect.w}
+                  height={marqueeRect.h}
+                />
+              )}
             </svg>
 
             {/* Nodes */}
@@ -648,7 +1080,7 @@ export function NodeEditor(props: NodeEditorProps) {
               <NodeView
                 key={node.id}
                 node={node}
-                selected={selectedNodeId === node.id}
+                selected={selectedIds.has(node.id)}
                 inFlight={inFlight.has(node.id)}
                 graph={graph}
                 onHeaderPointerDown={(e) => onNodeHeaderPointerDown(e, node)}
@@ -660,7 +1092,7 @@ export function NodeEditor(props: NodeEditorProps) {
           </div>
 
           <div className="ne-hint">
-            Space+drag or middle-drag to pan · Scroll to zoom · Right-click canvas to add nodes · ⌘S to save
+            Drag empty canvas to select · Shift-click to add · ⌘X/⌘C/⌘V · Drag port endpoints to reroute · Drop a node on a wire to insert · Space+drag to pan · ⌘S to save
           </div>
         </div>
 
@@ -689,8 +1121,12 @@ export function NodeEditor(props: NodeEditorProps) {
             if (contextMenu.kind !== 'node') return;
             const nid = contextMenu.nodeId;
             if (action === 'delete') {
-              dispatch({ type: 'REMOVE_NODE', id: nid });
-              if (selectedNodeId === nid) setSelectedNodeId(null);
+              // If the menu-targeted node is in a multi-selection, act on the whole set.
+              const ids = selectedIdsRef.current.has(nid) && selectedIdsRef.current.size > 1
+                ? new Set(selectedIdsRef.current)
+                : new Set([nid]);
+              dispatch({ type: 'REMOVE_NODES', ids });
+              setSelection([]);
             } else if (action === 'duplicate') {
               dispatch({ type: 'DUPLICATE_NODE', id: nid });
             } else if (action === 'disconnect') {

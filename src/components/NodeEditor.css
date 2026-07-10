@@ -132,6 +132,22 @@
   stroke-dasharray: 6 4;
   opacity: 0.9;
 }
+/* Wire that will be split by a drop-on-wire insert. Green cue like FiCal. */
+.ne-edges .ne-edge.is-insert-candidate {
+  stroke: #6ac36a;
+  stroke-width: 3.5px;
+  opacity: 1;
+  filter: drop-shadow(0 0 5px rgba(106, 195, 106, 0.7));
+}
+
+/* Marquee drag-select rectangle (drawn inside the world SVG so it moves with pan/zoom). */
+.ne-edges .ne-marquee {
+  fill: rgba(74, 158, 255, 0.10);
+  stroke: #4a9eff;
+  stroke-width: 1px;
+  stroke-dasharray: 4 3;
+  pointer-events: none;
+}
 
 /* --- Node --- */
 .ne-node {
@@ -485,3 +501,101 @@
   user-select: none;
 }
 .ne-topbar-err:hover { background: rgba(228, 82, 82, 0.25); }
+
+/* Left palette: draggable node chips grouped by category. Compact so it doesn't
+   eat canvas real estate. Slides off-screen on narrow viewports via a small
+   collapse toggle (TODO). */
+.ne-palette {
+  width: 160px;
+  background: #14141a;
+  border-right: 1px solid #26262d;
+  padding: 12px 10px;
+  overflow-y: auto;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  user-select: none;
+}
+.ne-palette-head {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8a8a92;
+  margin-bottom: 2px;
+}
+.ne-palette-group { display: flex; flex-direction: column; gap: 4px; }
+.ne-palette-group-label {
+  font-size: 10px;
+  color: #6c6c74;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+  padding-left: 2px;
+}
+.ne-palette-chip {
+  background: #1c1c22;
+  color: #ddd;
+  border: 1px solid #2c2c34;
+  border-radius: 6px;
+  padding: 6px 9px;
+  font-size: 12px;
+  cursor: grab;
+  transition: background 100ms, border-color 100ms, transform 60ms;
+}
+.ne-palette-chip:hover { background: #22222a; border-color: #3d3d47; }
+.ne-palette-chip:active { transform: scale(0.98); cursor: grabbing; }
+.ne-palette-foot {
+  margin-top: auto;
+  font-size: 10px;
+  color: #6c6c74;
+  line-height: 1.35;
+  padding: 6px 0 0;
+  border-top: 1px dashed #26262d;
+}
+
+/* Out node visualized as a mini storyboard-page icon. */
+.ne-node-preview--out-page {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  background: #f4f1ea;   /* paper */
+  color: #222;
+  border-radius: 4px;
+  overflow: hidden;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35), inset 0 0 0 1px #d6d0c1;
+}
+.ne-out-page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px;
+  background: #e9e3d3;
+  border-bottom: 1px solid #d6d0c1;
+  font-family: 'Menlo', 'Courier New', monospace;
+  font-size: 10px;
+  color: #4d4636;
+}
+.ne-out-page-num { font-weight: 700; letter-spacing: 0.04em; }
+.ne-out-page-corner { opacity: 0.7; }
+.ne-out-page-frame {
+  aspect-ratio: 16 / 9;
+  background: #0d0d10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.ne-out-page-frame img,
+.ne-out-page-frame video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ne-out-page-empty { color: #7a7a80; font-size: 11px; font-style: italic; }
+.ne-out-page-caption {
+  padding: 5px 8px 7px;
+  font-size: 10px;
+  color: #4d4636;
+  background: #f4f1ea;
+  border-top: 1px solid #d6d0c1;
+  text-align: center;
+  letter-spacing: 0.02em;
+}
