@@ -1903,3 +1903,72 @@ input, textarea, select {
   gap: 4px;
   align-self: flex-end;
 }
+
+/* Floating non-blocking generation HUD (AI Director batch runs). Sits on top
+   of the app but doesn't dim it, so the user can scroll and watch panels
+   update in real time. Draggable via its header. */
+.ai-generating-hud {
+  position: fixed;
+  width: 320px;
+  background: rgba(20, 20, 24, 0.96);
+  border: 1px solid #3a3a42;
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  padding: 12px 14px;
+  z-index: 9500;
+  color: #eee;
+  font-family: inherit;
+  user-select: none;
+  cursor: grab;
+}
+.ai-generating-hud:active { cursor: grabbing; }
+.ai-generating-hud-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.ai-generating-hud-close {
+  background: transparent;
+  color: #bbb;
+  border: 1px solid #3a3a42;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.ai-generating-hud-close:hover { background: #17171b; color: #fff; }
+.ai-generating-hud-progress-wrap {
+  height: 6px;
+  background: #17171b;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+.ai-generating-hud-progress {
+  height: 100%;
+  background: linear-gradient(90deg, #3a76c9, #6ab0ff);
+  transition: width 200ms ease-out;
+}
+.ai-generating-hud-status {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  color: #bbb;
+}
+.ai-generating-hud-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+  text-align: right;
+}
+.ai-generating-hud-hint {
+  margin-top: 6px;
+  font-size: 10px;
+  color: #7a7a80;
+  font-style: italic;
+}

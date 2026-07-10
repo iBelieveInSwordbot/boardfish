@@ -1002,6 +1002,18 @@ export function NodeEditor(props: NodeEditorProps) {
 
       {/* Body */}
       <div className={`ne-body ${selectedNode ? 'has-inspector' : ''}`}>
+        {/* Left palette: click a chip to drop the node at canvas center, or
+            drag a chip onto the canvas to drop at the pointer. */}
+        <NodePalette
+          onAdd={(kind) => {
+            const rect = canvasRef.current?.getBoundingClientRect();
+            const zoom = state.graph.zoom;
+            const pan = state.graph.panOffset;
+            const cx = rect ? (rect.width / 2 - pan.x) / zoom : 400;
+            const cy = rect ? (rect.height / 2 - pan.y) / zoom : 200;
+            dispatch({ type: 'ADD_NODE', kind, at: { x: cx, y: cy } });
+          }}
+        />
         <div
           ref={canvasRef}
           className={`ne-canvas ${panningRef.current ? 'is-panning' : spaceDown ? 'is-space' : ''}`}
@@ -1011,6 +1023,61 @@ export function NodeEditor(props: NodeEditorProps) {
           onPointerCancel={onCanvasPointerUp}
           onWheel={onCanvasWheel}
           onContextMenu={onCanvasContextMenu}
+          onDragOver={(e) => {
+            // Accept drops from the palette or the OS.
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            const rect = canvasRef.current?.getBoundingClientRect();
+            if (!rect) return;
+            const zoom = state.graph.zoom;
+            const pan = state.graph.panOffset;
+            const cx = (e.clientX - rect.left - pan.x) / zoom;
+            const cy = (e.clientY - rect.top - pan.y) / zoom;
+            // (a) Palette drop → add a node of the given kind.
+            const paletteKind = e.dataTransfer.getData('application/x-boardfish-node');
+            if (paletteKind) {
+              dispatch({ type: 'ADD_NODE', kind: paletteKind as NodeKind, at: { x: cx, y: cy } });
+              return;
+            }
+            // (b) OS file drop → image/video files become a null-node source
+            // with the file's data URL baked into its output. Wire it into
+            // an ImageGen's ref port to do image-to-image, or straight into
+            // the Out node.
+            const files = Array.from(e.dataTransfer.files ?? []).filter(
+              (f) => f.type.startsWith('image/') || f.type.startsWith('video/'),
+            );
+            if (files.length === 0) return;
+            let dx = 0;
+            for (const file of files) {
+              const reader = new FileReader();
+              const at = { x: cx + dx, y: cy + dx };
+              dx += 40;
+              reader.onload = () => {
+                const dataUrl = String(reader.result);
+                const isVideo = file.type.startsWith('video/');
+                dispatch({ type: 'ADD_NODE', kind: 'null-node', at });
+                queueMicrotask(() => {
+                  const g = graphRef.current;
+                  const newest = g.nodes[g.nodes.length - 1];
+                  if (!newest) return;
+                  dispatch({
+                    type: 'SET_NODE_OUTPUT',
+                    id: newest.id,
+                    output: {
+                      kind: isVideo ? 'video' : 'image',
+                      dataUrl,
+                      mime: file.type || (isVideo ? 'video/mp4' : 'image/png'),
+                      generatedAt: Date.now(),
+                    },
+                  });
+                });
+              };
+              reader.readAsDataURL(file);
+            }
+          }}
         >
           <div
             className="ne-grid"
@@ -1173,3 +1240,46 @@ function bezierPath(x1: number, y1: number, x2: number, y2: number): string {
 
 // Export helpers so external code can seed a graph without importing types.ts.
 export { emptyGraph, seedDefaultGraph };
+
+// ---------------------------------------------------------------------------
+// Node palette — sidebar of draggable node chips grouped by category
+// ---------------------------------------------------------------------------
+
+function NodePalette({ onAdd }: { onAdd: (kind: NodeKind) => void }) {
+  const groups: { category: string; label: string }[] = [
+    { category: 'input', label: 'Input' },
+    { category: 'gen', label: 'Generate' },
+    { category: 'utility', label: 'Utility' },
+    { category: 'output', label: 'Output' },
+  ];
+  return (
+    <div className="ne-palette">
+      <div className="ne-palette-head">Nodes</div>
+      {groups.map((g) => {
+        const kinds = Object.values(NODE_KINDS).filter((k) => k.category === g.category);
+        if (kinds.length === 0) return null;
+        return (
+          <div key={g.category} className="ne-palette-group">
+            <div className="ne-palette-group-label">{g.label}</div>
+            {kinds.map((k) => (
+              <div
+                key={k.kind}
+                className="ne-palette-chip"
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.effectAllowed = 'copy';
+                  e.dataTransfer.setData('application/x-boardfish-node', k.kind);
+                }}
+                onClick={() => onAdd(k.kind)}
+                title={`Drag onto canvas, or click to add ${k.label} at center`}
+              >
+                {k.label}
+              </div>
+            ))}
+          </div>
+        );
+      })}
+      <div className="ne-palette-foot">Drag onto canvas, or drop image / video files anywhere.</div>
+    </div>
+  );
+}

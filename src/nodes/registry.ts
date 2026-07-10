@@ -153,25 +153,38 @@ const MovieGenPreview: FC<{ node: BaseNode }> = ({ node }) => {
   );
 };
 
+// Out node visualized as a mini storyboard page: numbered header, image frame,
+// and a caption strip. Makes it visually obvious that this is what will land
+// in the panel when the editor closes.
 const OutPreview: FC<{ node: BaseNode }> = ({ node }) => {
   const url = node.output?.dataUrl;
-  if (url) {
-    return createElement(
-      'div',
-      { className: 'ne-node-preview ne-node-preview--out' },
-      createElement('img', {
-        src: url,
-        alt: '',
-        draggable: false,
-        className: 'ne-node-preview-thumb',
-      }),
-      createElement('div', { className: 'ne-node-preview-caption' }, 'panel image'),
-    );
-  }
+  const kind = node.output?.kind;
   return createElement(
     'div',
-    { className: 'ne-node-preview ne-node-preview--out is-empty' },
-    createElement('div', { className: 'ne-node-preview-empty' }, '→ panel image'),
+    { className: 'ne-node-preview ne-node-preview--out-page' + (url ? '' : ' is-empty') },
+    // Header strip mimicking a storyboard panel number / corner note
+    createElement(
+      'div',
+      { className: 'ne-out-page-header' },
+      createElement('span', { className: 'ne-out-page-num' }, '01'),
+      createElement('span', { className: 'ne-out-page-corner' }, 'OUT'),
+    ),
+    // Image frame (or empty placeholder)
+    createElement(
+      'div',
+      { className: 'ne-out-page-frame' },
+      url
+        ? (kind === 'video'
+            ? createElement('video', { src: url, muted: true, loop: true, autoPlay: true, playsInline: true })
+            : createElement('img', { src: url, alt: '', draggable: false }))
+        : createElement('div', { className: 'ne-out-page-empty' }, 'no image yet'),
+    ),
+    // Caption strip
+    createElement(
+      'div',
+      { className: 'ne-out-page-caption' },
+      url ? 'panel image → storyboard' : 'wire something to me',
+    ),
   );
 };
 

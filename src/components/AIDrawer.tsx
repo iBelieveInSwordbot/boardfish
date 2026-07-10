@@ -3,7 +3,7 @@
 // spawns a new storyboard item with N panels (each pre-filled with an aiPrompt),
 // then optionally auto-generates images for all of them via Nano Banana.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Action, BoardfishState } from '../store';
 import { resolveStoryboardSettings } from '../store';
 import type { Panel } from '../types';
@@ -218,12 +218,26 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
     await Promise.all(workers);
   }
 
+  // While generating, render a small non-blocking draggable HUD instead of the
+  // full-screen modal so the user can scroll through the storyboard and watch
+  // panels populate live.
+  if (stage.kind === 'generating') {
+    return (
+      <GeneratingHUD
+        done={stage.done}
+        total={stage.total}
+        label={stage.label}
+        onClose={onClose}
+      />
+    );
+  }
+
   return (
-    <div className="ai-drawer-backdrop" onClick={(e) => { if (e.target === e.currentTarget && stage.kind !== 'thinking' && stage.kind !== 'generating') onClose(); }}>
+    <div className="ai-drawer-backdrop" onClick={(e) => { if (e.target === e.currentTarget && stage.kind !== 'thinking') onClose(); }}>
       <div className="ai-drawer">
         <div className="ai-drawer-header">
           <h2>AI Director · Ronan</h2>
-          <button className="ai-drawer-close" onClick={onClose} disabled={stage.kind === 'thinking' || stage.kind === 'generating'}>✕</button>
+          <button className="ai-drawer-close" onClick={onClose} disabled={stage.kind === 'thinking'}>✕</button>
         </div>
 
         {stage.kind === 'checking' && (
@@ -376,17 +390,68 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
           </div>
         )}
 
-        {stage.kind === 'generating' && (
-          <div className="ai-drawer-body">
-            <p>🎨 Generating panel images with Nano Banana Pro…</p>
-            <p className="ai-muted">{stage.label}</p>
-            <div className="ai-progress-wrap">
-              <div className="ai-progress" style={{ width: `${(stage.done / Math.max(1, stage.total)) * 100}%` }} />
-            </div>
-            <p className="ai-muted small">{stage.done} / {stage.total} panels</p>
-          </div>
-        )}
       </div>
+    </div>
+  );
+}
+
+// Floating, draggable, non-blocking HUD shown during batch generation. Does
+// NOT dim the app behind it — the user can scroll through the storyboard and
+// watch panels update as they generate.
+function GeneratingHUD({
+  done,
+  total,
+  label,
+  onClose,
+}: { done: number; total: number; label: string; onClose: () => void }) {
+  const [pos, setPos] = useState<{ x: number; y: number }>({ x: 20, y: 80 });
+  const dragRef = useRef<{ dx: number; dy: number } | null>(null);
+
+  function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    // Only start drag from the header area (not from buttons inside).
+    if ((e.target as HTMLElement).closest('button')) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragRef.current = { dx: e.clientX - pos.x, dy: e.clientY - pos.y };
+  }
+  function onPointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    if (!dragRef.current) return;
+    setPos({ x: e.clientX - dragRef.current.dx, y: e.clientY - dragRef.current.dy });
+  }
+  function onPointerUp(e: React.PointerEvent<HTMLDivElement>) {
+    dragRef.current = null;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+  }
+
+  const pct = Math.round((done / Math.max(1, total)) * 100);
+
+  return (
+    <div
+      className="ai-generating-hud"
+      style={{ left: pos.x, top: pos.y }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+    >
+      <div className="ai-generating-hud-head">
+        <span>🎨 Generating panels</span>
+        <button
+          type="button"
+          className="ai-generating-hud-close"
+          title="Hide (generation continues in background)"
+          onClick={(e) => { e.stopPropagation(); onClose(); }}
+        >
+          ✕
+        </button>
+      </div>
+      <div className="ai-generating-hud-progress-wrap">
+        <div className="ai-generating-hud-progress" style={{ width: `${pct}%` }} />
+      </div>
+      <div className="ai-generating-hud-status">
+        <span>{done} / {total}</span>
+        <span className="ai-generating-hud-label">{label}</span>
+      </div>
+      <div className="ai-generating-hud-hint">Drag to move · scroll the storyboard to watch panels fill in live</div>
     </div>
   );
 }

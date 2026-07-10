@@ -6,7 +6,7 @@ import { Toolbar } from './components/Toolbar';
 import { PanelLightbox } from './components/PanelLightbox';
 import { AIDrawer } from './components/AIDrawer';
 import { NodeEditor } from './components/NodeEditor';
-import { emptyGraph } from './nodes/types';
+import { emptyGraph, seedDefaultGraph } from './nodes/types';
 import type { NodeGraph } from './nodes/types';
 import { ratioToLabel } from './ai/client';
 import { allStoryboardPanels, primarySelectedPanelId, useBoardfish } from './store';
@@ -226,11 +226,18 @@ function App() {
       {nodeEditorPanelId && (() => {
         const editing = flatPanels.find((p) => p.id === nodeEditorPanelId);
         if (!editing) return null;
-        const savedGraph = (editing.nodeGraph as NodeGraph | undefined) ?? emptyGraph();
         const seedPrompt =
           editing.aiPrompt ??
           editing.fields.find((f) => f.label.toLowerCase() === 'description')?.value ??
           editing.fields.map((f) => f.value).filter(Boolean).join('. ');
+        // If the panel doesn't have a saved graph yet, seed one from the
+        // panel's current image (image-to-image reference) so the ImageGen
+        // node opens with the panel's existing image already loaded.
+        const savedGraph =
+          (editing.nodeGraph as NodeGraph | undefined)
+          ?? (editing.imageDataUrl
+              ? seedDefaultGraph(seedPrompt, editing.imageDataUrl)
+              : emptyGraph());
         return (
           <NodeEditor
             initialGraph={savedGraph}

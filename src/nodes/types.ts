@@ -210,7 +210,7 @@ export function defaultDataFor(kind: NodeKind): Record<string, unknown> {
 // the seeded chain reads like a pipeline.
 // ---------------------------------------------------------------------------
 
-export function seedDefaultGraph(prompt: string): NodeGraph {
+export function seedDefaultGraph(prompt: string, seedImageDataUrl?: string): NodeGraph {
   const promptNode: BaseNode = {
     id: newId('n'),
     kind: 'text-prompt',
@@ -219,13 +219,22 @@ export function seedDefaultGraph(prompt: string): NodeGraph {
     ports: defaultPortsFor('text-prompt'),
     data: { ...defaultDataFor('text-prompt'), text: prompt },
   };
+  // If the panel already has an image, seed the ImageGen node with it as an
+  // image-to-image reference (image_url is Nano Banana's edit input). We also
+  // pre-populate the node's `output` field so the node's preview shows the
+  // image immediately on open, without needing to hit Generate first.
+  const genData: Record<string, unknown> = { ...defaultDataFor('image-gen') };
+  if (seedImageDataUrl) genData.image_url = seedImageDataUrl;
   const genNode: BaseNode = {
     id: newId('n'),
     kind: 'image-gen',
     x: 380,
     y: 120,
     ports: defaultPortsFor('image-gen'),
-    data: defaultDataFor('image-gen'),
+    data: genData,
+    output: seedImageDataUrl
+      ? { kind: 'image', dataUrl: seedImageDataUrl, mime: 'image/jpeg', generatedAt: Date.now() }
+      : undefined,
   };
   const outNode: BaseNode = {
     id: newId('n'),
@@ -234,6 +243,9 @@ export function seedDefaultGraph(prompt: string): NodeGraph {
     y: 120,
     ports: defaultPortsFor('out'),
     data: defaultDataFor('out'),
+    output: seedImageDataUrl
+      ? { kind: 'image', dataUrl: seedImageDataUrl, mime: 'image/jpeg', generatedAt: Date.now() }
+      : undefined,
   };
   const edges: Edge[] = [
     {
