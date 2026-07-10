@@ -218,6 +218,7 @@ const MovieGenPreview: FC<PreviewProps> = ({ node, onChangeData }) => {
   const model = String(node.data.modelId ?? 'veo-3');
   const aspect = String(node.data.aspect_ratio ?? '16:9');
   const duration = Number(node.data.duration ?? 5);
+  const prompt = String(node.data.prompt ?? '');
   return createElement(
     'div',
     { className: 'ne-node-preview ne-node-preview--video' + (url ? '' : ' is-empty') },
@@ -231,6 +232,23 @@ const MovieGenPreview: FC<PreviewProps> = ({ node, onChangeData }) => {
           className: 'ne-node-preview-thumb',
         })
       : createElement('div', { className: 'ne-node-preview-empty' }, '\ud83c\udfac no video yet'),
+    // Inline prompt — lets a Movie Gen node stand alone without a wired
+    // Text Prompt. Upstream text (if wired) still concatenates in executor.
+    onChangeData
+      ? createElement('textarea', {
+          className: 'ne-node-inline-textarea ne-node-inline-textarea--compact',
+          value: prompt,
+          placeholder: 'Video prompt (or wire a Text Prompt)…',
+          spellCheck: false,
+          onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) =>
+            onChangeData({ prompt: e.target.value }),
+          onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+          onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
+          onClick: (e: React.MouseEvent) => e.stopPropagation(),
+          onDoubleClick: (e: React.MouseEvent) => e.stopPropagation(),
+          onKeyDown: (e: React.KeyboardEvent) => e.stopPropagation(),
+        })
+      : null,
     createElement(
       'div',
       { className: 'ne-node-preview-caption' },

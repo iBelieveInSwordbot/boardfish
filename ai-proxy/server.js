@@ -285,6 +285,19 @@ app.post('/api/fal/run', async (req, res) => {
       if (sj.status === 'COMPLETED') {
         const r = await fetch(resultUrl, { headers: { 'Authorization': `Key ${FAL_KEY}` } });
         const rj = await r.json();
+        // FAL sometimes returns validation errors *inside* a COMPLETED response
+        // as `{ detail: [...] }`. Surface those as proper HTTP errors so the UI
+        // can show a real message instead of a generic "no image/video URL".
+        if (rj && Array.isArray(rj.detail) && rj.detail.length > 0) {
+          const first = rj.detail[0] || {};
+          const field = Array.isArray(first.loc) ? first.loc.join('.') : String(first.loc ?? '');
+          const msg = String(first.msg ?? 'validation error');
+          return res.status(400).json({
+            error: `FAL ${path} rejected input: ${field ? field + ' — ' : ''}${msg}`,
+            detail: rj.detail,
+            requestId,
+          });
+        }
         return res.json({ ok: true, requestId, endpoint: path, result: rj });
       }
       if (sj.status === 'FAILED' || sj.status === 'ERROR') {

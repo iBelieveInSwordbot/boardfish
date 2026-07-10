@@ -432,6 +432,12 @@ async function runImageGen(
   // Collect all upstream image refs (Nano Banana Pro accepts multiple).
   const refImages = collectRefImages(node, inputs);
   const payload = buildFalInput(node, inputs, model, refImages);
+  // Same guard as movie-gen: better a clear message than a FAL 422.
+  if (model.supportsPrompt && (!payload.prompt || String(payload.prompt).trim() === '')) {
+    throw new Error(
+      `${model.label} needs a prompt. Type one into the node, or wire a Text Prompt into it.`,
+    );
+  }
   // Route to edit endpoint when we have image refs and the model has one.
   const endpoint = refImages.length > 0 && model.editEndpoint
     ? model.editEndpoint
@@ -491,7 +497,17 @@ async function runMovieGen(
     throw new Error(`Model ${modelId} (${model.label}) is not yet available.`);
   }
 
-  const payload = buildFalInput(node, inputs, model.supportsPrompt);
+  // Use the new-signature buildFalInput (pass `model`) so per-model type
+  // coercion runs (Kling duration as string, Seedance duration as number, etc.).
+  const payload = buildFalInput(node, inputs, model);
+  // Guard against the #1 UX pitfall: user drops a Movie Gen node, hits
+  // Generate, and gets a cryptic "Could not find a video URL" because FAL
+  // rejected the empty-prompt payload. Fail fast with a clear message.
+  if (model.supportsPrompt && (!payload.prompt || String(payload.prompt).trim() === '')) {
+    throw new Error(
+      `${model.label} needs a prompt. Type one into the node, or wire a Text Prompt into it.`,
+    );
+  }
   ctx.onProgress(`Submitting to ${model.label} (${model.endpoint})…`);
   const res = await runFalJob(model.endpoint, payload);
   ctx.onProgress('FAL job complete, downloading video…');
@@ -572,16 +588,34 @@ function buildFalInput(
   const refImageKey = model?.refImageKey ?? 'image_urls';
   const refImageIsArray = model?.refImageIsArray ?? true;
 
+  // Build an index of the model's declared input types so we can coerce
+  // values into what each FAL model actually accepts (Kling wants duration as
+  // a string, Seedance wants it as a number, etc.).
+  const inputTypeByKey: Record<string, string> = {};
+  if (model) {
+    for (const inp of model.inputs) inputTypeByKey[inp.key] = inp.type;
+  }
+
   // Copy everything from `data` except meta and any ref-image key we'll set below.
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(node.data)) {
     if (k === 'modelId') continue;
-    if (k === '__runtime') continue;
+    if (k === '__runtime' || k.startsWith('__')) continue;
     // Drop any *_url / *_urls fields on the node; refImages arg is the source of truth.
     if (k === 'image_url' || k === 'image_urls') continue;
     if (v === undefined || v === null) continue;
     if (typeof v === 'string' && v.trim() === '') continue;
-    out[k] = v;
+    // Per-model coercion. If the model schema says this key is 'select', it
+    // wants a string value (Kling duration "5"/"10"). If it says 'number',
+    // coerce to a number (Seedance duration).
+    const declared = inputTypeByKey[k];
+    if (declared === 'select' && typeof v === 'number') out[k] = String(v);
+    else if (declared === 'number' && typeof v === 'string' && v.trim() !== '') {
+      const n = Number(v);
+      out[k] = Number.isFinite(n) ? n : v;
+    } else {
+      out[k] = v;
+    }
   }
 
   if (supportsPrompt) {
