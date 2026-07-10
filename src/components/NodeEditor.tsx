@@ -45,6 +45,7 @@ import {
   duplicateNode,
   edgesOnPort,
   findOutNode,
+  graphToXml,
   insertNodeOnEdge,
   moveNode,
   moveNodesTo,
@@ -338,6 +339,71 @@ export function NodeEditor(props: NodeEditorProps) {
       onClose();
     }
   }, [onClose]);
+
+  // -------------------------------------------------------------------------
+  // Export helpers (Save Image / XML)
+  // -------------------------------------------------------------------------
+
+  /** Trigger a browser download for a data URL. */
+  function downloadDataUrl(dataUrl: string, filename: string) {
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  /** Trigger a browser download for text content. */
+  function downloadText(text: string, filename: string, mime = 'text/plain') {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    downloadDataUrl(url, filename);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  /** Find every image-bearing node output. Prefers the OutNode, then any other image outputs. */
+  const savableImages = useMemo(() => {
+    const results: { nodeId: string; label: string; dataUrl: string; mime: string }[] = [];
+    const outNode = graph.nodes.find((n) => n.kind === 'out');
+    if (outNode && outNode.output && outNode.output.kind === 'image' && outNode.output.dataUrl) {
+      results.push({
+        nodeId: outNode.id,
+        label: 'storyboard-out',
+        dataUrl: outNode.output.dataUrl,
+        mime: outNode.output.mime ?? 'image/png',
+      });
+    }
+    for (const n of graph.nodes) {
+      if (n === outNode) continue;
+      if (n.output && n.output.kind === 'image' && n.output.dataUrl) {
+        results.push({
+          nodeId: n.id,
+          label: n.kind,
+          dataUrl: n.output.dataUrl,
+          mime: n.output.mime ?? 'image/png',
+        });
+      }
+    }
+    return results;
+  }, [graph.nodes]);
+
+  const triggerSaveImage = useCallback(() => {
+    if (savableImages.length === 0) return;
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    for (const [i, img] of savableImages.entries()) {
+      const ext = img.mime === 'image/jpeg' ? 'jpg' : img.mime === 'image/webp' ? 'webp' : 'png';
+      const safe = img.label.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '') || 'node';
+      const filename = `boardfish-${ts}-${i + 1}-${safe}.${ext}`;
+      downloadDataUrl(img.dataUrl, filename);
+    }
+  }, [savableImages]);
+
+  const triggerExportXml = useCallback(() => {
+    const xml = graphToXml(graphRef.current);
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    downloadText(xml, `boardfish-graph-${ts}.xml`, 'application/xml');
+  }, []);
 
   // -------------------------------------------------------------------------
   // Clipboard actions (⌘X / ⌘C / ⌘V)
@@ -658,22 +724,65 @@ export function NodeEditor(props: NodeEditorProps) {
     }
   }
 
+  // Non-passive wheel listener: React attaches onWheel as passive by default,
+  // which means our preventDefault() there would be a no-op (browser still
+  // scrolls the page). We attach a native non-passive listener on the canvas
+  // element and delegate to the same handler logic.
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const handler = (ev: WheelEvent) => {
+      // Only preventDefault for wheels over the canvas. The event listener is
+      // already scoped to the canvas element, so this is always safe.
+      ev.preventDefault();
+      // Call the React handler synchronously with a shim that carries the
+      // fields we actually read.
+      onCanvasWheel({
+        deltaX: ev.deltaX,
+        deltaY: ev.deltaY,
+        clientX: ev.clientX,
+        clientY: ev.clientY,
+        metaKey: ev.metaKey,
+        ctrlKey: ev.ctrlKey,
+        preventDefault: () => ev.preventDefault(),
+      } as unknown as ReactWheelEvent<HTMLDivElement>);
+    };
+    el.addEventListener('wheel', handler, { passive: false });
+    return () => el.removeEventListener('wheel', handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [graph.panOffset.x, graph.panOffset.y, graph.zoom]);
+
   function onCanvasWheel(e: ReactWheelEvent<HTMLDivElement>) {
-    // Zoom centered on the cursor.
-    e.preventDefault();
+    // Wheel behavior mirrors Figma / Weavy:
+    //   - plain wheel / 2-finger trackpad scroll → PAN
+    //   - ⌘ (macOS) or Ctrl (elsewhere) + wheel → ZOOM centered on cursor
+    //   - pinch-zoom (deltaY with ctrlKey=true synthesized by macOS) → ZOOM
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const factor = 1 + (-e.deltaY / 500);
-    const nextZoom = clamp(graph.zoom * factor, MIN_ZOOM, MAX_ZOOM);
-    const cx = e.clientX - rect.left;
-    const cy = e.clientY - rect.top;
-    const worldX = (cx - graph.panOffset.x) / graph.zoom;
-    const worldY = (cy - graph.panOffset.y) / graph.zoom;
+
+    // Note: macOS trackpad pinch fires wheel events with ctrlKey=true even
+    // though no key is pressed. Treat metaKey OR ctrlKey as zoom.
+    if (e.metaKey || e.ctrlKey) {
+      const factor = 1 + (-e.deltaY / 200);
+      const nextZoom = clamp(graph.zoom * factor, MIN_ZOOM, MAX_ZOOM);
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
+      const worldX = (cx - graph.panOffset.x) / graph.zoom;
+      const worldY = (cy - graph.panOffset.y) / graph.zoom;
+      const nextPan = {
+        x: cx - worldX * nextZoom,
+        y: cy - worldY * nextZoom,
+      };
+      dispatch({ type: 'SET_VIEWPORT', panOffset: nextPan, zoom: nextZoom });
+      return;
+    }
+
+    // Plain scroll: pan the canvas. Positive deltaY moves content up.
     const nextPan = {
-      x: cx - worldX * nextZoom,
-      y: cy - worldY * nextZoom,
+      x: graph.panOffset.x - e.deltaX,
+      y: graph.panOffset.y - e.deltaY,
     };
-    dispatch({ type: 'SET_VIEWPORT', panOffset: nextPan, zoom: nextZoom });
+    dispatch({ type: 'SET_VIEWPORT', panOffset: nextPan, zoom: graph.zoom });
   }
 
   // -------------------------------------------------------------------------
@@ -843,11 +952,13 @@ export function NodeEditor(props: NodeEditorProps) {
     const port = node.ports.find((p) => p.id === portId);
     if (!port) return;
 
-    // Endpoint rewire: if this port has exactly one connected edge, rip it
-    // and start a rubber-band drag from the OTHER end. This works for both
-    // input and output ports — FiCal-style feel.
+    // Endpoint rewire: if this is an INPUT port with exactly one connected
+    // edge, rip it and start a rubber-band drag from the OTHER end (the
+    // upstream output). We don't rip from outputs, because outputs can fan
+    // out to many inputs — dragging from a used output should start a NEW
+    // wire, not steal the existing one. Matches FiCal/Weavy convention.
     const attached = edgesOnPort(graphRef.current, node.id, portId);
-    if (attached.length === 1) {
+    if (attached.length === 1 && port.side === 'in') {
       const edge = attached[0];
       const thisIsFrom = edge.from.nodeId === node.id && edge.from.portId === portId;
       // Compute the OTHER endpoint (that becomes the rubber-band anchor).
@@ -992,6 +1103,25 @@ export function NodeEditor(props: NodeEditorProps) {
           )}
         </div>
         <div className="ne-topbar-spacer" />
+        <button
+          className="ne-topbar-btn ghost"
+          onClick={triggerSaveImage}
+          disabled={savableImages.length === 0}
+          title={
+            savableImages.length === 0
+              ? 'No generated images to save yet'
+              : `Download ${savableImages.length} image${savableImages.length === 1 ? '' : 's'} (PNG)`
+          }
+        >
+          Save Image{savableImages.length > 1 ? `s (${savableImages.length})` : ''}
+        </button>
+        <button
+          className="ne-topbar-btn ghost"
+          onClick={triggerExportXml}
+          title="Export node graph as XML"
+        >
+          Export XML
+        </button>
         <button className="ne-topbar-btn ghost" onClick={triggerClose} title="Close (Esc)">
           Close<span className="ne-topbar-kbd">Esc</span>
         </button>
@@ -1021,7 +1151,6 @@ export function NodeEditor(props: NodeEditorProps) {
           onPointerMove={onCanvasPointerMove}
           onPointerUp={onCanvasPointerUp}
           onPointerCancel={onCanvasPointerUp}
-          onWheel={onCanvasWheel}
           onContextMenu={onCanvasContextMenu}
           onDragOver={(e) => {
             // Accept drops from the palette or the OS.
