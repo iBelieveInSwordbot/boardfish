@@ -7,12 +7,10 @@ type Props = {
   dispatch: React.Dispatch<Action>;
   inspectorOpen: boolean;
   onToggleInspector: () => void;
-  outlinerOpen: boolean;
-  onToggleOutliner: () => void;
   onOpenAI: () => void;
 };
 
-export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector, outlinerOpen, onToggleOutliner, onOpenAI }: Props) {
+export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector, onOpenAI }: Props) {
   const openRef = useRef<HTMLInputElement>(null);
   const addImagesRef = useRef<HTMLInputElement>(null);
   const [exporting, setExporting] = useState(false);
@@ -144,14 +142,6 @@ export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector, out
           }
         >
           Save Project
-        </button>
-        <button
-          className="toolbar-inspector-toggle"
-          onClick={onToggleOutliner}
-          title={outlinerOpen ? 'Hide Outline (⌘⇧O)' : 'Show Outline (⌘⇧O)'}
-          style={{ marginRight: 8 }}
-        >
-          {outlinerOpen ? 'Hide Outline' : 'Show Outline'}
         </button>
         <button onClick={() => openRef.current?.click()}>Open…</button>
         <input

@@ -66,6 +66,13 @@ function shotToPanel(shot: Shot): Panel {
   };
 }
 
+// Aspect ratios exposed in the AI script drawer. Kept in sync with the
+// ai-proxy SUPPORTED_ASPECTS list; the proxy will re-normalize anything we
+// send.
+const ASPECT_OPTIONS: string[] = [
+  '16:9', '9:16', '1:1', '4:3', '3:4', '3:2', '2:3', '4:5', '5:4', '21:9',
+];
+
 export function AIDrawer({ state, dispatch, onClose }: Props) {
   const [script, setScript] = useState('');
   const [constraints, setConstraints] = useState('');
@@ -77,13 +84,18 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
   const [stage, setStage] = useState<Stage>({ kind: 'checking' });
   const [error, setError] = useState<string | null>(null);
 
-  // Effective default aspect for this project (uses currently-selected storyboard if any, else global).
-  const effectiveAspect = (() => {
+  // Default aspect ratio for this project (selected storyboard override, else global).
+  const projectDefaultAspect = (() => {
     const sel = state.items.find((it) => it.id === state.selectedItemId);
     const sb = sel && sel.kind === 'storyboard' ? sel : null;
     const ratio = sb ? resolveStoryboardSettings(state.settings, sb).panelAspectRatio : state.settings.panelAspectRatio;
     return ratioToLabel(ratio);
   })();
+
+  // User-selected aspect for this generation. Defaults to the project's,
+  // but user can override per-run without changing project settings.
+  const [aspect, setAspect] = useState<string>(projectDefaultAspect);
+  const effectiveAspect = aspect;
 
   useEffect(() => {
     let cancelled = false;
@@ -262,6 +274,20 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
                 </button>
               ))}
             </div>
+            <label className="ai-label">Aspect ratio</label>
+            <div className="ai-style-picker">
+              {ASPECT_OPTIONS.map((opt) => (
+                <button
+                  key={opt}
+                  type="button"
+                  className={`ai-style-btn ${aspect === opt ? 'active' : ''}`}
+                  title={`Render every panel at ${opt}${opt === projectDefaultAspect ? ' (project default)' : ''}`}
+                  onClick={() => setAspect(opt)}
+                >
+                  {opt}
+                </button>
+              ))}
+            </div>
             <label className="ai-label">Optional direction (e.g. “more Hitchcock,” “color, not b&w,” “handheld throughout”)</label>
             <input
               className="ai-input"
@@ -275,7 +301,7 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
                 <input type="checkbox" checked={autoGenerate} onChange={(e) => setAutoGenerate(e.target.checked)} />
                 Auto-generate panel images (Nano Banana Pro) after shot list is approved
               </label>
-              <span className="ai-muted small">Default panel aspect: {effectiveAspect}</span>
+              <span className="ai-muted small">Panel aspect: {effectiveAspect}{aspect === projectDefaultAspect ? '' : ' (overriding project default)'}</span>
             </div>
             <div className="ai-row">
               <div className="ai-variants-picker">

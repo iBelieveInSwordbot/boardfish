@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Panel, PanelImageVersion, ProjectSettings } from '../types';
-import { styleSuffix } from '../types';
+import { styleSuffix, PANEL_STYLE_ORDER, STYLE_PRESET_LABELS, STYLE_PRESET_TAGS } from '../types';
 import type { Action } from '../store';
 import { generatePanelImage, ratioToLabel } from '../ai/client';
 
@@ -269,17 +269,25 @@ export function PanelView({ panel, index, selected, settings, dispatch }: Props)
             onChange={(e) => setAiPrompt(e.target.value)}
             autoFocus
           />
-          <label className="panel-ai-toggle" title="When on, the panel is rendered in the same B&W pencil-sketch storyboard style as the scripted AI Director flow.">
-            <input
-              type="checkbox"
-              checked={(panel.styleMode ?? 'pencil-sketch') === 'pencil-sketch'}
-              onChange={(e) => {
-                const newMode: Panel['styleMode'] = e.target.checked ? 'pencil-sketch' : 'none';
-                dispatch({ type: 'UPDATE_PANEL', id: panel.id, patch: { styleMode: newMode } });
-              }}
-            />
-            <span>Pencil-sketch storyboard style</span>
-          </label>
+          <div className="panel-ai-style">
+            <div className="panel-ai-style-label">Style</div>
+            <div className="panel-ai-style-chips">
+              {PANEL_STYLE_ORDER.map((mode) => {
+                const active = (panel.styleMode ?? 'pencil-sketch') === mode;
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    className={`panel-ai-style-chip ${active ? 'active' : ''}`}
+                    title={STYLE_PRESET_TAGS[mode] || 'No style directive appended'}
+                    onClick={() => dispatch({ type: 'UPDATE_PANEL', id: panel.id, patch: { styleMode: mode } })}
+                  >
+                    {STYLE_PRESET_LABELS[mode]}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
           <div className="panel-ai-variants" title="How many variants to generate concurrently. Each result is saved to this panel's history.">
             <span className="panel-ai-variants-label">Variants:</span>
             {[1, 2, 3, 4].map((n) => (

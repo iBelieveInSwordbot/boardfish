@@ -180,8 +180,6 @@ function App() {
           dispatch={dispatch}
           inspectorOpen={inspectorOpen}
           onToggleInspector={() => setInspectorOpen((v) => !v)}
-          outlinerOpen={outlinerOpen}
-          onToggleOutliner={() => setOutlinerOpen((v) => !v)}
           onOpenAI={() => setAiOpen(true)}
         />
       )}

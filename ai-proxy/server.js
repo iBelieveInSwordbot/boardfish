@@ -1,10 +1,15 @@
-// Boardfish 4 AI proxy.
-// Bridges the Vite dev server / built app to OpenClaw:
+// Boardfish 5 AI proxy (branched from v4 baseline).
+// Bridges the Vite dev server / built app to OpenClaw + FAL:
 //   POST /api/ronan/shot-list   → Ronan turns a script into a structured shot list
 //   POST /api/ronan/refine      → Ronan rewrites a single shot with fresh direction
 //   POST /api/image/generate    → Nano Banana Pro renders one panel image (returns data URL)
+//   POST /api/fal/run           → Submit a job to any FAL model endpoint and wait for the result
+//   GET  /api/fal/health        → Whether FAL_KEY is configured on the server
+//   GET  /api/styles            → Named style presets
 //
-// Everything runs local. No auth (bind to 127.0.0.1 only). Kill with Ctrl-C.
+// Everything runs local. No browser auth (bind can be 0.0.0.0 for tailnet).
+// The FAL API key lives in the server env (FAL_KEY) and is never returned
+// to the browser — the browser only sends job payloads through /api/fal/run.
 
 import express from 'express';
 import { spawn } from 'node:child_process';
@@ -213,6 +218,83 @@ app.get('/api/styles', (_req, res) => {
   res.json({ ok: true, styles });
 });
 
+// ---------- FAL passthrough (Boardfish 5 node editor) ----------
+
+const FAL_KEY = process.env.FAL_KEY || '';
+const FAL_BASE = 'https://queue.fal.run';
+// Cap how long we'll poll a single FAL job. Video jobs can genuinely take a
+// few minutes; images are seconds. 5 min is a safe ceiling; the client can
+// still cancel by disconnecting.
+const FAL_POLL_MAX_MS = 5 * 60 * 1000;
+const FAL_POLL_INTERVAL_MS = 1500;
+
+app.get('/api/fal/health', (_req, res) => {
+  res.json({ ok: true, configured: Boolean(FAL_KEY) });
+});
+
+// Submit + wait. Body: { endpoint: "fal-ai/nano-banana/edit" | "fal-ai/veo3" | ...,
+//                        input: {...FAL model inputs...},
+//                        webhookUrl?: string (unused; sync mode) }
+// Returns: { ok: true, result: <the FAL model output payload> }
+app.post('/api/fal/run', async (req, res) => {
+  if (!FAL_KEY) return res.status(500).json({ error: 'FAL_KEY not configured on server' });
+  const { endpoint, input } = req.body || {};
+  if (!endpoint || typeof endpoint !== 'string') {
+    return res.status(400).json({ error: 'endpoint (string, e.g. "fal-ai/nano-banana/edit") required' });
+  }
+  if (!input || typeof input !== 'object') {
+    return res.status(400).json({ error: 'input (object) required' });
+  }
+  // Normalize: allow full URLs but require the fal-ai/... path portion.
+  const path = endpoint
+    .replace(/^https?:\/\/[^/]+\//, '')
+    .replace(/^queue\.fal\.run\//, '')
+    .replace(/^\/+/, '');
+  const submitUrl = `${FAL_BASE}/${path}`;
+  try {
+    const submit = await fetch(submitUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Key ${FAL_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(input),
+    });
+    if (!submit.ok) {
+      const body = await submit.text();
+      return res.status(submit.status).json({ error: `FAL submit failed: ${submit.status}`, body });
+    }
+    const submitJson = await submit.json();
+    const requestId = submitJson.request_id;
+    if (!requestId) {
+      return res.status(502).json({ error: 'FAL did not return a request_id', body: submitJson });
+    }
+    const statusUrl = `${FAL_BASE}/${path}/requests/${requestId}/status`;
+    const resultUrl = `${FAL_BASE}/${path}/requests/${requestId}`;
+    const started = Date.now();
+    // Poll for completion.
+    while (Date.now() - started < FAL_POLL_MAX_MS) {
+      await new Promise((r) => setTimeout(r, FAL_POLL_INTERVAL_MS));
+      const s = await fetch(statusUrl, { headers: { 'Authorization': `Key ${FAL_KEY}` } });
+      if (!s.ok) continue;
+      const sj = await s.json();
+      if (sj.status === 'COMPLETED') {
+        const r = await fetch(resultUrl, { headers: { 'Authorization': `Key ${FAL_KEY}` } });
+        const rj = await r.json();
+        return res.json({ ok: true, requestId, endpoint: path, result: rj });
+      }
+      if (sj.status === 'FAILED' || sj.status === 'ERROR') {
+        return res.status(502).json({ error: 'FAL job failed', status: sj.status, body: sj });
+      }
+      // IN_QUEUE / IN_PROGRESS — keep polling.
+    }
+    return res.status(504).json({ error: 'FAL job timed out', requestId, endpoint: path });
+  } catch (err) {
+    console.error('[fal] error', err);
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
 app.get('/api/health', async (_req, res) => {
   try {
     await runOpenclaw(['--version']);
@@ -370,6 +452,8 @@ app.listen(PORT, HOST, () => {
   console.log(`  Static app: ${SERVE_STATIC ? DIST_DIR : '(none — dev-mode, no dist/ found)'}`);
   console.log(`  POST /api/ronan/shot-list   { script, defaultAspect?, constraints?, sessionId?, directorRefs?, styleKey? }`);
   console.log(`  POST /api/ronan/refine      { instruction, shot, sessionId?, defaultAspect?, directorRefs? }`);
+  console.log(`  POST /api/fal/run           { endpoint, input } → submit + wait for a FAL job`);
+  console.log(`  GET  /api/fal/health        → whether FAL_KEY is configured`);
   console.log(`  GET  /api/styles            → list of available style presets`);
   console.log(`  POST /api/image/generate    { prompt, aspectRatio? }`);
   console.log(`  GET  /api/health`);
