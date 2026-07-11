@@ -136,12 +136,24 @@ export function defaultPortsFor(kind: NodeKind, data?: Record<string, unknown>):
       return [
         { id: 'out', side: 'out', dataType: 'text', label: 'text' },
       ];
-    case 'image-gen':
-      return [
+    case 'image-gen': {
+      // Ref inputs are dynamic — Nano Banana Pro (and some others) accept
+      // multiple reference images. Inspector's +/− stepper drives
+      // data.refCount; 1..6. The FIRST ref keeps the legacy id `ref` so
+      // existing saved graphs (which wired to `ref`) don't lose their edge
+      // on load. Additional refs use `ref1`, `ref2`, …
+      const refCount = clampInt((data?.refCount as number) ?? 1, 1, 6);
+      const ports: NodePort[] = [
         { id: 'prompt', side: 'in', dataType: 'text', label: 'prompt' },
-        { id: 'ref', side: 'in', dataType: 'image', label: 'ref (opt.)' },
-        { id: 'out', side: 'out', dataType: 'image', label: 'image' },
       ];
+      for (let i = 0; i < refCount; i++) {
+        const id = i === 0 ? 'ref' : `ref${i}`;
+        const label = refCount === 1 ? 'ref (opt.)' : `ref ${i + 1}`;
+        ports.push({ id, side: 'in', dataType: 'image', label });
+      }
+      ports.push({ id: 'out', side: 'out', dataType: 'image', label: 'image' });
+      return ports;
+    }
     case 'movie-gen':
       return [
         { id: 'prompt', side: 'in', dataType: 'text', label: 'prompt' },

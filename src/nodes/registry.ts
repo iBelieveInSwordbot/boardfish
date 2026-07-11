@@ -955,6 +955,42 @@ const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
         ),
       ),
     ),
+    // Ref inputs stepper. Nano Banana Pro accepts multiple reference
+    // images; the executor already collects every image on inputs.images.
+    // Bumping this adds `ref1`, `ref2`, … ports to the node. Range 1–6.
+    createElement('label', { className: 'ne-inspect-label' }, 'Ref inputs'),
+    (() => {
+      const refCount = Math.max(1, Math.min(6, Number(node.data.refCount ?? 1)));
+      return createElement(
+        'div',
+        { className: 'ne-inspect-chip-row' },
+        createElement(
+          'button',
+          {
+            type: 'button',
+            className: 'ne-inspect-chip',
+            disabled: refCount <= 1,
+            onClick: () => onChangeData({ refCount: Math.max(1, refCount - 1) }),
+          },
+          '\u2212 input',
+        ),
+        createElement(
+          'button',
+          {
+            type: 'button',
+            className: 'ne-inspect-chip',
+            disabled: refCount >= 6,
+            onClick: () => onChangeData({ refCount: Math.min(6, refCount + 1) }),
+          },
+          '+ input',
+        ),
+        createElement(
+          'span',
+          { style: { fontSize: '11px', color: '#9a9aa2', alignSelf: 'center' } },
+          `${refCount} ref${refCount === 1 ? '' : 's'}`,
+        ),
+      );
+    })(),
     // Random Seed control (schema-driven — only renders when the current
     // model has a `seed` input; every current image model does).
     (getFalModel(modelId)?.inputs.some((i) => i.key === 'seed'))
