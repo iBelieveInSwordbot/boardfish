@@ -778,10 +778,9 @@
   position: fixed;
   inset: 0;
   z-index: 3000;
-  background: rgba(6, 6, 8, 0.92);
+  background: rgba(6, 6, 8, 0.94);
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
   cursor: zoom-out;
   animation: ne-fs-fade-in 0.12s ease-out;
 }
@@ -789,25 +788,15 @@
   from { opacity: 0; }
   to   { opacity: 1; }
 }
+/* Container fills the whole backdrop. Layout is
+   toolbar (fixed height) + body (fills the rest). */
 .ne-fullscreen-inner {
   position: relative;
-  width: min(96vw, 96vh * (16 / 9));
-  height: min(96vh, 96vw * (9 / 16));
-  max-width: 96vw;
-  max-height: 96vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: default;
-}
-.ne-fullscreen-inner img,
-.ne-fullscreen-inner video {
   width: 100%;
   height: 100%;
-  object-fit: contain;
-  background: #000;
-  border-radius: 6px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  cursor: default;
 }
 .ne-fullscreen-empty {
   color: #d8d5c9;
@@ -820,9 +809,6 @@
   max-width: 480px;
 }
 .ne-fullscreen-close {
-  position: absolute;
-  top: -12px;
-  right: -12px;
   width: 32px;
   height: 32px;
   border-radius: 999px;
@@ -836,10 +822,11 @@
   align-items: center;
   justify-content: center;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  flex-shrink: 0;
 }
 .ne-fullscreen-close:hover { background: #2a2a30; }
 
-/* Fullscreen prev/next navigation */
+/* Fullscreen prev/next navigation — pinned to the viewport edges */
 .ne-fullscreen-nav {
   position: absolute;
   top: 50%;
@@ -848,7 +835,7 @@
   height: 44px;
   border-radius: 999px;
   border: 1px solid #444;
-  background: rgba(28, 28, 32, 0.8);
+  background: rgba(28, 28, 32, 0.85);
   color: #e5e2d5;
   cursor: pointer;
   font-size: 24px;
@@ -858,21 +845,18 @@
   justify-content: center;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
   user-select: none;
+  z-index: 20;
 }
-.ne-fullscreen-nav:hover { background: rgba(42, 42, 48, 0.9); }
-.ne-fullscreen-nav--prev { left: -60px; }
-.ne-fullscreen-nav--next { right: -60px; }
-@media (max-width: 900px) {
-  .ne-fullscreen-nav--prev { left: 8px; }
-  .ne-fullscreen-nav--next { right: 8px; }
-}
+.ne-fullscreen-nav:hover { background: rgba(42, 42, 48, 0.95); }
+.ne-fullscreen-nav--prev { left: 16px; }
+.ne-fullscreen-nav--next { right: 16px; }
 .ne-fullscreen-counter {
   position: absolute;
-  bottom: -34px;
+  bottom: 16px;
   left: 50%;
   transform: translateX(-50%);
-  padding: 4px 12px;
-  background: rgba(20, 20, 24, 0.85);
+  padding: 5px 14px;
+  background: rgba(20, 20, 24, 0.9);
   border: 1px solid #333;
   border-radius: 12px;
   color: #d8d5c9;
@@ -880,6 +864,7 @@
   font-family: 'Menlo', 'Courier New', monospace;
   letter-spacing: 0.03em;
   white-space: nowrap;
+  z-index: 20;
 }
 
 /* Out-node refresh button (inside the header strip) */
@@ -1081,42 +1066,17 @@
 }
 
 /* ---------- Fullscreen: toolbar + grid + compare ---------- */
-.ne-fullscreen-inner {
-  /* base rules were sized for single-view. Grid/compare need full-screen. */
-  display: flex;
-  flex-direction: column;
-}
-.ne-fullscreen-inner--single {
-  /* Original constrained aspect box */
-}
-.ne-fullscreen-inner--grid,
-.ne-fullscreen-inner--compare {
-  width: 96vw;
-  height: 96vh;
-  max-width: 96vw;
-  max-height: 96vh;
-  background: rgba(20, 20, 24, 0.9);
-  border: 1px solid #2f2f38;
-  border-radius: 8px;
-  overflow: hidden;
-}
+/* Toolbar — always a solid row at the top of the backdrop. */
 .ne-fs-toolbar {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 12px;
+  padding: 10px 16px;
   background: #181820;
   border-bottom: 1px solid #2f2f38;
   flex-shrink: 0;
-}
-.ne-fullscreen-inner--single .ne-fs-toolbar {
-  position: absolute;
-  top: -48px;
-  left: 0;
-  right: 0;
-  background: transparent;
-  border: none;
-  z-index: 10;
+  min-height: 48px;
+  z-index: 15;
 }
 .ne-fs-toolbar-group {
   display: flex;
@@ -1167,24 +1127,17 @@
 }
 .ne-fs-slider { width: 160px; }
 .ne-fs-toolbar .ne-fullscreen-close {
-  position: static;
   margin-left: auto;
-  top: auto;
-  right: auto;
-}
-.ne-fullscreen-inner--single .ne-fs-toolbar .ne-fullscreen-close {
-  position: absolute;
-  right: 0;
-  top: 8px;
 }
 
-/* Single view keeps its old aspect-boxed appearance */
-.ne-fullscreen-inner--single .ne-fs-single {
-  width: 100%;
-  height: 100%;
+/* Single view — image fills the body area, arrows pinned to viewport edges. */
+.ne-fs-single {
+  flex: 1;
+  min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 16px 72px 48px 72px; /* leave gutters for the pinned arrows + counter */
 }
 .ne-fs-single-frame {
   position: relative;
@@ -1196,23 +1149,27 @@
 }
 .ne-fs-single-frame img,
 .ne-fs-single-frame video {
-  width: 100%;
-  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
   object-fit: contain;
   background: #000;
   border-radius: 6px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
 }
 
-/* Grid */
+/* Grid — fills the body, tiles auto-fill columns to maximize space. */
 .ne-fs-grid-scroll {
   flex: 1;
+  min-height: 0;
   overflow: auto;
-  padding: 14px;
+  padding: 16px;
 }
 .ne-fs-grid {
   display: grid;
   gap: 12px;
+  width: 100%;
 }
 .ne-fs-grid-tile {
   position: relative;
@@ -1222,6 +1179,7 @@
   border: 2px solid transparent;
   cursor: pointer;
   transition: border-color 0.1s;
+  aspect-ratio: 1 / 1;
 }
 .ne-fs-grid-tile.is-current { border-color: #4a9eff; }
 .ne-fs-grid-tile.is-picked  { border-color: #ffd447; }
@@ -1271,18 +1229,19 @@
 }
 .ne-fs-grid-tile.is-picked .ne-fs-grid-tile-check { opacity: 1; }
 
-/* Compare */
+/* Compare — fills body; cells maximize their area; zoom/pan on hover. */
 .ne-fs-compare-scroll {
   flex: 1;
-  overflow: auto;
+  min-height: 0;
+  overflow: hidden;
   padding: 14px;
   background: #0d0d10;
 }
 .ne-fs-compare {
   display: grid;
   gap: 12px;
+  width: 100%;
   height: 100%;
-  min-height: 400px;
 }
 .ne-fs-compare-cell {
   display: flex;
@@ -1292,6 +1251,7 @@
   border-radius: 6px;
   overflow: hidden;
   min-width: 0;
+  min-height: 0;
 }
 .ne-fs-compare-frame {
   flex: 1;
@@ -1300,14 +1260,44 @@
   justify-content: center;
   background: #000;
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+  cursor: zoom-in;
 }
+.ne-fs-compare-frame.is-zoomed { cursor: grab; }
+.ne-fs-compare-frame.is-panning { cursor: grabbing; }
 .ne-fs-compare-frame img,
 .ne-fs-compare-frame video {
-  width: 100%;
-  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
   object-fit: contain;
   display: block;
+  transform-origin: center center;
+  transition: transform 0.05s linear;
+  will-change: transform;
+  user-select: none;
+  -webkit-user-drag: none;
 }
+.ne-fs-compare-zoom-hud {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  padding: 3px 8px;
+  background: rgba(20, 20, 24, 0.85);
+  border: 1px solid #333;
+  border-radius: 8px;
+  color: #d8d5c9;
+  font-size: 10px;
+  font-family: 'Menlo', monospace;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.ne-fs-compare-frame:hover .ne-fs-compare-zoom-hud,
+.ne-fs-compare-frame.is-zoomed .ne-fs-compare-zoom-hud { opacity: 1; }
 .ne-fs-compare-caption {
   display: flex;
   align-items: center;
@@ -1317,6 +1307,7 @@
   color: #d0d0d6;
   font-size: 12px;
   font-family: 'Menlo', monospace;
+  flex-shrink: 0;
 }
 .ne-fs-compare-time { color: #6a6a72; margin-left: 4px; }
 .ne-fs-compare-remove {

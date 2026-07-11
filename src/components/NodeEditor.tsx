@@ -1941,6 +1941,107 @@ function getFullscreenFrames(
 
 type FullscreenFrame = { url: string; kind: 'image' | 'video'; label?: string; when?: number };
 
+/** Best-fit column count for the compare grid so cells stay large.
+ *  1→1col, 2→2col, 3–4→2col, 5–6→3col, 7–9→3col, 10+→4col. */
+function compareColsFor(n: number): number {
+  if (n <= 1) return 1;
+  if (n <= 2) return 2;
+  if (n <= 4) return 2;
+  if (n <= 9) return 3;
+  return 4;
+}
+
+/** Zoomable/pannable frame used in compare cells.
+ *  Scroll-wheel = zoom to cursor. Drag = pan when zoomed. Double-click = reset. */
+function ZoomableFrame({ frame }: { frame: FullscreenFrame }) {
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [scale, setScale] = useState(1);
+  const [tx, setTx] = useState(0);
+  const [ty, setTy] = useState(0);
+  const [panning, setPanning] = useState(false);
+  const panStart = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
+
+  // Native wheel listener (React onWheel is passive; we need preventDefault).
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    function onWheel(e: WheelEvent) {
+      if (!el) return;
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const cx = e.clientX - rect.left - rect.width / 2;
+      const cy = e.clientY - rect.top - rect.height / 2;
+      const factor = Math.exp(-e.deltaY * 0.0015);
+      setScale((s) => {
+        const next = Math.min(8, Math.max(1, s * factor));
+        if (next === s) return s;
+        // Zoom-to-cursor: keep the point under the cursor stationary.
+        const ratio = next / s;
+        setTx((t) => (t + (cx - t) * (1 - ratio)));
+        setTy((t) => (t + (cy - t) * (1 - ratio)));
+        // When we return to 1x, snap the pan back to origin.
+        if (next <= 1.0001) { setTx(0); setTy(0); }
+        return next;
+      });
+    }
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
+  function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    if (scale <= 1.0001) return; // no panning at 1x
+    if (e.button !== 0) return;
+    (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+    panStart.current = { x: e.clientX, y: e.clientY, tx, ty };
+    setPanning(true);
+  }
+  function onPointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    if (!panning || !panStart.current) return;
+    setTx(panStart.current.tx + (e.clientX - panStart.current.x));
+    setTy(panStart.current.ty + (e.clientY - panStart.current.y));
+  }
+  function endPan(e: React.PointerEvent<HTMLDivElement>) {
+    if (!panning) return;
+    try { (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    setPanning(false);
+    panStart.current = null;
+  }
+  function onDoubleClick() {
+    setScale(1); setTx(0); setTy(0);
+  }
+
+  const zoomed = scale > 1.0001;
+  return (
+    <div
+      ref={wrapRef}
+      className={`ne-fs-compare-frame ${zoomed ? 'is-zoomed' : ''} ${panning ? 'is-panning' : ''}`}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={endPan}
+      onPointerCancel={endPan}
+      onDoubleClick={onDoubleClick}
+    >
+      {frame.kind === 'video' ? (
+        <video
+          src={frame.url}
+          controls={!zoomed}
+          loop
+          playsInline
+          style={{ transform: `translate(${tx}px, ${ty}px) scale(${scale})` }}
+        />
+      ) : (
+        <img
+          src={frame.url}
+          alt=""
+          draggable={false}
+          style={{ transform: `translate(${tx}px, ${ty}px) scale(${scale})` }}
+        />
+      )}
+      <div className="ne-fs-compare-zoom-hud">{Math.round(scale * 100)}%{zoomed ? ' · drag to pan · dbl-click to reset' : ' · scroll to zoom'}</div>
+    </div>
+  );
+}
+
 /** Fullscreen preview UI: single-view, grid, and side-by-side compare. */
 function FullscreenBody(props: {
   frames: FullscreenFrame[];
@@ -2129,7 +2230,6 @@ function FullscreenBody(props: {
                 <div
                   key={i}
                   className={`ne-fs-grid-tile ${picked ? 'is-picked' : ''} ${i === idx ? 'is-current' : ''}`}
-                  style={{ height: `${gridSize}px` }}
                   onClick={() => togglePick(i)}
                   onDoubleClick={() => { onSetIndex(() => i); onSetMode('single'); }}
                   title={`${f.label ?? `v${frames.length - i}`}${f.when ? ' · ' + new Date(f.when).toLocaleTimeString() : ''} — click to pick, double-click to view`}
@@ -2153,16 +2253,13 @@ function FullscreenBody(props: {
           <div
             className="ne-fs-compare"
             style={{
-              gridTemplateColumns: `repeat(${compareList.length || 1}, minmax(0, 1fr))`,
+              gridTemplateColumns: `repeat(${compareColsFor(compareList.length)}, minmax(0, 1fr))`,
+              gridAutoRows: '1fr',
             }}
           >
             {compareList.map(({ i, f }) => (
               <div key={i} className="ne-fs-compare-cell">
-                <div className="ne-fs-compare-frame">
-                  {f.kind === 'video'
-                    ? <video src={f.url} controls loop playsInline />
-                    : <img src={f.url} alt="" draggable={false} />}
-                </div>
+                <ZoomableFrame frame={f} />
                 <div className="ne-fs-compare-caption">
                   <span>{i === 0 ? '● current' : `v${frames.length - i}`}</span>
                   {f.when ? <span className="ne-fs-compare-time">{new Date(f.when).toLocaleTimeString()}</span> : null}
