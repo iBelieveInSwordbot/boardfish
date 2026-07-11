@@ -86,8 +86,11 @@ export function PanelLightbox({
           e.stopPropagation();
           onNavigate(-1);
         }}
+        aria-label="Previous panel"
       >
-        ‹
+        <svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true">
+          <path d="M20 4 L8 16 L20 28 M8 16 L28 16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
       </button>
       <button
         className="lightbox-nav lightbox-nav-next"
@@ -97,8 +100,11 @@ export function PanelLightbox({
           e.stopPropagation();
           onNavigate(1);
         }}
+        aria-label="Next panel"
       >
-        ›
+        <svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true">
+          <path d="M12 4 L24 16 L12 28 M24 16 L4 16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
       </button>
 
       <button
@@ -167,7 +173,18 @@ export function PanelLightbox({
             background: showCaptions ? '#000' : 'transparent',
           }}
         >
-          {panel.imageDataUrl ? (
+          {panel.videoDataUrl ? (
+            <video
+              key={panel.videoDataUrl}
+              src={panel.videoDataUrl}
+              poster={panel.imageDataUrl ?? undefined}
+              controls
+              autoPlay
+              loop
+              playsInline
+              style={{ objectFit, width: '100%', height: '100%' }}
+            />
+          ) : panel.imageDataUrl ? (
             <img src={panel.imageDataUrl} alt={panel.imageName ?? ''} style={{ objectFit }} draggable={false} />
           ) : (
             <div className="panel-image-placeholder">no image</div>

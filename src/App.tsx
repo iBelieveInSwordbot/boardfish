@@ -246,28 +246,62 @@ function App() {
         // the user typed. Solution: show the full effective prompt, exactly
         // what will be sent to FAL, in the Text Prompt node.
         const seedPrompt = (rawSeedPrompt + styleSuffix(editing.styleMode)).trim();
-        // Seed a fresh graph from the effective prompt only — no auto image
-        // reference. If Matt wants image-to-image he can wire a Panel node
-        // or drop an image reference explicitly.
+        // Seed a fresh graph from the effective prompt AND — if the panel
+        // already has an image — pre-wire that image as the ImageGen `ref`
+        // input so double-click restore behaves like image-to-image out of
+        // the box (the behaviour that regressed when style-bleed got fixed).
+        // Explicit override still wins: if the user saved a graph on this
+        // panel, use that verbatim.
         const savedGraph =
-          (editing.nodeGraph as NodeGraph | undefined) ?? seedDefaultGraph(seedPrompt);
+          (editing.nodeGraph as NodeGraph | undefined) ??
+          seedDefaultGraph(seedPrompt, editing.imageDataUrl ?? undefined);
         return (
           <NodeEditor
             initialGraph={savedGraph}
             panelPrompt={seedPrompt}
             panelAspect={ratioToLabel(state.settings.panelAspectRatio)}
-            onSave={(nextGraph, outImage) => {
+            availablePanels={flatPanels
+              .filter((p) => p.id !== editing.id)
+              .map((p, i) => ({
+                id: p.id,
+                label: `Panel ${i + 1}` + (p.fields[0]?.value ? ` — ${p.fields[0].value.slice(0, 40)}` : ''),
+                imageDataUrl: p.imageDataUrl ?? undefined,
+                thumbUrl: p.imageDataUrl ?? undefined,
+              }))}
+            onSave={(nextGraph, outMedia) => {
               // Persist the graph on the panel.
               dispatch({ type: 'SET_PANEL_NODE_GRAPH', panelId: editing.id, graph: nextGraph });
-              // If the Out node produced an image, apply it as the panel's current image.
-              if (outImage?.dataUrl) {
+              // Apply the Out node's result to the panel.
+              if (outMedia?.kind === 'image') {
                 dispatch({
                   type: 'APPLY_AI_IMAGE',
                   panelId: editing.id,
-                  dataUrl: outImage.dataUrl,
+                  dataUrl: outMedia.dataUrl,
                   imageName: `Node ${new Date().toISOString().slice(0, 10)} ${editing.id.slice(0, 6)}.jpg`,
                   prompt: seedPrompt,
                   generatedAt: Date.now(),
+                });
+                // Clear any prior video attachment (this Out is a still now).
+                dispatch({ type: 'UPDATE_PANEL', id: editing.id, patch: { videoDataUrl: null } });
+              } else if (outMedia?.kind === 'video') {
+                // Use the extracted first-frame poster (or the existing panel
+                // image as a last-resort fallback) so the storyboard grid
+                // and PDF export have a still to render.
+                const poster = outMedia.posterDataUrl ?? editing.imageDataUrl ?? '';
+                if (poster) {
+                  dispatch({
+                    type: 'APPLY_AI_IMAGE',
+                    panelId: editing.id,
+                    dataUrl: poster,
+                    imageName: `Node ${new Date().toISOString().slice(0, 10)} ${editing.id.slice(0, 6)}.jpg`,
+                    prompt: seedPrompt,
+                    generatedAt: Date.now(),
+                  });
+                }
+                dispatch({
+                  type: 'UPDATE_PANEL',
+                  id: editing.id,
+                  patch: { videoDataUrl: outMedia.dataUrl },
                 });
               }
               setNodeEditorPanelId(null);

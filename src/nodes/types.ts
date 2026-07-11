@@ -31,6 +31,7 @@ export type NodeKind =
   | 'switch'
   | 'null-node'
   | 'prompt-concat'
+  | 'panel-ref'
   | 'custom-fal';
 
 export type PortDataType = 'text' | 'image' | 'video' | 'any';
@@ -62,7 +63,7 @@ export type NodeOutput = {
 //   __size:    { width, height }  — explicit size override from resize
 //                                    handle (graph-utils.readNodeSize).
 //   __history: NodeOutput[]        — prior generations for this node,
-//                                    oldest first, capped at HISTORY_LIMIT
+//                                    oldest first, unbounded (see appendHistory)
 //                                    (graph-utils.appendHistory).
 //   __runtime: unknown             — reserved for transient exec state.
 //
@@ -176,6 +177,10 @@ export function defaultPortsFor(kind: NodeKind, data?: Record<string, unknown>):
       ins.push({ id: 'out', side: 'out', dataType: 'text', label: 'text' });
       return ins;
     }
+    case 'panel-ref':
+      return [
+        { id: 'out', side: 'out', dataType: 'image', label: 'panel image' },
+      ];
     case 'custom-fal':
       return [
         { id: 'in', side: 'in', dataType: 'any', label: 'in' },
@@ -218,6 +223,15 @@ export function defaultDataFor(kind: NodeKind): Record<string, unknown> {
       return {};
     case 'prompt-concat':
       return { count: 2, separator: ' ' };
+    case 'panel-ref':
+      return {
+        // Which storyboard panel this node points at (looked up by id at
+        // pick time). imageDataUrl is snapshotted so the graph runs even
+        // if the panel's live image later changes.
+        panelId: '',
+        panelLabel: '',
+        imageDataUrl: '',
+      };
     case 'custom-fal':
       return { endpoint: '' };
   }

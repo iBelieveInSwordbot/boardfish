@@ -559,11 +559,10 @@ input, textarea, select {
   transform: translateY(-50%);
   z-index: 1001;
   width: 56px;
-  height: 96px;
-  border: 1px solid rgba(255,255,255,0.12);
+  height: 56px;
+  border: 1px solid rgba(255,255,255,0.15);
   background: rgba(20, 20, 24, 0.55);
   color: #fff;
-  font-size: 32px;
   line-height: 1;
   cursor: pointer;
   backdrop-filter: blur(8px);
@@ -571,11 +570,13 @@ input, textarea, select {
   display: flex;
   align-items: center;
   justify-content: center;
+  border-radius: 10px;
 }
+.lightbox-nav svg { display: block; }
 .lightbox-nav:hover { background: rgba(20, 20, 24, 0.85); }
 .lightbox-nav:disabled { opacity: 0.25; cursor: not-allowed; }
-.lightbox-nav-prev { left: 24px; border-radius: 0 8px 8px 0; }
-.lightbox-nav-next { right: 24px; border-radius: 8px 0 0 8px; }
+.lightbox-nav-prev { left: 24px; }
+.lightbox-nav-next { right: 24px; }
 .lightbox-hint {
   position: absolute;
   bottom: 20px;
@@ -1656,6 +1657,11 @@ input, textarea, select {
 .panel-compare-grid.compare-2 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr; }
 .panel-compare-grid.compare-3 { grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr; }
 .panel-compare-grid.compare-4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+.panel-compare-grid.compare-5,
+.panel-compare-grid.compare-6 { grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; }
+.panel-compare-grid.compare-7,
+.panel-compare-grid.compare-8 { grid-template-columns: 1fr 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; }
+.panel-compare-grid.compare-9 { grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr 1fr; }
 
 .panel-compare-cell {
   position: relative;
@@ -1860,6 +1866,11 @@ input, textarea, select {
   justify-content: space-between;
   gap: 8px;
 }
+.panel-compare-caption-btns {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
 
 /* Full-screen focus mode inside the compare overlay */
 .panel-compare-focus {
@@ -1971,4 +1982,20 @@ input, textarea, select {
   font-size: 10px;
   color: #7a7a80;
   font-style: italic;
+}
+
+.panel-video-badge {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  background: rgba(0, 0, 0, 0.75);
+  color: #ffd447;
+  padding: 3px 8px;
+  border-radius: 10px;
+  font-family: 'Menlo', 'Courier New', monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  border: 1px solid rgba(255, 212, 71, 0.4);
+  pointer-events: none;
+  z-index: 3;
 }

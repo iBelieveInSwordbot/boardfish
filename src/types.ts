@@ -105,6 +105,13 @@ export type Panel = {
   id: string;
   imageDataUrl: string | null;
   imageName: string | null;
+  /**
+   * Optional video attached to the panel. Populated when the node editor's
+   * Out node yields a video: we extract the first frame as `imageDataUrl`
+   * (so PDF export and the still-based UI keep working) AND stash the full
+   * MP4 here for lightbox playback / future export flows.
+   */
+  videoDataUrl?: string | null;
   fields: TextField[];
   cornerNote: string; // optional per-panel text shown in the top-right corner
   aiPrompt?: string; // last prompt used to generate the panel image (editable, re-gennable)

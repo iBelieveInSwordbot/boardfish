@@ -18,11 +18,27 @@
 //   - Inspector: full form; calls `onChangeData` with a shallow patch. Calls
 //     `onGenerate` when the user wants to execute starting at this node.
 
-import { createElement, useEffect, useRef, Fragment, type FC } from 'react';
+import { createElement, useEffect, useRef, useContext, createContext, Fragment, type FC } from 'react';
 import type { BaseNode, NodeKind, NodeOutput, NodePort } from './types';
 import { defaultDataFor, defaultPortsFor } from './types';
 import { appendHistory, readNodeHistory } from './graph-utils';
 import { FAL_MODELS } from '../ai/fal-models';
+
+// ---------------------------------------------------------------------------
+// Panel-ref lookup context. NodeEditor provides the list of available
+// storyboard panels (id + label + tiny thumb) so a Panel node's Inspector
+// can render a picker. Optional — undefined means "not in an app context".
+// ---------------------------------------------------------------------------
+export type PanelRefOption = {
+  id: string;
+  label: string;         // "Storyboard 1 · Panel 3" style
+  thumbUrl?: string;     // small preview if available
+  imageDataUrl?: string; // full data URL (baked into the node on pick)
+};
+
+export const PanelRefContext = createContext<{
+  panels: PanelRefOption[];
+}>({ panels: [] });
 
 // Local view of a FAL model as this file needs it (id + label + coming-soon flag).
 // Sourced from src/ai/fal-models.ts, filtered by kind.
@@ -75,6 +91,13 @@ export type PreviewProps = {
    * action.
    */
   onPromoteFrame?: (historyIndex: number) => void;
+  /**
+   * Full graph. Optional — previews that want to render an on-the-fly
+   * synthesis of upstream inputs (e.g. Prompt Concat's read-only combined
+   * text) use this to peek at connected nodes' data/output without waiting
+   * for the executor to run.
+   */
+  graph?: import('./types').NodeGraph;
 };
 
 export type NodeKindDef = {
@@ -296,7 +319,7 @@ function renderMediaThumb(opts: {
 // Preview components
 // ---------------------------------------------------------------------------
 
-const TextPromptPreview: FC<PreviewProps> = ({ node, onChangeData }) => {
+const TextPromptPreview: FC<PreviewProps> = ({ node, onChangeData, onRun }) => {
   const text = String(node.data.text ?? '');
   // Read-only fallback if the parent didn't give us onChangeData. Keeps the
   // old behavior for anyone who instantiates the preview in isolation.
@@ -314,6 +337,11 @@ const TextPromptPreview: FC<PreviewProps> = ({ node, onChangeData }) => {
   // are stopped from bubbling so the node-drag handler on the header/body
   // never fires while typing/selecting text. The reducer's kbd handler
   // already ignores keydowns whose target is a TEXTAREA.
+  //
+  // The little expand icon (⭶) triggers the fullscreen prompt editor via a
+  // synthetic keyboard event so the tap-Space handler can pick it up. This
+  // gives users a mouse affordance now that Space types spaces inside the
+  // textarea instead of hijacking to open fullscreen.
   return createElement(
     'div',
     { className: 'ne-node-preview ne-node-preview--text is-editable' },
@@ -330,6 +358,42 @@ const TextPromptPreview: FC<PreviewProps> = ({ node, onChangeData }) => {
       onDoubleClick: (e: React.MouseEvent) => e.stopPropagation(),
       onKeyDown: (e: React.KeyboardEvent) => e.stopPropagation(),
     }),
+    createElement(
+      'button',
+      {
+        className: 'ne-node-expand-btn',
+        type: 'button',
+        title: 'Expand prompt editor',
+        'aria-label': 'Expand prompt editor',
+        onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+        onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
+        onClick: (e: React.MouseEvent) => {
+          e.stopPropagation();
+          // Dispatch a custom event that NodeEditor listens for to open the
+          // fullscreen prompt editor on this node. Keeps the Preview
+          // decoupled from NodeEditor's local state.
+          window.dispatchEvent(
+            new CustomEvent('boardfish:open-prompt-editor', { detail: { nodeId: node.id } }),
+          );
+        },
+      },
+      // Diagonal expand-arrows glyph (no semi-circle chevrons)
+      createElement(
+        'svg',
+        { viewBox: '0 0 16 16', width: 12, height: 12, 'aria-hidden': true },
+        createElement('path', {
+          d: 'M2 6 L2 2 L6 2 M14 10 L14 14 L10 14 M2 2 L7 7 M14 14 L9 9',
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: 1.5,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+        }),
+      ),
+    ),
+    // Suppress unused-var warning — onRun is available if future work wants
+    // to add a per-node run button next to the expand button.
+    onRun ? null : null,
   );
 };
 
@@ -480,32 +544,59 @@ const NullNodePreview: FC<PreviewProps> = () =>
     createElement('div', { className: 'ne-node-preview-caption' }, 'passthrough'),
   );
 
-const PromptConcatPreview: FC<PreviewProps> = ({ node }) => {
+const PromptConcatPreview: FC<PreviewProps> = ({ node, graph }) => {
   const count = Number(node.data.count ?? 2);
-  const sep = JSON.stringify(String(node.data.separator ?? ' '));
-  // If the node has been executed we have the combined text on
-  // `node.output.text`. Show it so users can eyeball what will land in the
-  // downstream ImageGen. When empty, hint the user to run the graph.
-  const combined = typeof node.output?.text === 'string' ? node.output.text : '';
+  const sep = typeof node.data.separator === 'string' ? String(node.data.separator) : ' · ';
+  const own = typeof node.data.text === 'string' ? String(node.data.text) : '';
+
+  // Compute an on-the-fly preview of the concatenated text by peeking at the
+  // connected upstream nodes' text (from output.text if the executor has run,
+  // otherwise from data.text for text-prompt-like nodes). This mirrors what
+  // runPromptConcat does without needing a full graph run — so the user sees
+  // the effective prompt live as they type.
+  let combined = '';
+  if (graph) {
+    const parts: string[] = [];
+    // Walk edges pointing at this node in order (by portId asc for stability).
+    const incoming = graph.edges
+      .filter((e) => e.to.nodeId === node.id)
+      .slice()
+      .sort((a, b) => a.to.portId.localeCompare(b.to.portId));
+    for (const e of incoming) {
+      const upstream = graph.nodes.find((n) => n.id === e.from.nodeId);
+      if (!upstream) continue;
+      const out = upstream.output;
+      let text = '';
+      if (out && out.kind === 'text' && typeof out.text === 'string') text = out.text;
+      else if (typeof (upstream.data as Record<string, unknown>).text === 'string')
+        text = String((upstream.data as Record<string, unknown>).text);
+      if (text) parts.push(text);
+    }
+    if (own) parts.push(own);
+    combined = parts.filter(Boolean).join(sep);
+  } else if (typeof node.output?.text === 'string') {
+    combined = node.output.text;
+  }
+
+  // Render as a read-only Prompt-style preview (matching TextPromptPreview's
+  // textarea styling) so the concatenated result reads like a real prompt.
   return createElement(
     'div',
-    { className: 'ne-node-preview ne-node-preview--concat' },
-    createElement(
-      'div',
-      { className: 'ne-node-preview-caption' },
-      `Join ${count} texts with ${sep}`,
-    ),
-    combined
-      ? createElement(
-          'div',
-          { className: 'ne-node-preview-text', style: { flex: 1, overflow: 'auto' } },
-          truncate(combined, 400),
-        )
-      : createElement(
-          'div',
-          { className: 'ne-node-preview-empty' },
-          'run to see combined text',
-        ),
+    { className: 'ne-node-preview ne-node-preview--text is-readonly' },
+    createElement('textarea', {
+      className: 'ne-node-inline-textarea ne-node-inline-textarea--readonly',
+      value: combined,
+      placeholder: `Join ${count} texts with "${sep}"…`,
+      spellCheck: false,
+      readOnly: true,
+      // Same event-stop as the editable variant so clicks/wheels don't drag
+      // the node while the user reads/scrolls the combined text.
+      onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+      onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
+      onClick: (e: React.MouseEvent) => e.stopPropagation(),
+      onDoubleClick: (e: React.MouseEvent) => e.stopPropagation(),
+      onWheel: (e: React.WheelEvent) => e.stopPropagation(),
+    }),
   );
 };
 
@@ -515,6 +606,32 @@ const CustomFalPreview: FC<PreviewProps> = () =>
     { className: 'ne-node-preview ne-node-preview--stub' },
     createElement('div', { className: 'ne-node-preview-empty' }, '\ud83e\uddea custom FAL \u2014 coming soon'),
   );
+
+const PanelRefPreview: FC<PreviewProps> = ({ node }) => {
+  const imageDataUrl = String(node.data.imageDataUrl ?? '');
+  const panelLabel = String(node.data.panelLabel ?? '');
+  return createElement(
+    'div',
+    { className: 'ne-node-preview ne-node-preview--image' + (imageDataUrl ? '' : ' is-empty') },
+    imageDataUrl
+      ? createElement('img', {
+          src: imageDataUrl,
+          alt: '',
+          draggable: false,
+          className: 'ne-node-preview-thumb',
+        })
+      : createElement(
+          'div',
+          { className: 'ne-node-preview-empty' },
+          'pick a panel in the Inspector \u2192',
+        ),
+    createElement(
+      'div',
+      { className: 'ne-node-preview-caption' },
+      panelLabel || 'Panel Ref',
+    ),
+  );
+};
 
 // ---------------------------------------------------------------------------
 // Inspector components
@@ -730,18 +847,41 @@ const SwitchInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) => {
     'div',
     { className: 'ne-inspect-body' },
     createElement('label', { className: 'ne-inspect-label' }, 'Inputs'),
-    createElement('input', {
-      type: 'number',
-      className: 'ne-inspect-input',
-      min: 2,
-      max: 6,
-      value: count,
-      onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
-        const n = Math.max(2, Math.min(6, Number(e.target.value) || 2));
-        const nextSelected = Math.min(selected, n - 1);
-        onChangeData({ count: n, selected: nextSelected });
-      },
-    }),
+    createElement(
+      'div',
+      { className: 'ne-inspect-chip-row' },
+      createElement(
+        'button',
+        {
+          type: 'button',
+          className: 'ne-inspect-chip',
+          disabled: count <= 2,
+          onClick: () => {
+            const n = Math.max(2, count - 1);
+            const nextSelected = Math.min(selected, n - 1);
+            onChangeData({ count: n, selected: nextSelected });
+          },
+        },
+        '\u2212 input',
+      ),
+      createElement(
+        'button',
+        {
+          type: 'button',
+          className: 'ne-inspect-chip',
+          disabled: count >= 6,
+          onClick: () => {
+            onChangeData({ count: Math.min(6, count + 1) });
+          },
+        },
+        '+ input',
+      ),
+      createElement(
+        'span',
+        { style: { fontSize: '11px', color: '#9a9aa2', alignSelf: 'center' } },
+        `${count} inputs`,
+      ),
+    ),
     createElement('label', { className: 'ne-inspect-label' }, 'Selected'),
     createElement(
       'div',
@@ -838,6 +978,69 @@ const CustomFalInspector: NodeKindDef['Inspector'] = () =>
     ),
   );
 
+const PanelRefInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) => {
+  const { panels } = useContext(PanelRefContext);
+  const panelId = String(node.data.panelId ?? '');
+  const panelLabel = String(node.data.panelLabel ?? '');
+  const imageDataUrl = String(node.data.imageDataUrl ?? '');
+  return createElement(
+    'div',
+    { className: 'ne-inspect-body' },
+    createElement('label', { className: 'ne-inspect-label' }, 'Reference panel'),
+    panels.length === 0
+      ? createElement(
+          'div',
+          { className: 'ne-inspect-note' },
+          'No panels in this project yet. Create some storyboard panels first, then come back.',
+        )
+      : createElement(
+          'select',
+          {
+            className: 'ne-inspect-select',
+            value: panelId,
+            onChange: (e: React.ChangeEvent<HTMLSelectElement>) => {
+              const nextId = e.target.value;
+              const opt = panels.find((p) => p.id === nextId);
+              onChangeData({
+                panelId: nextId,
+                panelLabel: opt?.label ?? '',
+                imageDataUrl: opt?.imageDataUrl ?? '',
+              });
+            },
+          },
+          createElement('option', { key: '__none', value: '' }, '\u2014 pick a panel \u2014'),
+          ...panels.map((p) =>
+            createElement(
+              'option',
+              { key: p.id, value: p.id },
+              p.label + (p.imageDataUrl ? '' : ' (no image)'),
+            ),
+          ),
+        ),
+    panelId && !imageDataUrl
+      ? createElement(
+          'div',
+          { className: 'ne-inspect-note' },
+          'This panel has no rendered image yet. Generate its image first, or pick a different panel.',
+        )
+      : null,
+    imageDataUrl
+      ? createElement(
+          'div',
+          { className: 'ne-inspect-thumb' },
+          createElement('img', { src: imageDataUrl, alt: '', draggable: false }),
+        )
+      : null,
+    panelLabel
+      ? createElement(
+          'div',
+          { className: 'ne-inspect-note' },
+          `Bound to: ${panelLabel}`,
+        )
+      : null,
+  );
+};
+
 // ---------------------------------------------------------------------------
 // Registry table
 // ---------------------------------------------------------------------------
@@ -923,6 +1126,17 @@ export const NODE_KINDS: Record<NodeKind, NodeKindDef> = {
     ports: (data) => defaultPortsFor('prompt-concat', data),
     Preview: PromptConcatPreview,
     Inspector: PromptConcatInspector,
+  },
+  'panel-ref': {
+    kind: 'panel-ref',
+    label: 'Panel Ref',
+    category: 'input',
+    defaultWidth: 200,
+    defaultHeight: 180,
+    defaultData: () => defaultDataFor('panel-ref'),
+    ports: (data) => defaultPortsFor('panel-ref', data),
+    Preview: PanelRefPreview,
+    Inspector: PanelRefInspector,
   },
   'custom-fal': {
     kind: 'custom-fal',

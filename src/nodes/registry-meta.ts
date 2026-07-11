@@ -23,4 +23,5 @@ export const NODE_KINDS_META: Record<NodeKind, NodeKindMeta> = {
   'null-node':     { defaultWidth: 160, defaultHeight: 100 },
   'prompt-concat': { defaultWidth: 200, defaultHeight: 140 },
   'custom-fal':    { defaultWidth: 220, defaultHeight: 140 },
+  'panel-ref':     { defaultWidth: 200, defaultHeight: 160 },
 };

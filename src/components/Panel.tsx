@@ -194,6 +194,11 @@ export function PanelView({ panel, index, selected, settings, dispatch, onOpenNo
         ) : (
           <div className="panel-image-placeholder">no image</div>
         )}
+        {panel.videoDataUrl && (
+          <div className="panel-video-badge" title="This panel has a video — press Space to play">
+            ▶ VIDEO
+          </div>
+        )}
       </div>
       <div className="panel-fields">
         {panel.fields.map((f) => (
@@ -324,7 +329,8 @@ export function PanelView({ panel, index, selected, settings, dispatch, onOpenNo
 // ---------- History pane (inline over the panel) ----------
 //
 // Shows the current image + all prior versions. Click a thumbnail to check it
-// (multi-select up to 4); "Compare selected" opens the full-screen grid.
+// (multi-select up to 9); "Compare selected" opens the full-screen grid.
+// Grid layouts: 2·1 / 3·1 / 2·2 (4) / 5-flow / 6-flow / 7-flow / 8-flow / 3·3 (9).
 // Single "Use" swap and "Delete" per version remain available. The current
 // image is included as a selectable card labeled "current" so it can
 // participate in Compare too.
@@ -358,7 +364,7 @@ function PanelHistoryPane({ panel, historyCount, dispatch, onClose }: HistoryPan
   function toggle(id: string) {
     setSelectedIds((prev) => {
       if (prev.includes(id)) return prev.filter((x) => x !== id);
-      if (prev.length >= 4) return prev; // cap at 4
+      if (prev.length >= 9) return prev; // cap at 9 (3×3 grid)
       return [...prev, id];
     });
   }
@@ -471,7 +477,7 @@ type CompareProps = {
 
 function HistoryCompareOverlay({ panelId, versions, currentImageDataUrl, dispatch, onClose }: CompareProps) {
   const n = versions.length;
-  const gridClass = n === 2 ? 'compare-2' : n === 3 ? 'compare-3' : 'compare-4';
+  const gridClass = `compare-${Math.min(Math.max(n, 2), 9)}`;
 
   // Grid vs focus mode. In grid mode: 2/3/4-up thumbnails. In focus mode: one
   // image fills the viewport, arrow keys cycle, scroll = zoom, drag = pan.
@@ -601,6 +607,23 @@ function HistoryCompareOverlay({ panelId, versions, currentImageDataUrl, dispatc
               Use this (Enter)
             </button>
           )}
+          {focusIdx !== null && focusedVersion && focusedVersion.id !== '__current' && (
+            <button
+              className="panel-ai-btn danger"
+              title="Delete this version"
+              onClick={() => {
+                if (!confirm('Delete this previous generation? This cannot be undone.')) return;
+                dispatch({ type: 'DELETE_AI_HISTORY', panelId, versionId: focusedVersion.id });
+                // Step back to previous frame if we deleted the current focus.
+                const nextIdx = Math.max(0, focusIdx - 1);
+                // If nothing left in versions after this, exit compare.
+                if (versions.length <= 1) onClose();
+                else { setFocusIdx(nextIdx); setActiveIdx(nextIdx); }
+              }}
+            >
+              🗑 Delete
+            </button>
+          )}
           {focusIdx !== null && (
             <button className="panel-ai-btn" onClick={exitFocus}>Back to grid</button>
           )}
@@ -625,18 +648,33 @@ function HistoryCompareOverlay({ panelId, versions, currentImageDataUrl, dispatc
                 <div className="panel-compare-caption">
                   <div className="panel-compare-caption-row">
                     <span>{isCurrent ? 'current' : v.generatedAt ? new Date(v.generatedAt).toLocaleString() : ''}</span>
-                    {v.id !== '__current' && (
-                      <button
-                        className="panel-ai-btn primary tiny"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          dispatch({ type: 'RESTORE_AI_IMAGE', panelId, versionId: v.id });
-                          onClose();
-                        }}
-                      >
-                        Use
-                      </button>
-                    )}
+                    <div className="panel-compare-caption-btns">
+                      {v.id !== '__current' && (
+                        <button
+                          className="panel-ai-btn primary tiny"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            dispatch({ type: 'RESTORE_AI_IMAGE', panelId, versionId: v.id });
+                            onClose();
+                          }}
+                        >
+                          Use
+                        </button>
+                      )}
+                      {v.id !== '__current' && (
+                        <button
+                          className="panel-ai-btn danger tiny"
+                          title="Delete this version"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (!confirm('Delete this previous generation? This cannot be undone.')) return;
+                            dispatch({ type: 'DELETE_AI_HISTORY', panelId, versionId: v.id });
+                          }}
+                        >
+                          🗑
+                        </button>
+                      )}
+                    </div>
                   </div>
                   {v.prompt && <div className="panel-compare-prompt">{v.prompt}</div>}
                 </div>

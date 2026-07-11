@@ -140,6 +140,7 @@ export function NodeView(p: NodeViewProps) {
       <div className="ne-node-body">
         <Preview
           node={node}
+          graph={graph}
           onChangeData={onChangeData}
           onRun={onRun}
           onPromoteFrame={onPromoteFrame}

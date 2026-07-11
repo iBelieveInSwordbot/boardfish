@@ -61,6 +61,7 @@ import {
 } from '../nodes/graph-utils';
 import { executeGraph } from '../ai/dag-executor';
 import { NODE_KINDS } from '../nodes/registry';
+import { PanelRefContext, type PanelRefOption } from '../nodes/registry';
 import { NodeView, ContextMenu, type ContextMenuState } from './NodeCanvas';
 import { InspectorPane } from './NodeInspector';
 import './NodeEditor.css';
@@ -75,7 +76,15 @@ export type NodeEditorProps = {
   panelPrompt: string;
   /** Seeds the ImageGen aspect on new default graphs. Free-form label. */
   panelAspect: string;
-  onSave: (graph: NodeGraph, outImage: { dataUrl: string; mime: string } | null) => void;
+  /** Options fed into the Panel Ref node's picker (id + label + imageDataUrl). */
+  availablePanels?: PanelRefOption[];
+  onSave: (
+    graph: NodeGraph,
+    outMedia:
+      | { kind: 'image'; dataUrl: string; mime: string }
+      | { kind: 'video'; dataUrl: string; mime: string; posterDataUrl: string | null }
+      | null,
+  ) => void;
   onClose: () => void;
 };
 
@@ -175,7 +184,7 @@ const DROP_ON_WIRE_RADIUS = 40;
 // ---------------------------------------------------------------------------
 
 export function NodeEditor(props: NodeEditorProps) {
-  const { initialGraph, panelPrompt, panelAspect, onSave, onClose } = props;
+  const { initialGraph, panelPrompt, panelAspect, availablePanels, onSave, onClose } = props;
 
   // Seed default 3-node chain if the incoming graph is empty. Applied once.
   const seeded = useMemo<NodeGraph>(() => {
@@ -248,8 +257,54 @@ export function NodeEditor(props: NodeEditorProps) {
   // Index within the [current, ...history] frames array shown in fullscreen.
   // 0 = current live output, 1+ = older frames (most recent first).
   const [fullscreenIndex, setFullscreenIndex] = useState(0);
+  // View mode inside fullscreen: single (default), grid (thumbnails), or
+  // compare (side-by-side of a picked subset).
+  const [fullscreenMode, setFullscreenMode] = useState<'single' | 'grid' | 'compare'>('single');
+  // Grid tile size (px). Slider adjusts it 100–420.
+  const [fullscreenGridSize, setFullscreenGridSize] = useState(220);
+  // Compare-mode selection: set of frame indices into the frames array.
+  const [fullscreenPicks, setFullscreenPicks] = useState<Set<number>>(new Set());
   // Node id whose Text Prompt is open in the large-editor modal.
   const [promptEditorNodeId, setPromptEditorNodeId] = useState<NodeId | null>(null);
+
+  // Listen for the Preview's expand-icon custom event so text-prompt nodes
+  // can open the fullscreen editor via mouse without going through the
+  // tap-Space codepath (which now no-ops when focus is inside a textarea).
+  useEffect(() => {
+    function onOpenPromptEditor(e: Event) {
+      const detail = (e as CustomEvent).detail as { nodeId?: string } | undefined;
+      if (detail?.nodeId) setPromptEditorNodeId(detail.nodeId);
+    }
+    window.addEventListener('boardfish:open-prompt-editor', onOpenPromptEditor);
+    return () => window.removeEventListener('boardfish:open-prompt-editor', onOpenPromptEditor);
+  }, []);
+
+  /**
+   * Close the fullscreen overlay. If the user navigated to a history frame
+   * (index > 0), promote it to be the node's current output so what they
+   * left it on is what the node shows.
+   */
+  const closeFullscreen = useCallback(() => {
+    const nid = fullscreenNodeId;
+    if (!nid) return;
+    const n = graphRef.current.nodes.find((x) => x.id === nid);
+    if (n) {
+      const frames = getFullscreenFrames(n);
+      if (frames.length > 1 && fullscreenIndex > 0) {
+        // frames array is [current, ...historyNewestFirst]. History index in
+        // the ORIGINAL (oldest-first) array = history.length - fullscreenIndex.
+        const hist = readNodeHistory(n);
+        const historyIndex = hist.length - fullscreenIndex;
+        if (historyIndex >= 0 && historyIndex < hist.length) {
+          dispatch({ type: 'PROMOTE_FRAME', id: nid, historyIndex });
+        }
+      }
+    }
+    setFullscreenNodeId(null);
+    setFullscreenIndex(0);
+    setFullscreenMode('single');
+    setFullscreenPicks(new Set());
+  }, [fullscreenNodeId, fullscreenIndex]);
 
   // Refs for DOM / interaction state that shouldn't cause re-renders.
   const canvasRef = useRef<HTMLDivElement | null>(null);
@@ -364,13 +419,39 @@ export function NodeEditor(props: NodeEditorProps) {
   // Save / close
   // -------------------------------------------------------------------------
 
-  const triggerSave = useCallback(() => {
+  const triggerSave = useCallback(async () => {
     const out = findOutNode(graph);
-    const outImage =
-      out && out.output && out.output.kind === 'image' && out.output.dataUrl
-        ? { dataUrl: out.output.dataUrl, mime: out.output.mime ?? 'image/png' }
-        : null;
-    onSave(graph, outImage);
+    if (!out || !out.output || !out.output.dataUrl) {
+      onSave(graph, null);
+      return;
+    }
+    if (out.output.kind === 'image') {
+      onSave(graph, {
+        kind: 'image',
+        dataUrl: out.output.dataUrl,
+        mime: out.output.mime ?? 'image/png',
+      });
+      return;
+    }
+    if (out.output.kind === 'video') {
+      // Extract the first frame as a still so the storyboard panel + PDF
+      // export have something to render even when the underlying media is
+      // a video. Fall back to null poster on failure.
+      let poster: string | null = null;
+      try {
+        poster = await extractVideoPoster(out.output.dataUrl);
+      } catch {
+        poster = null;
+      }
+      onSave(graph, {
+        kind: 'video',
+        dataUrl: out.output.dataUrl,
+        mime: out.output.mime ?? 'video/mp4',
+        posterDataUrl: poster,
+      });
+      return;
+    }
+    onSave(graph, null);
   }, [graph, onSave]);
 
   const triggerClose = useCallback(() => {
@@ -496,7 +577,7 @@ export function NodeEditor(props: NodeEditorProps) {
 
       if (e.key === 'Escape') {
         if (contextMenu) { setContextMenu(null); return; }
-        if (fullscreenNodeId) { e.preventDefault(); setFullscreenNodeId(null); return; }
+        if (fullscreenNodeId) { e.preventDefault(); closeFullscreen(); return; }
         if (promptEditorNodeId) { e.preventDefault(); setPromptEditorNodeId(null); return; }
         if (!inField) {
           e.preventDefault();
@@ -540,7 +621,8 @@ export function NodeEditor(props: NodeEditorProps) {
 
       // Arrow keys in fullscreen: navigate through this node's frames
       // (current output + history, newest first).
-      if (fullscreenNodeId && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      if (fullscreenNodeId && fullscreenMode === 'single' &&
+          (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
         const fn = graphRef.current.nodes.find((x) => x.id === fullscreenNodeId);
         if (!fn) return;
         const frames = getFullscreenFrames(fn);
@@ -569,11 +651,25 @@ export function NodeEditor(props: NodeEditorProps) {
     function onKeyUp(e: KeyboardEvent) {
       if (!e.metaKey && !e.ctrlKey) setMetaDown(false);
       if (e.key === ' ') {
+        // If focus is in an editable field the Space keydown was NOT tracked
+        // (spaceDown stayed false) — don't fire the tap action here either,
+        // otherwise typing a space in the Text Prompt inline textarea would
+        // pop the fullscreen editor as soon as the space key is released.
+        const target = e.target as HTMLElement | null;
+        const inField =
+          target &&
+          (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+        if (inField) {
+          // Reset any stale pan flag but don't fire the tap action.
+          spacePannedRef.current = false;
+          setSpaceDown(false);
+          return;
+        }
         // Only fire the tap action if we didn't actually pan.
         if (!spacePannedRef.current) {
           const pid = primaryIdRef.current;
           if (fullscreenNodeId) {
-            setFullscreenNodeId(null);
+            closeFullscreen();
           } else if (promptEditorNodeId) {
             setPromptEditorNodeId(null);
           } else if (pid) {
@@ -582,6 +678,8 @@ export function NodeEditor(props: NodeEditorProps) {
               setPromptEditorNodeId(pid);
             } else if (n) {
               setFullscreenIndex(0);
+              setFullscreenMode('single');
+              setFullscreenPicks(new Set());
               setFullscreenNodeId(pid);
             }
           }
@@ -599,6 +697,7 @@ export function NodeEditor(props: NodeEditorProps) {
   }, [
     triggerSave, triggerClose, selectedEdgeId, contextMenu, doCopy, doCut,
     doPaste, doSelectAll, setSelection, fullscreenNodeId, promptEditorNodeId, spaceDown,
+    closeFullscreen, fullscreenMode,
   ]);
 
   // -------------------------------------------------------------------------
@@ -1249,6 +1348,7 @@ export function NodeEditor(props: NodeEditorProps) {
   // -------------------------------------------------------------------------
 
   return (
+    <PanelRefContext.Provider value={{ panels: availablePanels ?? [] }}>
     <div className="ne-root" onClick={() => setContextMenu(null)}>
       {/* Top bar */}
       <div className="ne-topbar">
@@ -1456,7 +1556,7 @@ export function NodeEditor(props: NodeEditorProps) {
           </div>
 
           <div className="ne-hint">
-            Drag empty canvas to select · Shift-click to add · ⌘X/⌘C/⌘V · Opt-drag to duplicate · Space-drag to pan · tap Space to preview / edit prompt · ⌘S to save
+            Drag empty canvas to select · Shift-click to add · ⌘X/⌘C/⌘V · Opt-drag to duplicate · Space-drag to pan · tap Space to preview (⭶ icon on Text Prompt = expand) · ⌘S to save
           </div>
         </div>
 
@@ -1533,58 +1633,26 @@ export function NodeEditor(props: NodeEditorProps) {
         return (
           <div
             className="ne-fullscreen-backdrop"
-            onClick={() => setFullscreenNodeId(null)}
+            onClick={() => closeFullscreen()}
             onPointerDown={(e) => e.stopPropagation()}
           >
-            <div className="ne-fullscreen-inner" onClick={(e) => e.stopPropagation()}>
-              {url ? (
-                kind === 'video' ? (
-                  <video src={url} controls autoPlay loop playsInline />
-                ) : (
-                  <img src={url} alt="" draggable={false} />
-                )
-              ) : (
-                <div className="ne-fullscreen-empty">
-                  This node has no output yet. Run the graph, then press Space again.
-                </div>
-              )}
-              {nav && (
-                <>
-                  <button
-                    className="ne-fullscreen-nav ne-fullscreen-nav--prev"
-                    onClick={() =>
-                      setFullscreenIndex((i) => (i - 1 + frames.length) % frames.length)
-                    }
-                    title="Previous frame (←)"
-                    aria-label="Previous frame"
-                  >
-                    ‹
-                  </button>
-                  <button
-                    className="ne-fullscreen-nav ne-fullscreen-nav--next"
-                    onClick={() =>
-                      setFullscreenIndex((i) => (i + 1) % frames.length)
-                    }
-                    title="Next frame (→)"
-                    aria-label="Next frame"
-                  >
-                    ›
-                  </button>
-                  <div className="ne-fullscreen-counter">
-                    {idx + 1} / {frames.length}
-                    {frame?.label ? ` · ${frame.label}` : ''}
-                    {timeStr ? ` · ${timeStr}` : ''}
-                  </div>
-                </>
-              )}
-              <button
-                className="ne-fullscreen-close"
-                onClick={() => setFullscreenNodeId(null)}
-                title="Close (Space / Esc)"
-              >
-                ✕
-              </button>
-            </div>
+            <FullscreenBody
+              frames={frames}
+              idx={idx}
+              mode={fullscreenMode}
+              gridSize={fullscreenGridSize}
+              picks={fullscreenPicks}
+              currentFrame={frame}
+              currentUrl={url}
+              currentKind={kind}
+              nav={nav}
+              timeStr={timeStr}
+              onSetIndex={setFullscreenIndex}
+              onSetMode={setFullscreenMode}
+              onSetGridSize={setFullscreenGridSize}
+              onSetPicks={setFullscreenPicks}
+              onClose={closeFullscreen}
+            />
           </div>
         );
       })()}
@@ -1642,6 +1710,7 @@ export function NodeEditor(props: NodeEditorProps) {
         );
       })()}
     </div>
+    </PanelRefContext.Provider>
   );
 }
 
@@ -1651,6 +1720,50 @@ export function NodeEditor(props: NodeEditorProps) {
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
+}
+
+/**
+ * Extract the first frame of a video (data URL) as a JPEG data URL. Loads
+ * the video off-DOM, seeks to a tiny offset (frame 0 is often black), and
+ * draws it onto an offscreen canvas.
+ */
+async function extractVideoPoster(videoUrl: string): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    const v = document.createElement('video');
+    v.crossOrigin = 'anonymous';
+    v.preload = 'auto';
+    v.muted = true;
+    v.playsInline = true;
+    v.src = videoUrl;
+    let done = false;
+    const cleanup = () => {
+      v.remove();
+    };
+    v.addEventListener('loadeddata', () => {
+      // Seek slightly in so we don't grab a black pre-roll frame.
+      const t = Math.min(0.05, (v.duration || 1) * 0.02);
+      try { v.currentTime = t; } catch { /* seek not supported */ }
+    });
+    v.addEventListener('seeked', () => {
+      if (done) return;
+      done = true;
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = v.videoWidth || 1280;
+        canvas.height = v.videoHeight || 720;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error('no 2d context');
+        ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+        const url = canvas.toDataURL('image/jpeg', 0.92);
+        cleanup();
+        resolve(url);
+      } catch (err) {
+        cleanup();
+        reject(err);
+      }
+    });
+    v.addEventListener('error', () => { cleanup(); reject(new Error('video load failed')); });
+  });
 }
 
 // Collect the frames shown in the fullscreen preview. Order: current live
@@ -1671,6 +1784,255 @@ function getFullscreenFrames(
     }
   }
   return frames;
+}
+
+type FullscreenFrame = { url: string; kind: 'image' | 'video'; label?: string; when?: number };
+
+/** Fullscreen preview UI: single-view, grid, and side-by-side compare. */
+function FullscreenBody(props: {
+  frames: FullscreenFrame[];
+  idx: number;
+  mode: 'single' | 'grid' | 'compare';
+  gridSize: number;
+  picks: Set<number>;
+  currentFrame: FullscreenFrame | undefined;
+  currentUrl: string | undefined;
+  currentKind: 'image' | 'video' | undefined;
+  nav: boolean;
+  timeStr: string;
+  onSetIndex: (fn: (i: number) => number) => void;
+  onSetMode: (m: 'single' | 'grid' | 'compare') => void;
+  onSetGridSize: (n: number) => void;
+  onSetPicks: (s: Set<number>) => void;
+  onClose: () => void;
+}) {
+  const {
+    frames, idx, mode, gridSize, picks,
+    currentFrame: frame, currentUrl: url, currentKind: kind,
+    nav, timeStr,
+    onSetIndex, onSetMode, onSetGridSize, onSetPicks, onClose,
+  } = props;
+
+  function togglePick(i: number) {
+    const next = new Set(picks);
+    if (next.has(i)) next.delete(i);
+    else next.add(i);
+    onSetPicks(next);
+  }
+
+  const canCompare = frames.length >= 2;
+  const compareList = mode === 'compare'
+    ? Array.from(picks).sort((a, b) => a - b).map((i) => ({ i, f: frames[i] })).filter((x) => x.f)
+    : [];
+
+  return (
+    <div
+      className={`ne-fullscreen-inner ne-fullscreen-inner--${mode}`}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {/* Toolbar */}
+      <div className="ne-fs-toolbar">
+        <div className="ne-fs-toolbar-group">
+          <button
+            className={`ne-fs-tab ${mode === 'single' ? 'is-active' : ''}`}
+            onClick={() => onSetMode('single')}
+            title="Single view"
+          >
+            View
+          </button>
+          <button
+            className={`ne-fs-tab ${mode === 'grid' ? 'is-active' : ''}`}
+            onClick={() => onSetMode('grid')}
+            title="Grid of all versions"
+            disabled={!nav}
+          >
+            ▦ Grid
+          </button>
+          <button
+            className={`ne-fs-tab ${mode === 'compare' ? 'is-active' : ''}`}
+            onClick={() => {
+              if (!canCompare) return;
+              // If no picks yet, seed with the current viewed index + the first
+              // history frame so compare has something to show immediately.
+              if (picks.size === 0) {
+                const seed = new Set<number>([idx, idx === 0 ? 1 : 0]);
+                onSetPicks(seed);
+              }
+              onSetMode('compare');
+            }}
+            title="Compare selected side-by-side"
+            disabled={!canCompare}
+          >
+            ⇔ Compare
+            {picks.size > 0 ? <span className="ne-fs-tab-badge">{picks.size}</span> : null}
+          </button>
+        </div>
+
+        {mode === 'grid' && (
+          <div className="ne-fs-toolbar-group">
+            <span className="ne-fs-tool-label">Tile size</span>
+            <input
+              className="ne-fs-slider"
+              type="range"
+              min={100}
+              max={480}
+              step={10}
+              value={gridSize}
+              onChange={(e) => onSetGridSize(Number(e.target.value))}
+            />
+            <span className="ne-fs-tool-value">{gridSize}px</span>
+            {picks.size > 0 && (
+              <button
+                className="ne-fs-tab"
+                onClick={() => onSetMode('compare')}
+                title="Compare picked frames"
+              >
+                Compare {picks.size}
+              </button>
+            )}
+          </div>
+        )}
+
+        {mode === 'compare' && (
+          <div className="ne-fs-toolbar-group">
+            <span className="ne-fs-tool-label">{compareList.length} selected</span>
+            <button
+              className="ne-fs-tab"
+              onClick={() => { onSetPicks(new Set()); onSetMode('grid'); }}
+              title="Back to grid to change selection"
+            >
+              Change picks
+            </button>
+          </div>
+        )}
+
+        <button
+          className="ne-fullscreen-close"
+          onClick={onClose}
+          title="Close (Space / Esc)"
+          aria-label="Close"
+        >
+          ✕
+        </button>
+      </div>
+
+      {/* Body */}
+      {mode === 'single' && (
+        <div className="ne-fs-single">
+          <div className="ne-fs-single-frame">
+            {url ? (
+              kind === 'video' ? (
+                <video src={url} controls autoPlay loop playsInline />
+              ) : (
+                <img src={url} alt="" draggable={false} />
+              )
+            ) : (
+              <div className="ne-fullscreen-empty">
+                This node has no output yet. Run the graph, then press Space again.
+              </div>
+            )}
+            {nav && (
+              <>
+                <button
+                  className="ne-fullscreen-nav ne-fullscreen-nav--prev"
+                  onClick={() =>
+                    onSetIndex((i) => (i - 1 + frames.length) % frames.length)
+                  }
+                  title="Previous version (←)"
+                  aria-label="Previous frame"
+                >
+                  ‹
+                </button>
+                <button
+                  className="ne-fullscreen-nav ne-fullscreen-nav--next"
+                  onClick={() =>
+                    onSetIndex((i) => (i + 1) % frames.length)
+                  }
+                  title="Next version (→)"
+                  aria-label="Next frame"
+                >
+                  ›
+                </button>
+                <div className="ne-fullscreen-counter">
+                  {idx + 1} / {frames.length}
+                  {frame?.label ? ` · ${frame.label}` : ''}
+                  {timeStr ? ` · ${timeStr}` : ''}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {mode === 'grid' && (
+        <div className="ne-fs-grid-scroll">
+          <div
+            className="ne-fs-grid"
+            style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${gridSize}px, 1fr))` }}
+          >
+            {frames.map((f, i) => {
+              const picked = picks.has(i);
+              return (
+                <div
+                  key={i}
+                  className={`ne-fs-grid-tile ${picked ? 'is-picked' : ''} ${i === idx ? 'is-current' : ''}`}
+                  style={{ height: `${gridSize}px` }}
+                  onClick={() => togglePick(i)}
+                  onDoubleClick={() => { onSetIndex(() => i); onSetMode('single'); }}
+                  title={`${f.label ?? `v${frames.length - i}`}${f.when ? ' · ' + new Date(f.when).toLocaleTimeString() : ''} — click to pick, double-click to view`}
+                >
+                  {f.kind === 'video'
+                    ? <video src={f.url} muted playsInline preload="metadata" />
+                    : <img src={f.url} alt="" draggable={false} />}
+                  <div className="ne-fs-grid-tile-badges">
+                    <span className="ne-fs-grid-tile-num">{i === 0 ? '● current' : `v${frames.length - i}`}</span>
+                  </div>
+                  <div className="ne-fs-grid-tile-check">{picked ? '✓' : ''}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {mode === 'compare' && (
+        <div className="ne-fs-compare-scroll">
+          <div
+            className="ne-fs-compare"
+            style={{
+              gridTemplateColumns: `repeat(${compareList.length || 1}, minmax(0, 1fr))`,
+            }}
+          >
+            {compareList.map(({ i, f }) => (
+              <div key={i} className="ne-fs-compare-cell">
+                <div className="ne-fs-compare-frame">
+                  {f.kind === 'video'
+                    ? <video src={f.url} controls loop playsInline />
+                    : <img src={f.url} alt="" draggable={false} />}
+                </div>
+                <div className="ne-fs-compare-caption">
+                  <span>{i === 0 ? '● current' : `v${frames.length - i}`}</span>
+                  {f.when ? <span className="ne-fs-compare-time">{new Date(f.when).toLocaleTimeString()}</span> : null}
+                  <button
+                    className="ne-fs-compare-remove"
+                    title="Remove from compare"
+                    onClick={(e) => { e.stopPropagation(); const nx = new Set(picks); nx.delete(i); onSetPicks(nx); }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            ))}
+            {compareList.length === 0 && (
+              <div className="ne-fullscreen-empty">
+                Pick frames in Grid, then come back here to compare.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** Horizontal cubic bezier connecting two points. FiCal-style tangents. */

@@ -337,6 +337,7 @@ async function runNode(
     case 'image-gen':        return runImageGen(node, inputs, ctx);
     case 'movie-gen':        return runMovieGen(node, inputs, ctx);
     case 'out':              return runOut(inputs);
+    case 'panel-ref':        return runPanelRef(node);
     case 'custom-fal':       return runCustomFal(node, ctx);
     default: {
       // Exhaustiveness guard without using `never` (keeps things loose in case
@@ -349,6 +350,14 @@ async function runNode(
 function runTextPrompt(node: BaseNode): NodeOutput {
   const text = String((node.data as { text?: unknown }).text ?? '');
   return { kind: 'text', text };
+}
+
+function runPanelRef(node: BaseNode): NodeOutput {
+  const dataUrl = String((node.data as { imageDataUrl?: unknown }).imageDataUrl ?? '');
+  if (!dataUrl) {
+    throw new Error('Panel Ref: no panel picked. Open the Inspector and pick a source panel.');
+  }
+  return { kind: 'image', dataUrl, mime: 'image/png' };
 }
 
 function runPromptConcat(node: BaseNode, inputs: ResolvedInputs): NodeOutput {

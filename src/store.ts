@@ -35,6 +35,7 @@ function normalizePanel(p: Partial<Panel>): Panel {
     id: p.id ?? cryptoRandomId(),
     imageDataUrl: p.imageDataUrl ?? null,
     imageName: p.imageName ?? null,
+    videoDataUrl: p.videoDataUrl ?? null,
     cornerNote: p.cornerNote ?? '',
     fields: (p.fields ?? []).map((f) => ({ id: f.id, label: f.label, value: f.value })),
     aiPrompt: p.aiPrompt,

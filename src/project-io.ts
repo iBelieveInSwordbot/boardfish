@@ -14,6 +14,7 @@ type SavedPanelV1 = {
   id: string;
   imageName: string | null;
   imagePath: string | null; // path inside zip
+  videoPath?: string | null; // path to the panel video (mp4) if any
   cornerNote?: string;
   fields: { id: string; label: string; value: string }[];
   aiPrompt?: string;
@@ -199,6 +200,15 @@ export async function saveProject(
         imagePath = `images/panel-${panelSerial.toString().padStart(4, '0')}-${p.id}.${ext}`;
         images.file(imagePath.replace(/^images\//, ''), dataUrlToBlob(dataUrl));
       }
+      // Video attachment (from Movie Gen → Out). Stored under videos/ so
+      // load-side can restore panel.videoDataUrl. We don't downscale it —
+      // video re-encoding in-browser would be brutal; just persist as-is.
+      let videoPath: string | null = null;
+      if (p.videoDataUrl) {
+        const ext = p.videoDataUrl.startsWith('data:video/webm') ? 'webm' : 'mp4';
+        videoPath = `videos/panel-${panelSerial.toString().padStart(4, '0')}-${p.id}.${ext}`;
+        zip.file(videoPath, dataUrlToBlob(p.videoDataUrl));
+      }
       // AI image history: save each version under images/history/<panelId>/
       let savedHistory: { id: string; imagePath: string; prompt: string; generatedAt: number }[] | undefined;
       if (p.imageHistory && p.imageHistory.length > 0) {
@@ -216,6 +226,7 @@ export async function saveProject(
         id: p.id,
         imageName: p.imageName,
         imagePath,
+        videoPath,
         cornerNote: p.cornerNote,
         fields: p.fields.map((f) => ({ id: f.id, label: f.label, value: f.value })),
         aiPrompt: p.aiPrompt,
@@ -274,6 +285,14 @@ export async function loadProject(
     return blobToDataUrl(blob);
   };
 
+  const loadVideo = async (videoPath: string | null | undefined): Promise<string | null> => {
+    if (!videoPath) return null;
+    const entry = zip.file(videoPath);
+    if (!entry) return null;
+    const blob = await entry.async('blob');
+    return blobToDataUrl(blob);
+  };
+
   let items: DocItem[];
 
   if (manifestRaw.version === 2 || manifestRaw.version === 3 || manifestRaw.version === 4) {
@@ -314,6 +333,7 @@ export async function loadProject(
             id: mp.id,
             imageDataUrl: await loadImage(mp.imagePath),
             imageName: mp.imageName,
+            videoDataUrl: await loadVideo(mp.videoPath ?? null),
             cornerNote: mp.cornerNote ?? '',
             fields: mp.fields.map((f) => ({ ...f })),
             aiPrompt: mp.aiPrompt,
