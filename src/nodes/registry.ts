@@ -68,12 +68,25 @@ export type PreviewProps = {
    * previews rendered outside the editor still work.
    */
   onRun?: () => void;
+  /**
+   * Promote a history frame (0 = oldest, hist.length-1 = newest) to be the
+   * node's current output. Demotes the previous current output into history
+   * at the same index. Wired by NodeEditor via a PROMOTE_FRAME reducer
+   * action.
+   */
+  onPromoteFrame?: (historyIndex: number) => void;
 };
 
 export type NodeKindDef = {
   kind: NodeKind;
   label: string;
   category: 'input' | 'gen' | 'utility' | 'output';
+  /**
+   * When true, this kind is hidden from the palette and the right-click
+   * "Add node" menu. The reducer may still spawn one via seedDefaultGraph
+   * (Out is the classic example — every panel gets exactly one, auto-seeded).
+   */
+  hiddenFromPalette?: boolean;
   defaultWidth: number;
   defaultHeight: number;
   defaultData: () => Record<string, unknown>;
@@ -132,23 +145,150 @@ function useHistoryMirror(
   return history;
 }
 
-/** History strip helper (thumbnails only; restore is TODO). */
-function renderHistoryStrip(history: NodeOutput[], kind: 'image' | 'video') {
-  if (history.length === 0) return null;
+// `renderHistoryStrip` was retired in favor of the shared renderMediaThumb
+// helper below, which combines the current output + history nav + save
+// button in a single control. Kept out of the bundle entirely.
+
+// ---------------------------------------------------------------------------
+// Save-to-disk helper. Given a data URL (or http URL), triggers a browser
+// download with a sensible filename.
+// ---------------------------------------------------------------------------
+function downloadMedia(url: string, kind: 'image' | 'video', hint?: string) {
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const ext = kind === 'video' ? 'mp4' : 'png';
+  const label = (hint ?? 'boardfish').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 40);
+  const filename = `${label}-${ts}.${ext}`;
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+/**
+ * Render the shared media thumbnail: image or video, with ‹/› history nav,
+ * save button, movie playback controls (for videos), and a frame counter.
+ * Selecting a history frame promotes it to `node.output` via onPromoteFrame.
+ */
+function renderMediaThumb(opts: {
+  node: BaseNode;
+  kind: 'image' | 'video';
+  currentUrl: string | undefined;
+  history: NodeOutput[];              // oldest → newest
+  onPromoteFrame?: (historyIndex: number) => void;
+  labelHint?: string;
+}) {
+  const { node, kind, currentUrl, history, onPromoteFrame, labelHint } = opts;
+  // Total frames: current output first (index 0), then history newest→oldest.
+  // We navigate ‹/› by promoting history frames. Selecting the "current" is
+  // the default (no promote needed).
+  const historyNewestFirst = history.slice().reverse();
+  const totalFrames = (currentUrl ? 1 : 0) + historyNewestFirst.length;
+
+  if (!currentUrl) {
+    return createElement(
+      'div',
+      { className: 'ne-node-preview-empty' },
+      kind === 'video' ? '\ud83c\udfac no video yet' : 'no image yet',
+    );
+  }
+
+  // ‹ prev / › next map to promoting an older/newer history frame.
+  // "prev" walks back in time (toward older history).
+  //   totalFrames = 1 + hist.length; current is slot 0, hist[hist.length-1]
+  //   (newest history) is slot 1, hist[0] (oldest) is slot totalFrames-1.
+  // Promoting historyIndex = original-hist-array index (oldest=0).
+  const canNav = totalFrames > 1 && Boolean(onPromoteFrame);
+
+  function goPrev() {
+    if (!onPromoteFrame || history.length === 0) return;
+    // Newest history frame — promote it (becomes current, current drops to hist).
+    onPromoteFrame(history.length - 1);
+  }
+  function goNext() {
+    if (!onPromoteFrame || history.length === 0) return;
+    // Oldest history frame — same swap mechanism, just to give a symmetric
+    // arrow. This is intentionally "wrap" behavior: › steps through older
+    // frames the other way.
+    onPromoteFrame(0);
+  }
+
+  const media = kind === 'video'
+    ? createElement('video', {
+        src: currentUrl,
+        controls: true,
+        loop: true,
+        playsInline: true,
+        preload: 'metadata',
+        className: 'ne-node-preview-thumb',
+        onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+        onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
+        onClick: (e: React.MouseEvent) => e.stopPropagation(),
+      })
+    : createElement('img', {
+        src: currentUrl,
+        alt: '',
+        draggable: false,
+        className: 'ne-node-preview-thumb',
+      });
+
   return createElement(
     'div',
-    { className: 'ne-node-history-strip', title: 'Past outputs (click-restore coming soon)' },
-    ...history.slice().reverse().map((h, i) => {
-      const url = h.dataUrl;
-      if (!url) return null;
-      return createElement(
-        'div',
-        { key: (h.generatedAt ?? i) + '_' + i, className: 'ne-node-history-thumb' },
-        kind === 'video'
-          ? createElement('video', { src: url, muted: true, playsInline: true, preload: 'metadata' })
-          : createElement('img', { src: url, alt: '', draggable: false }),
-      );
-    }).filter(Boolean),
+    { className: 'ne-media-thumb-wrap' },
+    media,
+    canNav
+      ? createElement(
+          'button',
+          {
+            className: 'ne-media-arrow ne-media-arrow--prev',
+            type: 'button',
+            title: 'Previous version',
+            onClick: (e: React.MouseEvent) => { e.stopPropagation(); goPrev(); },
+            onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+          },
+          '\u2039',
+        )
+      : null,
+    canNav
+      ? createElement(
+          'button',
+          {
+            className: 'ne-media-arrow ne-media-arrow--next',
+            type: 'button',
+            title: 'Next version',
+            onClick: (e: React.MouseEvent) => { e.stopPropagation(); goNext(); },
+            onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+          },
+          '\u203a',
+        )
+      : null,
+    createElement(
+      'div',
+      { className: 'ne-media-badge-row' },
+      totalFrames > 1
+        ? createElement(
+            'span',
+            { className: 'ne-media-counter' },
+            `1 / ${totalFrames}`,
+          )
+        : null,
+      createElement(
+        'button',
+        {
+          className: 'ne-media-save',
+          type: 'button',
+          title: 'Save to disk',
+          onClick: (e: React.MouseEvent) => {
+            e.stopPropagation();
+            downloadMedia(currentUrl, kind, labelHint ?? node.kind);
+          },
+          onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+        },
+        '\u2b07',
+      ),
+    ),
   );
 }
 
@@ -193,7 +333,7 @@ const TextPromptPreview: FC<PreviewProps> = ({ node, onChangeData }) => {
   );
 };
 
-const ImageGenPreview: FC<PreviewProps> = ({ node, onChangeData }) => {
+const ImageGenPreview: FC<PreviewProps> = ({ node, onChangeData, onPromoteFrame }) => {
   const history = useHistoryMirror(node, onChangeData);
   const url = node.output?.dataUrl;
   const model = String(node.data.modelId ?? 'nano-banana-pro');
@@ -201,43 +341,40 @@ const ImageGenPreview: FC<PreviewProps> = ({ node, onChangeData }) => {
   return createElement(
     'div',
     { className: 'ne-node-preview ne-node-preview--image' + (url ? '' : ' is-empty') },
-    url
-      ? createElement('img', {
-          src: url,
-          alt: '',
-          draggable: false,
-          className: 'ne-node-preview-thumb',
-        })
-      : createElement('div', { className: 'ne-node-preview-empty' }, 'no image yet'),
+    renderMediaThumb({
+      node,
+      kind: 'image',
+      currentUrl: url,
+      history,
+      onPromoteFrame,
+      labelHint: `image-${modelLabel(model).toLowerCase()}`,
+    }),
     createElement(
       'div',
       { className: 'ne-node-preview-caption' },
       `${modelLabel(model)} \u00b7 ${aspect}`,
     ),
-    renderHistoryStrip(history, 'image'),
   );
 };
 
-const MovieGenPreview: FC<PreviewProps> = ({ node, onChangeData }) => {
+const MovieGenPreview: FC<PreviewProps> = ({ node, onChangeData, onPromoteFrame }) => {
   const history = useHistoryMirror(node, onChangeData);
   const url = node.output?.dataUrl;
   const model = String(node.data.modelId ?? 'veo-3');
   const aspect = String(node.data.aspect_ratio ?? '16:9');
-  const duration = Number(node.data.duration ?? 5);
+  const duration = node.data.duration ?? '8s';
   const prompt = String(node.data.prompt ?? '');
   return createElement(
     'div',
     { className: 'ne-node-preview ne-node-preview--video' + (url ? '' : ' is-empty') },
-    url
-      ? createElement('video', {
-          src: url,
-          muted: true,
-          loop: true,
-          autoPlay: true,
-          playsInline: true,
-          className: 'ne-node-preview-thumb',
-        })
-      : createElement('div', { className: 'ne-node-preview-empty' }, '\ud83c\udfac no video yet'),
+    renderMediaThumb({
+      node,
+      kind: 'video',
+      currentUrl: url,
+      history,
+      onPromoteFrame,
+      labelHint: `video-${modelLabel(model).toLowerCase()}`,
+    }),
     // Inline prompt — lets a Movie Gen node stand alone without a wired
     // Text Prompt. Upstream text (if wired) still concatenates in executor.
     onChangeData
@@ -258,18 +395,18 @@ const MovieGenPreview: FC<PreviewProps> = ({ node, onChangeData }) => {
     createElement(
       'div',
       { className: 'ne-node-preview-caption' },
-      `${modelLabel(model)} \u00b7 ${aspect} \u00b7 ${duration}s`,
+      `${modelLabel(model)} \u00b7 ${aspect} \u00b7 ${duration}`,
     ),
-    renderHistoryStrip(history, 'video'),
   );
 };
 
 // Out node visualized as a mini storyboard page: numbered header, image frame,
 // and a caption strip. Makes it visually obvious that this is what will land
 // in the panel when the editor closes.
-const OutPreview: FC<PreviewProps> = ({ node, onRun }) => {
+const OutPreview: FC<PreviewProps> = ({ node, onRun, onPromoteFrame }) => {
   const url = node.output?.dataUrl;
   const kind = node.output?.kind;
+  const history = readNodeHistory(node);
   return createElement(
     'div',
     { className: 'ne-node-preview ne-node-preview--out-page' + (url ? '' : ' is-empty') },
@@ -297,15 +434,21 @@ const OutPreview: FC<PreviewProps> = ({ node, onRun }) => {
           )
         : null,
     ),
-    // Image frame (or empty placeholder)
+    // Image frame (or empty placeholder). Video Out shows first-frame poster
+    // through the shared MediaThumb — playback controls come along too.
     createElement(
       'div',
       { className: 'ne-out-page-frame' },
       url
-        ? (kind === 'video'
-            ? createElement('video', { src: url, muted: true, loop: true, autoPlay: true, playsInline: true })
-            : createElement('img', { src: url, alt: '', draggable: false }))
-        : createElement('div', { className: 'ne-out-page-empty' }, 'no image yet'),
+        ? renderMediaThumb({
+            node,
+            kind: kind === 'video' ? 'video' : 'image',
+            currentUrl: url,
+            history,
+            onPromoteFrame,
+            labelHint: 'panel',
+          })
+        : createElement('div', { className: 'ne-out-page-empty' }, 'wire something to me'),
     ),
     // Caption strip
     createElement(
@@ -399,6 +542,12 @@ const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
   const aspect = String(node.data.aspect_ratio ?? '16:9');
   const variants = Number(node.data.num_images ?? 1);
   const url = node.output?.dataUrl;
+  // Once a node has produced output, lock the model dropdown. Different
+  // models have different input schemas (variants, resolution, duration,
+  // etc.), so switching mid-flight silently strips the wrong keys or sends
+  // stale ones. If the user really wants a different model, they can add
+  // a new Image Gen node.
+  const modelLocked = Boolean(url);
 
   return createElement(
     'div',
@@ -410,6 +559,8 @@ const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
       {
         className: 'ne-inspect-select',
         value: modelId,
+        disabled: modelLocked,
+        title: modelLocked ? 'Model is locked once this node has generated. Add a new Image Gen node to switch models.' : undefined,
         onChange: (e: React.ChangeEvent<HTMLSelectElement>) =>
           onChangeData({ modelId: e.target.value }),
       },
@@ -480,6 +631,7 @@ const MovieGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
   const aspect = String(node.data.aspect_ratio ?? '16:9');
   const duration = Number(node.data.duration ?? 5);
   const url = node.output?.dataUrl;
+  const modelLocked = Boolean(url);
 
   return createElement(
     'div',
@@ -490,6 +642,8 @@ const MovieGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
       {
         className: 'ne-inspect-select',
         value: modelId,
+        disabled: modelLocked,
+        title: modelLocked ? 'Model is locked once this node has generated. Add a new Movie Gen node to switch models.' : undefined,
         onChange: (e: React.ChangeEvent<HTMLSelectElement>) =>
           onChangeData({ modelId: e.target.value }),
       },
@@ -726,6 +880,10 @@ export const NODE_KINDS: Record<NodeKind, NodeKindDef> = {
     kind: 'out',
     label: 'Out',
     category: 'output',
+    // The Out node is the storyboard panel — there is exactly one per graph
+    // and it is auto-seeded when the editor opens. Hide it from the palette
+    // so users can't add duplicates.
+    hiddenFromPalette: true,
     defaultWidth: 200,
     defaultHeight: 160,
     defaultData: () => defaultDataFor('out'),

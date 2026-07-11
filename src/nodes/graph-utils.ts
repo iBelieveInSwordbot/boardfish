@@ -110,6 +110,52 @@ export function pushToHistory(
   };
 }
 
+/**
+ * Swap a history frame into `node.output` and demote the current output
+ * into history. `historyIndex` is 0-based indexing into the array returned
+ * by `readNodeHistory` (oldest→newest). Returns the mutated graph, or the
+ * original graph if the index is out of range.
+ */
+export function promoteFrameToCurrent(
+  g: NodeGraph,
+  nodeId: NodeId,
+  historyIndex: number,
+): NodeGraph {
+  const node = g.nodes.find((n) => n.id === nodeId);
+  if (!node) return g;
+  const hist = readNodeHistory(node);
+  if (historyIndex < 0 || historyIndex >= hist.length) return g;
+  const chosen = hist[historyIndex];
+  // Replace hist[historyIndex] with the current output (if any) so the
+  // frame we just promoted no longer appears in history AND the old current
+  // becomes browsable.
+  const nextHist = hist.slice();
+  // Remove the promoted frame from history first…
+  nextHist.splice(historyIndex, 1);
+  const oldCurrent = node.output;
+  // …then push the demoted "current" onto the tail so useHistoryMirror's
+  // "tail equals prev? then skip" guard prevents a duplicate push next
+  // render pass.
+  if (oldCurrent && oldCurrent.dataUrl) {
+    nextHist.push({ ...oldCurrent });
+  }
+  const nextNode: BaseNode = {
+    ...node,
+    data: { ...node.data, __history: nextHist },
+    output: {
+      kind: chosen.kind ?? 'text',
+      dataUrl: chosen.dataUrl,
+      text: chosen.text,
+      mime: chosen.mime,
+      generatedAt: chosen.generatedAt ?? Date.now(),
+    },
+  };
+  return {
+    ...g,
+    nodes: g.nodes.map((n) => (n.id === nodeId ? nextNode : n)),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // XML export.
 // ---------------------------------------------------------------------------

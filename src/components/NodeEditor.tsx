@@ -50,6 +50,7 @@ import {
   moveNode,
   moveNodesTo,
   pasteClipboard,
+  promoteFrameToCurrent,
   readNodeHistory,
   removeEdge,
   removeNode,
@@ -102,6 +103,7 @@ type Action =
   | { type: 'PASTE_GRAPH'; graph: NodeGraph }
   | { type: 'SET_VIEWPORT'; panOffset: { x: number; y: number }; zoom: number }
   | { type: 'SET_NODE_OUTPUT'; id: NodeId; output: BaseNode['output'] }
+  | { type: 'PROMOTE_FRAME'; id: NodeId; historyIndex: number }
   | { type: 'SET_GRAPH'; graph: NodeGraph; dirty?: boolean };
 
 function reducer(state: State, action: Action): State {
@@ -111,6 +113,11 @@ function reducer(state: State, action: Action): State {
     case 'MOVE_NODES':
       return { graph: moveNodesTo(state.graph, action.positions), dirty: true };
     case 'ADD_NODE':
+      // Enforce a single Out node per graph — it represents the storyboard
+      // panel, so extras would just be dead weight. Any other kind is fine.
+      if (action.kind === 'out' && state.graph.nodes.some((n) => n.kind === 'out')) {
+        return state;
+      }
       return { graph: addNode(state.graph, action.kind, action.at), dirty: true };
     case 'REMOVE_NODE':
       return { graph: removeNode(state.graph, action.id), dirty: true };
@@ -144,6 +151,8 @@ function reducer(state: State, action: Action): State {
       };
     case 'SET_NODE_OUTPUT':
       return { graph: setNodeOutput(state.graph, action.id, action.output), dirty: true };
+    case 'PROMOTE_FRAME':
+      return { graph: promoteFrameToCurrent(state.graph, action.id, action.historyIndex), dirty: true };
     case 'SET_GRAPH':
       return { graph: action.graph, dirty: action.dirty ?? true };
   }
@@ -156,6 +165,7 @@ function reducer(state: State, action: Action): State {
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 3.0;
 const NODE_HEADER_H = 32;
+const NODE_FOOTER_H = 26; // matches ne-ports bottom offset (leaves room for resize handle)
 const PORT_ROW_H = 18;
 /** Max distance (canvas px) from a node center to an edge midpoint to trigger the drop-on-wire highlight. */
 const DROP_ON_WIRE_RADIUS = 40;
@@ -219,17 +229,27 @@ export function NodeEditor(props: NodeEditorProps) {
 
   // Space-key pan mode.
   // Modifier-key states.
-  //  - metaDown: ⌘ (mac) / Ctrl (win/linux) — hold to pan the canvas by dragging.
+  //  - spaceDown : Space held — pan the canvas by dragging on empty area.
+  //                Tapping Space (no drag) opens the fullscreen preview of
+  //                the primary selected node, or the big prompt editor if
+  //                the selected node is a Text Prompt.
+  //  - metaDown  : ⌘/Ctrl held — legacy pan fallback (kept for muscle memory
+  //                and for anyone who has a trackpad that eats Space).
   //  - Option/Alt-drag on a node duplicates it (FiCal-style) — checked at
   //    pointer time via e.altKey, no persistent state needed.
-  //  - Spacebar opens fullscreen preview of the selected node (see below).
+  const [spaceDown, setSpaceDown] = useState(false);
   const [metaDown, setMetaDown] = useState(false);
+  // Distinguishes a plain Space tap (→ fullscreen) from a Space+drag pan.
+  // Flipped true the moment a pan starts while Space is held.
+  const spacePannedRef = useRef(false);
 
   // Fullscreen preview of the currently-selected node's output.
   const [fullscreenNodeId, setFullscreenNodeId] = useState<NodeId | null>(null);
   // Index within the [current, ...history] frames array shown in fullscreen.
   // 0 = current live output, 1+ = older frames (most recent first).
   const [fullscreenIndex, setFullscreenIndex] = useState(0);
+  // Node id whose Text Prompt is open in the large-editor modal.
+  const [promptEditorNodeId, setPromptEditorNodeId] = useState<NodeId | null>(null);
 
   // Refs for DOM / interaction state that shouldn't cause re-renders.
   const canvasRef = useRef<HTMLDivElement | null>(null);
@@ -309,11 +329,20 @@ export function NodeEditor(props: NodeEditorProps) {
       if (!port) return null;
       const def = NODE_KINDS[node.kind];
       const w = node.width ?? def.defaultWidth;
-      // Distribute ports along the vertical center of the node body, starting
-      // below the header. This matches the CSS layout in the header/body pair.
+      const h = node.height ?? def.defaultHeight;
+      // Distribute ports along the vertical center of the node body (between
+      // the header and the resize handle). Matches the flex column layout in
+      // CSS: `.ne-ports-in/out { top: NODE_HEADER_H; bottom: NODE_FOOTER_H;
+      // justify-content: center; gap: PORT_GAP; }`. So port i (0-indexed,
+      // total N) sits at `center - (N-1)/2 * PORT_GAP + i * PORT_GAP`.
       const sideList = node.ports.filter((p) => p.side === port.side);
       const idx = sideList.findIndex((p) => p.id === portId);
-      const y = node.y + NODE_HEADER_H + PORT_ROW_H * (idx + 1) - 6;
+      const availTop = node.y + NODE_HEADER_H;
+      const availBot = node.y + h - NODE_FOOTER_H;
+      const availMid = (availTop + availBot) / 2;
+      const gap = PORT_ROW_H; // 18 vertical spacing between ports
+      const total = sideList.length;
+      const y = availMid + (idx - (total - 1) / 2) * gap;
       const x = port.side === 'in' ? node.x : node.x + w;
       return { x, y };
     },
@@ -468,6 +497,7 @@ export function NodeEditor(props: NodeEditorProps) {
       if (e.key === 'Escape') {
         if (contextMenu) { setContextMenu(null); return; }
         if (fullscreenNodeId) { e.preventDefault(); setFullscreenNodeId(null); return; }
+        if (promptEditorNodeId) { e.preventDefault(); setPromptEditorNodeId(null); return; }
         if (!inField) {
           e.preventDefault();
           // If we have a multi-selection, clear it first; else close the editor.
@@ -496,16 +526,15 @@ export function NodeEditor(props: NodeEditorProps) {
       }
 
       if (e.key === ' ') {
-        // Spacebar toggles fullscreen preview of the primary selected node.
-        // If nothing is selected, do nothing.
-        e.preventDefault();
-        const pid = primaryIdRef.current;
-        if (fullscreenNodeId) {
-          setFullscreenNodeId(null);
-        } else if (pid) {
-          setFullscreenIndex(0);
-          setFullscreenNodeId(pid);
+        // Space: while held, drag on empty canvas pans. Tapping Space (no
+        // drag) is decided on keyup — if we didn't pan, treat it as
+        // "preview the selected node" or "open the big prompt editor" for
+        // text-prompt nodes.
+        if (!spaceDown) {
+          spacePannedRef.current = false;
+          setSpaceDown(true);
         }
+        e.preventDefault();
         return;
       }
 
@@ -539,6 +568,27 @@ export function NodeEditor(props: NodeEditorProps) {
     }
     function onKeyUp(e: KeyboardEvent) {
       if (!e.metaKey && !e.ctrlKey) setMetaDown(false);
+      if (e.key === ' ') {
+        // Only fire the tap action if we didn't actually pan.
+        if (!spacePannedRef.current) {
+          const pid = primaryIdRef.current;
+          if (fullscreenNodeId) {
+            setFullscreenNodeId(null);
+          } else if (promptEditorNodeId) {
+            setPromptEditorNodeId(null);
+          } else if (pid) {
+            const n = graphRef.current.nodes.find((x) => x.id === pid);
+            if (n?.kind === 'text-prompt') {
+              setPromptEditorNodeId(pid);
+            } else if (n) {
+              setFullscreenIndex(0);
+              setFullscreenNodeId(pid);
+            }
+          }
+        }
+        spacePannedRef.current = false;
+        setSpaceDown(false);
+      }
     }
     window.addEventListener('keydown', onKey);
     window.addEventListener('keyup', onKeyUp);
@@ -548,7 +598,7 @@ export function NodeEditor(props: NodeEditorProps) {
     };
   }, [
     triggerSave, triggerClose, selectedEdgeId, contextMenu, doCopy, doCut,
-    doPaste, doSelectAll, setSelection, fullscreenNodeId,
+    doPaste, doSelectAll, setSelection, fullscreenNodeId, promptEditorNodeId, spaceDown,
   ]);
 
   // -------------------------------------------------------------------------
@@ -571,10 +621,14 @@ export function NodeEditor(props: NodeEditorProps) {
       active.blur();
     }
 
-    // Middle-button or ⌘/Ctrl-drag on empty canvas starts pan.
-    // (Switched from Space-drag to ⌘-drag so Space is free for fullscreen preview.)
-    const wantsPan = e.button === 1 || (e.button === 0 && metaDown);
+    // Pan on: middle-button drag, or space-drag, or ⌘/Ctrl-drag as legacy fallback.
+    const wantsPan =
+      e.button === 1 ||
+      (e.button === 0 && (spaceDown || metaDown));
     if (wantsPan) {
+      // Remember that this Space press produced a pan, so the keyup handler
+      // doesn't treat it as a "tap Space to fullscreen" gesture.
+      if (spaceDown) spacePannedRef.current = true;
       panningRef.current = {
         startX: e.clientX,
         startY: e.clientY,
@@ -1253,7 +1307,7 @@ export function NodeEditor(props: NodeEditorProps) {
         />
         <div
           ref={canvasRef}
-          className={`ne-canvas ${panningRef.current ? 'is-panning' : metaDown ? 'is-space' : ''}`}
+          className={`ne-canvas ${panningRef.current ? 'is-panning' : (spaceDown || metaDown) ? 'is-space' : ''}`}
           onPointerDown={onCanvasPointerDown}
           onPointerMove={onCanvasPointerMove}
           onPointerUp={onCanvasPointerUp}
@@ -1390,6 +1444,9 @@ export function NodeEditor(props: NodeEditorProps) {
                   dispatch({ type: 'UPDATE_NODE_DATA', id: node.id, patch })
                 }
                 onRun={() => onGenerate(node)}
+                onPromoteFrame={(historyIndex) =>
+                  dispatch({ type: 'PROMOTE_FRAME', id: node.id, historyIndex })
+                }
                 onHeaderPointerDown={(e) => onNodeHeaderPointerDown(e, node)}
                 onClick={(e) => onNodeClick(e, node.id)}
                 onContextMenu={(e) => onNodeContextMenu(e, node.id)}
@@ -1399,7 +1456,7 @@ export function NodeEditor(props: NodeEditorProps) {
           </div>
 
           <div className="ne-hint">
-            Drag empty canvas to select · Shift-click to add · ⌘X/⌘C/⌘V · Opt-drag to duplicate · Space to preview selected · ⌘-drag to pan · ⌘S to save
+            Drag empty canvas to select · Shift-click to add · ⌘X/⌘C/⌘V · Opt-drag to duplicate · Space-drag to pan · tap Space to preview / edit prompt · ⌘S to save
           </div>
         </div>
 
@@ -1531,6 +1588,59 @@ export function NodeEditor(props: NodeEditorProps) {
           </div>
         );
       })()}
+
+      {/* Big prompt editor — Space-tap while a Text Prompt node is selected. */}
+      {promptEditorNodeId && (() => {
+        const n = graph.nodes.find((x) => x.id === promptEditorNodeId);
+        if (!n) return null;
+        const value = String(n.data.text ?? '');
+        return (
+          <div
+            className="ne-prompt-editor-backdrop"
+            onClick={() => setPromptEditorNodeId(null)}
+          >
+            <div className="ne-prompt-editor" onClick={(e) => e.stopPropagation()}>
+              <div className="ne-prompt-editor-head">
+                <span>Text Prompt</span>
+                <button
+                  className="ne-prompt-editor-close"
+                  onClick={() => setPromptEditorNodeId(null)}
+                  title="Close (Space / Esc)"
+                >
+                  ✕
+                </button>
+              </div>
+              <textarea
+                className="ne-prompt-editor-textarea"
+                autoFocus
+                spellCheck
+                value={value}
+                placeholder="Describe the shot in as much detail as you want. Space or Esc to close."
+                onChange={(e) =>
+                  dispatch({
+                    type: 'UPDATE_NODE_DATA',
+                    id: n.id,
+                    patch: { text: e.target.value },
+                  })
+                }
+                onKeyDown={(e) => {
+                  // Let normal typing pass through (including Space). Close on Esc.
+                  if (e.key === 'Escape') {
+                    e.stopPropagation();
+                    setPromptEditorNodeId(null);
+                  }
+                  // Prevent our global keydown from hijacking ⌘X/⌘C/⌘V inside
+                  // the editor.
+                  e.stopPropagation();
+                }}
+              />
+              <div className="ne-prompt-editor-hint">
+                {value.length.toLocaleString()} chars · Esc to close
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -1588,7 +1698,9 @@ function NodePalette({ onAdd }: { onAdd: (kind: NodeKind) => void }) {
     <div className="ne-palette">
       <div className="ne-palette-head">Nodes</div>
       {groups.map((g) => {
-        const kinds = Object.values(NODE_KINDS).filter((k) => k.category === g.category);
+        const kinds = Object.values(NODE_KINDS)
+          .filter((k) => k.category === g.category)
+          .filter((k) => !k.hiddenFromPalette);
         if (kinds.length === 0) return null;
         return (
           <div key={g.category} className="ne-palette-group">

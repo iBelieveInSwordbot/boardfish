@@ -38,6 +38,9 @@ export type NodeViewProps = {
   /** See PreviewProps.onRun — forwarded to the kind's Preview so nodes like
    *  Out can offer an inline "Refresh from upstream" button. */
   onRun?: () => void;
+  /** See PreviewProps.onPromoteFrame — forwarded so previews can wire the
+   *  ‹/› history arrows on the thumbnail. */
+  onPromoteFrame?: (historyIndex: number) => void;
   onHeaderPointerDown: (e: ReactPointerEvent<HTMLDivElement>) => void;
   onClick: (e: React.MouseEvent) => void;
   onContextMenu: (e: React.MouseEvent) => void;
@@ -46,7 +49,7 @@ export type NodeViewProps = {
 
 export function NodeView(p: NodeViewProps) {
   const {
-    node, selected, inFlight, graph, onChangeData, onRun,
+    node, selected, inFlight, graph, onChangeData, onRun, onPromoteFrame,
     onHeaderPointerDown, onClick, onContextMenu, onPortPointerDown,
   } = p;
   const def = NODE_KINDS[node.kind];
@@ -135,7 +138,12 @@ export function NodeView(p: NodeViewProps) {
         <span className="ne-node-header-cat">{def.category}</span>
       </div>
       <div className="ne-node-body">
-        <Preview node={node} onChangeData={onChangeData} onRun={onRun} />
+        <Preview
+          node={node}
+          onChangeData={onChangeData}
+          onRun={onRun}
+          onPromoteFrame={onPromoteFrame}
+        />
         {inFlight && <div className="ne-node-spinner" />}
       </div>
       {/* Input ports */}
@@ -211,6 +219,7 @@ export function ContextMenu({ menu, onClose, onAddNode, onNodeAction }: ContextM
       input: [], gen: [], utility: [], output: [],
     };
     for (const def of Object.values(NODE_KINDS)) {
+      if (def.hiddenFromPalette) continue;
       g[def.category].push({ kind: def.kind, label: def.label });
     }
     return g;

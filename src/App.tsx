@@ -6,10 +6,11 @@ import { Toolbar } from './components/Toolbar';
 import { PanelLightbox } from './components/PanelLightbox';
 import { AIDrawer } from './components/AIDrawer';
 import { NodeEditor } from './components/NodeEditor';
-import { emptyGraph, seedDefaultGraph } from './nodes/types';
+import { seedDefaultGraph } from './nodes/types';
 import type { NodeGraph } from './nodes/types';
 import { ratioToLabel } from './ai/client';
 import { allStoryboardPanels, primarySelectedPanelId, useBoardfish } from './store';
+import { styleSuffix } from './types';
 import './App.css';
 import './components/NodeEditor.css';
 
@@ -232,18 +233,24 @@ function App() {
       {nodeEditorPanelId && (() => {
         const editing = flatPanels.find((p) => p.id === nodeEditorPanelId);
         if (!editing) return null;
-        const seedPrompt =
+        const rawSeedPrompt =
           editing.aiPrompt ??
           editing.fields.find((f) => f.label.toLowerCase() === 'description')?.value ??
           editing.fields.map((f) => f.value).filter(Boolean).join('. ');
-        // If the panel doesn't have a saved graph yet, seed one from the
-        // panel's current image (image-to-image reference) so the ImageGen
-        // node opens with the panel's existing image already loaded.
+        // Bake the style suffix into what the Text Prompt node shows the user.
+        // Panel.tsx previously appended the style tag invisibly at gen time
+        // (see fireGenerate → finalPrompt = rawPrompt + styleSuffix(mode)),
+        // but the node editor bypasses that path, so opening the editor
+        // silently dropped the style AND — worse — image-to-image with the
+        // panel's current styled image kept the old aesthetic no matter what
+        // the user typed. Solution: show the full effective prompt, exactly
+        // what will be sent to FAL, in the Text Prompt node.
+        const seedPrompt = (rawSeedPrompt + styleSuffix(editing.styleMode)).trim();
+        // Seed a fresh graph from the effective prompt only — no auto image
+        // reference. If Matt wants image-to-image he can wire a Panel node
+        // or drop an image reference explicitly.
         const savedGraph =
-          (editing.nodeGraph as NodeGraph | undefined)
-          ?? (editing.imageDataUrl
-              ? seedDefaultGraph(seedPrompt, editing.imageDataUrl)
-              : emptyGraph());
+          (editing.nodeGraph as NodeGraph | undefined) ?? seedDefaultGraph(seedPrompt);
         return (
           <NodeEditor
             initialGraph={savedGraph}
