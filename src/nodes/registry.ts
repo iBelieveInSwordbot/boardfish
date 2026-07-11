@@ -62,6 +62,12 @@ const ASPECT_RATIOS: string[] = [
 export type PreviewProps = {
   node: BaseNode;
   onChangeData?: (patch: Record<string, unknown>) => void;
+  /**
+   * Trigger a downstream re-run rooted at this node. Wired by the parent
+   * NodeEditor to the same executor path the Inspector uses. Optional so
+   * previews rendered outside the editor still work.
+   */
+  onRun?: () => void;
 };
 
 export type NodeKindDef = {
@@ -261,7 +267,7 @@ const MovieGenPreview: FC<PreviewProps> = ({ node, onChangeData }) => {
 // Out node visualized as a mini storyboard page: numbered header, image frame,
 // and a caption strip. Makes it visually obvious that this is what will land
 // in the panel when the editor closes.
-const OutPreview: FC<PreviewProps> = ({ node }) => {
+const OutPreview: FC<PreviewProps> = ({ node, onRun }) => {
   const url = node.output?.dataUrl;
   const kind = node.output?.kind;
   return createElement(
@@ -273,6 +279,23 @@ const OutPreview: FC<PreviewProps> = ({ node }) => {
       { className: 'ne-out-page-header' },
       createElement('span', { className: 'ne-out-page-num' }, '01'),
       createElement('span', { className: 'ne-out-page-corner' }, 'OUT'),
+      onRun
+        ? createElement(
+            'button',
+            {
+              className: 'ne-out-page-refresh',
+              type: 'button',
+              title: 'Refresh from upstream',
+              onClick: (e: React.MouseEvent) => {
+                e.stopPropagation();
+                onRun();
+              },
+              onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+              onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
+            },
+            '\u21bb',
+          )
+        : null,
     ),
     // Image frame (or empty placeholder)
     createElement(

@@ -50,6 +50,7 @@ import {
   moveNode,
   moveNodesTo,
   pasteClipboard,
+  readNodeHistory,
   removeEdge,
   removeNode,
   removeNodes,
@@ -226,6 +227,9 @@ export function NodeEditor(props: NodeEditorProps) {
 
   // Fullscreen preview of the currently-selected node's output.
   const [fullscreenNodeId, setFullscreenNodeId] = useState<NodeId | null>(null);
+  // Index within the [current, ...history] frames array shown in fullscreen.
+  // 0 = current live output, 1+ = older frames (most recent first).
+  const [fullscreenIndex, setFullscreenIndex] = useState(0);
 
   // Refs for DOM / interaction state that shouldn't cause re-renders.
   const canvasRef = useRef<HTMLDivElement | null>(null);
@@ -499,8 +503,22 @@ export function NodeEditor(props: NodeEditorProps) {
         if (fullscreenNodeId) {
           setFullscreenNodeId(null);
         } else if (pid) {
+          setFullscreenIndex(0);
           setFullscreenNodeId(pid);
         }
+        return;
+      }
+
+      // Arrow keys in fullscreen: navigate through this node's frames
+      // (current output + history, newest first).
+      if (fullscreenNodeId && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        const fn = graphRef.current.nodes.find((x) => x.id === fullscreenNodeId);
+        if (!fn) return;
+        const frames = getFullscreenFrames(fn);
+        if (frames.length <= 1) return;
+        e.preventDefault();
+        const dir = e.key === 'ArrowRight' ? 1 : -1;
+        setFullscreenIndex((i) => (i + dir + frames.length) % frames.length);
         return;
       }
 
@@ -1371,6 +1389,7 @@ export function NodeEditor(props: NodeEditorProps) {
                 onChangeData={(patch) =>
                   dispatch({ type: 'UPDATE_NODE_DATA', id: node.id, patch })
                 }
+                onRun={() => onGenerate(node)}
                 onHeaderPointerDown={(e) => onNodeHeaderPointerDown(e, node)}
                 onClick={(e) => onNodeClick(e, node.id)}
                 onContextMenu={(e) => onNodeContextMenu(e, node.id)}
@@ -1444,8 +1463,16 @@ export function NodeEditor(props: NodeEditorProps) {
       {/* Fullscreen preview of the selected node's output (Space toggles). */}
       {fullscreenNodeId && (() => {
         const n = graph.nodes.find((x) => x.id === fullscreenNodeId);
-        const url = n?.output?.dataUrl;
-        const kind = n?.output?.kind;
+        if (!n) return null;
+        const frames = getFullscreenFrames(n);
+        const idx = frames.length > 0 ? ((fullscreenIndex % frames.length) + frames.length) % frames.length : 0;
+        const frame = frames[idx];
+        const url = frame?.url;
+        const kind = frame?.kind;
+        const nav = frames.length > 1;
+        const timeStr = frame?.when
+          ? new Date(frame.when).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+          : '';
         return (
           <div
             className="ne-fullscreen-backdrop"
@@ -1463,6 +1490,35 @@ export function NodeEditor(props: NodeEditorProps) {
                 <div className="ne-fullscreen-empty">
                   This node has no output yet. Run the graph, then press Space again.
                 </div>
+              )}
+              {nav && (
+                <>
+                  <button
+                    className="ne-fullscreen-nav ne-fullscreen-nav--prev"
+                    onClick={() =>
+                      setFullscreenIndex((i) => (i - 1 + frames.length) % frames.length)
+                    }
+                    title="Previous frame (←)"
+                    aria-label="Previous frame"
+                  >
+                    ‹
+                  </button>
+                  <button
+                    className="ne-fullscreen-nav ne-fullscreen-nav--next"
+                    onClick={() =>
+                      setFullscreenIndex((i) => (i + 1) % frames.length)
+                    }
+                    title="Next frame (→)"
+                    aria-label="Next frame"
+                  >
+                    ›
+                  </button>
+                  <div className="ne-fullscreen-counter">
+                    {idx + 1} / {frames.length}
+                    {frame?.label ? ` · ${frame.label}` : ''}
+                    {timeStr ? ` · ${timeStr}` : ''}
+                  </div>
+                </>
               )}
               <button
                 className="ne-fullscreen-close"
@@ -1485,6 +1541,26 @@ export function NodeEditor(props: NodeEditorProps) {
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
+}
+
+// Collect the frames shown in the fullscreen preview. Order: current live
+// output first, then history newest→oldest. Only frames with a dataUrl and
+// a kind of image/video are kept — text frames aren't renderable full-page.
+function getFullscreenFrames(
+  node: BaseNode,
+): Array<{ url: string; kind: 'image' | 'video'; label?: string; when?: number }> {
+  const frames: Array<{ url: string; kind: 'image' | 'video'; label?: string; when?: number }> = [];
+  const cur = node.output;
+  if (cur && (cur.kind === 'image' || cur.kind === 'video') && cur.dataUrl) {
+    frames.push({ url: cur.dataUrl, kind: cur.kind, label: 'current', when: cur.generatedAt });
+  }
+  const hist = readNodeHistory(node).slice().reverse(); // newest first
+  for (const h of hist) {
+    if ((h.kind === 'image' || h.kind === 'video') && h.dataUrl) {
+      frames.push({ url: h.dataUrl, kind: h.kind, when: h.generatedAt });
+    }
+  }
+  return frames;
 }
 
 /** Horizontal cubic bezier connecting two points. FiCal-style tangents. */

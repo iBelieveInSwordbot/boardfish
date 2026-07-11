@@ -604,8 +604,20 @@ function buildFalInput(
   // values into what each FAL model actually accepts (Kling wants duration as
   // a string, Seedance wants it as a number, etc.).
   const inputTypeByKey: Record<string, string> = {};
+  // Also index the model's declared defaults + option lists so we can snap
+  // stale values (e.g. `duration: 5` on a Veo node whose enum is
+  // ["4s","6s","8s"]) to a valid option instead of sending a value that FAL
+  // will reject with a 422.
+  const inputDefaultByKey: Record<string, unknown> = {};
+  const inputOptionsByKey: Record<string, Set<string>> = {};
   if (model) {
-    for (const inp of model.inputs) inputTypeByKey[inp.key] = inp.type;
+    for (const inp of model.inputs) {
+      inputTypeByKey[inp.key] = inp.type;
+      if (inp.default !== undefined) inputDefaultByKey[inp.key] = inp.default;
+      if (Array.isArray(inp.options)) {
+        inputOptionsByKey[inp.key] = new Set(inp.options.map((o) => String(o.value)));
+      }
+    }
   }
 
   // Copy everything from `data` except meta and any ref-image key we'll set below.
@@ -627,6 +639,16 @@ function buildFalInput(
       out[k] = Number.isFinite(n) ? n : v;
     } else {
       out[k] = v;
+    }
+    // Snap select values to the option list when the stored value doesn't
+    // match. This rescues stale node data (e.g. Veo duration `5` → `"8s"`)
+    // after a schema change.
+    if (declared === 'select' && inputOptionsByKey[k]) {
+      const cur = String(out[k]);
+      if (!inputOptionsByKey[k].has(cur)) {
+        if (inputDefaultByKey[k] !== undefined) out[k] = inputDefaultByKey[k];
+        else out[k] = Array.from(inputOptionsByKey[k])[0];
+      }
     }
   }
 

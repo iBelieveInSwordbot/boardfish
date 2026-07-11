@@ -206,7 +206,9 @@ export function defaultDataFor(kind: NodeKind): Record<string, unknown> {
       return {
         modelId: 'veo-3',
         aspect_ratio: '16:9',
-        duration: 5,
+        // Veo 3 wants a string enum ("4s"/"6s"/"8s"); Kling/Seedance execute
+        // via a per-model select/number coercion in the executor.
+        duration: '8s',
       };
     case 'out':
       return {};

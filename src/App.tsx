@@ -58,6 +58,12 @@ function App() {
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      // If the node editor is open, it owns all keyboard input. Bailing here
+      // prevents Backspace/Delete from wiping the panel while the user is
+      // deleting a node, Space from opening the lightbox on top of the node
+      // fullscreen preview, ⌘X from cutting panels while cutting a node, etc.
+      if (nodeEditorPanelId) return;
+
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
 
@@ -157,7 +163,7 @@ function App() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [dispatch, state.selectedPanelIds, state.items, lightboxOpen, fullscreen, flatPanels, state]);
+  }, [dispatch, state.selectedPanelIds, state.items, lightboxOpen, fullscreen, flatPanels, state, nodeEditorPanelId]);
 
   const primaryId = primarySelectedPanelId(state);
   useEffect(() => {

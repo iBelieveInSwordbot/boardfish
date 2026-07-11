@@ -35,6 +35,9 @@ export type NodeViewProps = {
    * `data.__size`.
    */
   onChangeData?: (patch: Record<string, unknown>) => void;
+  /** See PreviewProps.onRun — forwarded to the kind's Preview so nodes like
+   *  Out can offer an inline "Refresh from upstream" button. */
+  onRun?: () => void;
   onHeaderPointerDown: (e: ReactPointerEvent<HTMLDivElement>) => void;
   onClick: (e: React.MouseEvent) => void;
   onContextMenu: (e: React.MouseEvent) => void;
@@ -43,7 +46,7 @@ export type NodeViewProps = {
 
 export function NodeView(p: NodeViewProps) {
   const {
-    node, selected, inFlight, graph, onChangeData,
+    node, selected, inFlight, graph, onChangeData, onRun,
     onHeaderPointerDown, onClick, onContextMenu, onPortPointerDown,
   } = p;
   const def = NODE_KINDS[node.kind];
@@ -132,7 +135,7 @@ export function NodeView(p: NodeViewProps) {
         <span className="ne-node-header-cat">{def.category}</span>
       </div>
       <div className="ne-node-body">
-        <Preview node={node} onChangeData={onChangeData} />
+        <Preview node={node} onChangeData={onChangeData} onRun={onRun} />
         {inFlight && <div className="ne-node-spinner" />}
       </div>
       {/* Input ports */}
