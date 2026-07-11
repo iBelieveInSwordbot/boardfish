@@ -27,6 +27,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useReducer,
   useRef,
@@ -202,6 +203,19 @@ export function NodeEditor(props: NodeEditorProps) {
   const [state, dispatch] = useReducer(reducer, { graph: seeded, dirty: false });
   const graph = state.graph;
 
+  // Signature of every node's position + size. Anything that could shift a
+  // port dot in screen space ends up in this string. useLayoutEffect below
+  // watches it and bumps `wireTick` post-layout so the SVG re-measures dots.
+  const nodeGeometrySig = graph.nodes
+    .map((n) => {
+      const size = (n.data as Record<string, unknown>).__size as
+        | { width?: number; height?: number }
+        | undefined;
+      return `${n.id}:${n.x},${n.y},${n.width ?? 0}x${n.height ?? 0},${size?.width ?? 0}x${size?.height ?? 0}`;
+    })
+    .join('|');
+  const edgeSig = graph.edges.map((e) => `${e.from.nodeId}.${e.from.portId}>${e.to.nodeId}.${e.to.portId}`).join('|');
+
   // Selection state. `selectedIds` is the multi-selection set; `primaryId` is
   // whichever node currently drives the inspector (last-selected). Kept in
   // parallel so we don't have to peek into the Set for the inspector.
@@ -308,6 +322,20 @@ export function NodeEditor(props: NodeEditorProps) {
 
   // Refs for DOM / interaction state that shouldn't cause re-renders.
   const canvasRef = useRef<HTMLDivElement | null>(null);
+
+  // Bumper that forces the edge SVG to re-render after DOM layout so
+  // portCanvasPos()'s DOM-measurement path picks up real dot positions on
+  // the frame AFTER any graph change (add node, move, resize).
+  const [, setWireTick] = useState(0);
+  useLayoutEffect(() => {
+    // Two rAFs so the browser has actually laid nodes out before we
+    // re-measure. React commits the DOM synchronously here, but the layout
+    // pass happens before paint; two rAFs is a robust hedge across engines.
+    const r1 = requestAnimationFrame(() => {
+      requestAnimationFrame(() => setWireTick((t) => t + 1));
+    });
+    return () => cancelAnimationFrame(r1);
+  }, [nodeGeometrySig, edgeSig, graph.zoom, graph.panOffset.x, graph.panOffset.y]);
   const panningRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
   const draggingRef = useRef<{
     /** The node that received the pointerdown (drag anchor). */
@@ -377,31 +405,68 @@ export function NodeEditor(props: NodeEditorProps) {
     [graph.panOffset.x, graph.panOffset.y, graph.zoom],
   );
 
-  /** Port center in CANVAS coords (matches the SVG world). */
+  /**
+   * Port center in CANVAS coords (matches the SVG world layer).
+   *
+   * Strategy: measure the actual port dot's bounding rect in screen space,
+   * then convert to canvas coords via the current pan/zoom transform. This
+   * makes wires literally parented to the dots — no more JS<->CSS geometry
+   * math to keep in sync, and no more drift when nodes are resized.
+   *
+   * Fallback: if the dot isn't in the DOM yet (initial paint before refs
+   * mount, or a node just added by the reducer), compute an approximate
+   * position from the node's data using the header/footer/pitch constants.
+   * That approximation is only used for one frame; the next render will find
+   * the DOM element and switch to the exact measurement.
+   */
   const portCanvasPos = useCallback(
     (node: BaseNode, portId: PortId): { x: number; y: number } | null => {
       const port = node.ports.find((p) => p.id === portId);
       if (!port) return null;
+
+      // Preferred path: read the exact center of the rendered dot.
+      const dot = document.querySelector<HTMLElement>(
+        `[data-port-node="${node.id}"][data-port-id="${portId}"]`,
+      );
+      const canvasEl = canvasRef.current;
+      if (dot && canvasEl) {
+        const dotRect = dot.getBoundingClientRect();
+        // Zero-sized rect => dot hasn't laid out yet (initial paint). Fall
+        // through to the approximate math and let a subsequent render pick
+        // up the real measurement.
+        if (dotRect.width > 0 && dotRect.height > 0) {
+          const canvasRect = canvasEl.getBoundingClientRect();
+          const zoom = graph.zoom || 1;
+          const panX = graph.panOffset.x;
+          const panY = graph.panOffset.y;
+          // Convert screen-space dot center to canvas coords.
+          //   screenX = canvasX * zoom + panX + canvasRect.left
+          //   canvasX = (screenX - canvasRect.left - panX) / zoom
+          const cxScreen = dotRect.left + dotRect.width / 2;
+          const cyScreen = dotRect.top + dotRect.height / 2;
+          const x = (cxScreen - canvasRect.left - panX) / zoom;
+          const y = (cyScreen - canvasRect.top - panY) / zoom;
+          return { x, y };
+        }
+      }
+
+      // Fallback approximation (used on the very first render before the dot
+      // element mounts). Same math as the previous JS-only path.
       const def = NODE_KINDS[node.kind];
       const w = node.width ?? def.defaultWidth;
       const h = node.height ?? def.defaultHeight;
-      // Distribute ports along the vertical center of the node body (between
-      // the header and the resize handle). Matches the flex column layout in
-      // CSS: `.ne-ports-in/out { top: NODE_HEADER_H; bottom: NODE_FOOTER_H;
-      // justify-content: center; gap: PORT_GAP; }`. So port i (0-indexed,
-      // total N) sits at `center - (N-1)/2 * PORT_GAP + i * PORT_GAP`.
       const sideList = node.ports.filter((p) => p.side === port.side);
       const idx = sideList.findIndex((p) => p.id === portId);
       const availTop = node.y + NODE_HEADER_H;
       const availBot = node.y + h - NODE_FOOTER_H;
       const availMid = (availTop + availBot) / 2;
-      const gap = PORT_ROW_H; // 18 vertical spacing between ports
+      const gap = PORT_ROW_H;
       const total = sideList.length;
       const y = availMid + (idx - (total - 1) / 2) * gap;
       const x = port.side === 'in' ? node.x : node.x + w;
       return { x, y };
     },
-    [],
+    [graph.zoom, graph.panOffset.x, graph.panOffset.y],
   );
 
   const nodeCenter = useCallback((node: BaseNode) => {
