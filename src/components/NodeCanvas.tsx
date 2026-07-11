@@ -90,6 +90,41 @@ export function NodeView(p: NodeViewProps) {
     [onChangeData, w, h],
   );
 
+  // Vertical chrome inside a media node: header + footer + typical caption
+  // strip + preview padding. Used to convert a media aspect ratio into a node
+  // aspect ratio when a media node is resized.
+  const NODE_CHROME_V = 32 /* header */ + 26 /* footer */ + 32 /* caption + padding */;
+
+  /**
+   * If this node hosts a fixed-aspect media (image-gen, movie-gen, out, or
+   * panel-ref), return the media's aspect ratio (w / h). Prefers the node's
+   * declared `aspect_ratio` field (e.g. "16:9") because it's exact; falls back
+   * to the naturally-loaded media element dimensions if we can find one.
+   */
+  const mediaAspect: number | null = (() => {
+    if (!['image-gen', 'movie-gen', 'out', 'panel-ref'].includes(node.kind)) return null;
+    const raw = (node.data as Record<string, unknown>).aspect_ratio;
+    if (typeof raw === 'string' && raw.includes(':')) {
+      const [a, b] = raw.split(':').map(Number);
+      if (Number.isFinite(a) && Number.isFinite(b) && a > 0 && b > 0) return a / b;
+    }
+    // Fallback: try to measure the currently rendered media element inside
+    // this node's DOM. Safe to read imperatively — we only need it during a
+    // resize gesture where a fresh render already happened.
+    const nodeEl = document.querySelector<HTMLElement>(`[data-node-id="${node.id}"]`);
+    if (nodeEl) {
+      const img = nodeEl.querySelector<HTMLImageElement>('img.ne-node-preview-thumb');
+      if (img && img.naturalWidth > 0 && img.naturalHeight > 0) {
+        return img.naturalWidth / img.naturalHeight;
+      }
+      const vid = nodeEl.querySelector<HTMLVideoElement>('video.ne-node-preview-thumb');
+      if (vid && vid.videoWidth > 0 && vid.videoHeight > 0) {
+        return vid.videoWidth / vid.videoHeight;
+      }
+    }
+    return null;
+  })();
+
   const onResizePointerMove = useCallback(
     (e: ReactPointerEvent<HTMLDivElement>) => {
       const state = resizeStartRef.current;
@@ -101,17 +136,38 @@ export function NodeView(p: NodeViewProps) {
       const zoom = graph.zoom || 1;
       const dx = (e.clientX - state.startClientX) / zoom;
       const dy = (e.clientY - state.startClientY) / zoom;
-      const nextW = Math.max(
+      let nextW = Math.max(
         NODE_MIN_WIDTH,
         Math.min(NODE_MAX_WIDTH, Math.round(state.startW + dx)),
       );
-      const nextH = Math.max(
+      let nextH = Math.max(
         NODE_MIN_HEIGHT,
         Math.min(NODE_MAX_HEIGHT, Math.round(state.startH + dy)),
       );
+      // Media nodes (image-gen / movie-gen / out / panel-ref) lock the media
+      // rectangle's aspect ratio while resizing. We drive off whichever axis
+      // moved most (in absolute pixels) so the user can widen OR heighten the
+      // node and the other axis snaps to preserve the aspect.
+      if (mediaAspect && mediaAspect > 0) {
+        const wideDrive = Math.abs(dx) >= Math.abs(dy);
+        if (wideDrive) {
+          // Width is authoritative; height follows.
+          nextH = Math.max(
+            NODE_MIN_HEIGHT,
+            Math.min(NODE_MAX_HEIGHT, Math.round(nextW / mediaAspect) + NODE_CHROME_V),
+          );
+        } else {
+          // Height is authoritative; width follows.
+          const mediaH = Math.max(1, nextH - NODE_CHROME_V);
+          nextW = Math.max(
+            NODE_MIN_WIDTH,
+            Math.min(NODE_MAX_WIDTH, Math.round(mediaH * mediaAspect)),
+          );
+        }
+      }
       onChangeData({ __size: { width: nextW, height: nextH } });
     },
-    [graph.zoom, onChangeData],
+    [graph.zoom, onChangeData, mediaAspect],
   );
 
   const onResizePointerUp = useCallback(
@@ -132,6 +188,7 @@ export function NodeView(p: NodeViewProps) {
       style={{ left: node.x, top: node.y, width: w, height: h }}
       onClick={onClick}
       onContextMenu={onContextMenu}
+      data-node-id={node.id}
     >
       <div className="ne-node-header" onPointerDown={onHeaderPointerDown}>
         <span>{def.label}</span>

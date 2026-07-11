@@ -161,7 +161,10 @@ function useHistoryMirror(
     const tail = history[history.length - 1];
     if (tail && tail.generatedAt === prev.generatedAt) return;
     const next = appendHistory(node, prev);
-    onChangeData({ __history: next });
+    // Also reset the media viewer cursor to 0 (= new current) so the counter
+    // shows 1/N of the fresh generation set instead of pointing at the frame
+    // the user was previously peeking at.
+    onChangeData({ __history: next, __viewIdx: 0 });
     // We intentionally omit `history` from deps: we only want this to fire
     // when the node's output changes, not on every history strip re-render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -194,7 +197,21 @@ function downloadMedia(url: string, kind: 'image' | 'video', hint?: string) {
 /**
  * Render the shared media thumbnail: image or video, with ‹/› history nav,
  * save button, movie playback controls (for videos), and a frame counter.
- * Selecting a history frame promotes it to `node.output` via onPromoteFrame.
+ *
+ * Navigation model (2026-07-11 rewrite):
+ *   Instead of destructively swapping frames via onPromoteFrame on every
+ *   click (which never lets the counter progress past 2/N and lost stable
+ *   ordering), the arrows now bump a viewer cursor stored in
+ *   `node.data.__viewIdx`. The display list is
+ *      [current, ...historyNewestFirst]
+ *   which stays stable across nav clicks; only viewIdx changes. viewIdx=0 is
+ *   the "canonical" current output that downstream nodes see; viewIdx>0 is a
+ *   look-back into history that doesn't touch `node.output`.
+ *
+ *   When the viewer commits (double-click the media OR export the node OR
+ *   the graph is re-executed), whichever frame is at viewIdx is promoted to
+ *   canonical via onPromoteFrame. Until then, downstream connections keep
+ *   reading `node.output` unchanged.
  */
 function renderMediaThumb(opts: {
   node: BaseNode;
@@ -202,12 +219,12 @@ function renderMediaThumb(opts: {
   currentUrl: string | undefined;
   history: NodeOutput[];              // oldest → newest
   onPromoteFrame?: (historyIndex: number) => void;
+  onChangeData?: (patch: Record<string, unknown>) => void;
   labelHint?: string;
 }) {
-  const { node, kind, currentUrl, history, onPromoteFrame, labelHint } = opts;
-  // Total frames: current output first (index 0), then history newest→oldest.
-  // We navigate ‹/› by promoting history frames. Selecting the "current" is
-  // the default (no promote needed).
+  const { node, kind, currentUrl, history, onPromoteFrame, onChangeData, labelHint } = opts;
+  // Display array: newest-first. Index 0 = live current, indices 1..H = history
+  // from newest to oldest.
   const historyNewestFirst = history.slice().reverse();
   const totalFrames = (currentUrl ? 1 : 0) + historyNewestFirst.length;
 
@@ -219,29 +236,53 @@ function renderMediaThumb(opts: {
     );
   }
 
-  // ‹ prev / › next map to promoting an older/newer history frame.
-  // "prev" walks back in time (toward older history).
-  //   totalFrames = 1 + hist.length; current is slot 0, hist[hist.length-1]
-  //   (newest history) is slot 1, hist[0] (oldest) is slot totalFrames-1.
-  // Promoting historyIndex = original-hist-array index (oldest=0).
-  const canNav = totalFrames > 1 && Boolean(onPromoteFrame);
+  // Clamp the stored view cursor to a valid index. When history shrinks (user
+  // deletes a frame from the strip) we snap back to 0 rather than leaving a
+  // dangling cursor pointing past the end of the array.
+  const rawViewIdx = Number((node.data as Record<string, unknown>).__viewIdx);
+  const viewIdx = Number.isFinite(rawViewIdx) && rawViewIdx >= 0 && rawViewIdx < totalFrames
+    ? Math.floor(rawViewIdx)
+    : 0;
 
+  // Resolve the frame at this cursor:
+  //   viewIdx = 0 → currentUrl (live output)
+  //   viewIdx = k → historyNewestFirst[k-1]
+  const displayFrame = viewIdx === 0
+    ? { dataUrl: currentUrl, kind }
+    : historyNewestFirst[viewIdx - 1];
+  const displayUrl = (displayFrame && (displayFrame as { dataUrl?: string }).dataUrl) || currentUrl;
+
+  const canNav = totalFrames > 1;
+
+  function setViewIdx(next: number) {
+    if (!onChangeData) return;
+    const clamped = ((next % totalFrames) + totalFrames) % totalFrames;
+    onChangeData({ __viewIdx: clamped });
+  }
   function goPrev() {
-    if (!onPromoteFrame || history.length === 0) return;
-    // Newest history frame — promote it (becomes current, current drops to hist).
-    onPromoteFrame(history.length - 1);
+    // ‹ : step to a NEWER frame (viewIdx -1, wrap). At viewIdx=0 the only
+    // newer thing is a wrap back to the oldest.
+    setViewIdx(viewIdx - 1);
   }
   function goNext() {
+    // › : step to an OLDER frame (viewIdx +1, wrap).
+    setViewIdx(viewIdx + 1);
+  }
+  function commitPromote() {
+    // Double-click / ⌘-click the media to make the currently-viewed frame
+    // the canonical current output. Uses the existing PROMOTE_FRAME reducer.
+    if (viewIdx === 0) return;                          // already canonical
     if (!onPromoteFrame || history.length === 0) return;
-    // Oldest history frame — same swap mechanism, just to give a symmetric
-    // arrow. This is intentionally "wrap" behavior: › steps through older
-    // frames the other way.
-    onPromoteFrame(0);
+    // Display idx k (k>=1) corresponds to historyNewestFirst[k-1], which in
+    // the ORIGINAL oldest-first history array is index `history.length - k`.
+    onPromoteFrame(history.length - viewIdx);
+    // After promote, the new current is at display 0.
+    if (onChangeData) onChangeData({ __viewIdx: 0 });
   }
 
   const media = kind === 'video'
     ? createElement('video', {
-        src: currentUrl,
+        src: displayUrl,
         controls: true,
         loop: true,
         playsInline: true,
@@ -250,12 +291,14 @@ function renderMediaThumb(opts: {
         onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
         onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
         onClick: (e: React.MouseEvent) => e.stopPropagation(),
+        onDoubleClick: (e: React.MouseEvent) => { e.stopPropagation(); commitPromote(); },
       })
     : createElement('img', {
-        src: currentUrl,
+        src: displayUrl,
         alt: '',
         draggable: false,
         className: 'ne-node-preview-thumb',
+        onDoubleClick: (e: React.MouseEvent) => { e.stopPropagation(); commitPromote(); },
       });
 
   // Small arrow SVG glyphs (real arrows, not chevrons). Kept identical shape
@@ -337,8 +380,13 @@ function renderMediaThumb(opts: {
       totalFrames > 1
         ? createElement(
             'span',
-            { className: 'ne-media-toolbar-counter' },
-            `${1} / ${totalFrames}`,
+            {
+              className: 'ne-media-toolbar-counter' + (viewIdx !== 0 ? ' is-off-canonical' : ''),
+              title: viewIdx === 0
+                ? 'Live current — downstream nodes see this frame.'
+                : 'Viewing a history frame. Double-click the media to make it canonical.',
+            },
+            `${viewIdx + 1} / ${totalFrames}`,
           )
         : null,
       createElement(
@@ -346,10 +394,10 @@ function renderMediaThumb(opts: {
         {
           className: 'ne-media-toolbar-btn',
           type: 'button',
-          title: 'Save to disk',
+          title: 'Save this frame to disk',
           onClick: (e: React.MouseEvent) => {
             e.stopPropagation();
-            downloadMedia(currentUrl, kind, labelHint ?? node.kind);
+            downloadMedia(displayUrl, kind, labelHint ?? node.kind);
           },
         },
         downloadSvg,
@@ -454,6 +502,7 @@ const ImageGenPreview: FC<PreviewProps> = ({ node, onChangeData, onPromoteFrame 
       currentUrl: url,
       history,
       onPromoteFrame,
+      onChangeData,
       labelHint: `image-${modelLabel(model).toLowerCase()}`,
     }),
     createElement(
@@ -480,6 +529,7 @@ const MovieGenPreview: FC<PreviewProps> = ({ node, onChangeData, onPromoteFrame 
       currentUrl: url,
       history,
       onPromoteFrame,
+      onChangeData,
       labelHint: `video-${modelLabel(model).toLowerCase()}`,
     }),
     // Inline prompt — lets a Movie Gen node stand alone without a wired
@@ -510,7 +560,7 @@ const MovieGenPreview: FC<PreviewProps> = ({ node, onChangeData, onPromoteFrame 
 // Out node visualized as a mini storyboard page: numbered header, image frame,
 // and a caption strip. Makes it visually obvious that this is what will land
 // in the panel when the editor closes.
-const OutPreview: FC<PreviewProps> = ({ node, onRun, onPromoteFrame }) => {
+const OutPreview: FC<PreviewProps> = ({ node, onRun, onPromoteFrame, onChangeData }) => {
   const url = node.output?.dataUrl;
   const kind = node.output?.kind;
   const history = readNodeHistory(node);
@@ -553,6 +603,7 @@ const OutPreview: FC<PreviewProps> = ({ node, onRun, onPromoteFrame }) => {
             currentUrl: url,
             history,
             onPromoteFrame,
+            onChangeData,
             labelHint: 'panel',
           })
         : createElement('div', { className: 'ne-out-page-empty' }, 'wire something to me'),

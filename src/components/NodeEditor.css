@@ -221,12 +221,19 @@
 @keyframes ne-spin { to { transform: rotate(360deg); } }
 
 /* --- Ports ---
-   Positioning MUST match portCanvasPos() in NodeEditor.tsx exactly, so wire
-   endpoints stay glued to port dot centers when nodes are resized. Constants:
+   Positioning MUST match portCanvasPos() in NodeEditor.tsx exactly so wire
+   endpoints stay glued to port dot centers when nodes are resized.
+
+   PORT_ROW_H = 18 is the PITCH (dot center to next dot center). CSS `gap` is
+   the empty space between items, so gap = PORT_ROW_H - dotHeight = 18 - 12 = 6.
+   Header/footer offsets must equal NODE_HEADER_H / NODE_FOOTER_H exactly.
+
      NODE_HEADER_H = 32   ->  top: 32px
      NODE_FOOTER_H = 26   ->  bottom: 26px
-     PORT_ROW_H    = 18   ->  gap: 18px
-   Ports are centered vertically in the available (header..footer) area. */
+     PORT_ROW_H    = 18   ->  gap: 6px  (18 - 12)
+
+   Ports are centered vertically in the (header..footer) area via
+   `justify-content: center`. */
 .ne-ports-in, .ne-ports-out {
   position: absolute;
   top: 32px;
@@ -234,10 +241,14 @@
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 18px;
+  gap: 0;
 }
-.ne-ports-in { left: -6px; align-items: flex-start; }
-.ne-ports-out { right: -6px; align-items: flex-end; }
+/* Dot is 12px inner + 2px border on each side = 16px wide. To make the dot
+   center land exactly on node.x (input) / node.x + w (output), the container
+   sits 8px outside the node's edge (half the dot width). Matches JS-side
+   `x = port.side === 'in' ? node.x : node.x + w` in portCanvasPos(). */
+.ne-ports-in { left: -8px; align-items: flex-start; }
+.ne-ports-out { right: -8px; align-items: flex-end; }
 
 .ne-port {
   display: flex;
@@ -246,6 +257,14 @@
   font-size: 10px;
   color: #8a8a94;
   pointer-events: none; /* the dot itself handles events */
+  /* Fixed row height so the JS-side portCanvasPos() (which assumes
+     PORT_ROW_H=18 pitch) lines up 1:1 with what the browser draws.
+     Without this, the dot+label row grows tall enough to hold the label at
+     line-height 1.2, drifting the actual pitch off the 18px assumption and
+     letting wires miss the dot centers when nodes are tall. */
+  height: 18px;
+  min-height: 18px;
+  line-height: 1;
 }
 .ne-ports-out .ne-port { flex-direction: row-reverse; }
 
@@ -1027,6 +1046,11 @@
   color: #d8d5c9;
   min-width: 34px;
   text-align: center;
+}
+/* Amber when the viewer is looking at a non-canonical history frame —
+   double-click the media to make it current. */
+.ne-media-toolbar-counter.is-off-canonical {
+  color: #f2c15a;
 }
 
 /* Native <video controls> UI stays inside the thumbnail; make sure the
