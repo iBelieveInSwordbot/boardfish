@@ -22,7 +22,8 @@ import { createElement, useEffect, useRef, useContext, createContext, Fragment, 
 import type { BaseNode, NodeKind, NodeOutput, NodePort } from './types';
 import { defaultDataFor, defaultPortsFor } from './types';
 import { appendHistory, readNodeHistory } from './graph-utils';
-import { FAL_MODELS } from '../ai/fal-models';
+import { FAL_MODELS, getFalModel } from '../ai/fal-models';
+import type { FalModelInput } from '../ai/fal-models';
 
 // ---------------------------------------------------------------------------
 // Panel-ref lookup context. NodeEditor provides the list of available
@@ -257,59 +258,101 @@ function renderMediaThumb(opts: {
         className: 'ne-node-preview-thumb',
       });
 
+  // Small arrow SVG glyphs (real arrows, not chevrons). Kept identical shape
+  // to the storyboard lightbox for visual consistency.
+  const prevArrowSvg = createElement(
+    'svg',
+    { viewBox: '0 0 20 20', width: 12, height: 12, 'aria-hidden': true },
+    createElement('path', {
+      d: 'M13 3 L5 10 L13 17 M5 10 L18 10',
+      fill: 'none',
+      stroke: 'currentColor',
+      strokeWidth: 1.8,
+      strokeLinecap: 'round',
+      strokeLinejoin: 'round',
+    }),
+  );
+  const nextArrowSvg = createElement(
+    'svg',
+    { viewBox: '0 0 20 20', width: 12, height: 12, 'aria-hidden': true },
+    createElement('path', {
+      d: 'M7 3 L15 10 L7 17 M15 10 L2 10',
+      fill: 'none',
+      stroke: 'currentColor',
+      strokeWidth: 1.8,
+      strokeLinecap: 'round',
+      strokeLinejoin: 'round',
+    }),
+  );
+  const downloadSvg = createElement(
+    'svg',
+    { viewBox: '0 0 20 20', width: 12, height: 12, 'aria-hidden': true },
+    createElement('path', {
+      d: 'M10 3 L10 13 M6 9 L10 13 L14 9 M4 16 L16 16',
+      fill: 'none',
+      stroke: 'currentColor',
+      strokeWidth: 1.8,
+      strokeLinecap: 'round',
+      strokeLinejoin: 'round',
+    }),
+  );
+
   return createElement(
     'div',
     { className: 'ne-media-thumb-wrap' },
     media,
-    canNav
-      ? createElement(
-          'button',
-          {
-            className: 'ne-media-arrow ne-media-arrow--prev',
-            type: 'button',
-            title: 'Previous version',
-            onClick: (e: React.MouseEvent) => { e.stopPropagation(); goPrev(); },
-            onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
-          },
-          '\u2039',
-        )
-      : null,
-    canNav
-      ? createElement(
-          'button',
-          {
-            className: 'ne-media-arrow ne-media-arrow--next',
-            type: 'button',
-            title: 'Next version',
-            onClick: (e: React.MouseEvent) => { e.stopPropagation(); goNext(); },
-            onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
-          },
-          '\u203a',
-        )
-      : null,
+    // Top-right toolbar: prev / next / counter / download. Always on top of
+    // the media, above port labels, and stays inside the node's rectangle.
     createElement(
       'div',
-      { className: 'ne-media-badge-row' },
+      {
+        className: 'ne-media-toolbar',
+        onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+        onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
+      },
+      canNav
+        ? createElement(
+            'button',
+            {
+              className: 'ne-media-toolbar-btn',
+              type: 'button',
+              title: 'Previous version',
+              onClick: (e: React.MouseEvent) => { e.stopPropagation(); goPrev(); },
+            },
+            prevArrowSvg,
+          )
+        : null,
+      canNav
+        ? createElement(
+            'button',
+            {
+              className: 'ne-media-toolbar-btn',
+              type: 'button',
+              title: 'Next version',
+              onClick: (e: React.MouseEvent) => { e.stopPropagation(); goNext(); },
+            },
+            nextArrowSvg,
+          )
+        : null,
       totalFrames > 1
         ? createElement(
             'span',
-            { className: 'ne-media-counter' },
-            `1 / ${totalFrames}`,
+            { className: 'ne-media-toolbar-counter' },
+            `${1} / ${totalFrames}`,
           )
         : null,
       createElement(
         'button',
         {
-          className: 'ne-media-save',
+          className: 'ne-media-toolbar-btn',
           type: 'button',
           title: 'Save to disk',
           onClick: (e: React.MouseEvent) => {
             e.stopPropagation();
             downloadMedia(currentUrl, kind, labelHint ?? node.kind);
           },
-          onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
         },
-        '\u2b07',
+        downloadSvg,
       ),
     ),
   );
@@ -637,6 +680,146 @@ const PanelRefPreview: FC<PreviewProps> = ({ node }) => {
 // Inspector components
 // ---------------------------------------------------------------------------
 
+/**
+ * Random Seed + editable seed value control. Any image or video model whose
+ * FAL schema declares a `seed` input gets this rendered automatically.
+ *
+ * Behavior:
+ *   - Checkbox toggles "Random seed". When checked, node.data.seed is left
+ *     unset (executor sends nothing → FAL picks a random one).
+ *   - When unchecked, a numeric field lets the user pin a specific seed.
+ *   - Roll button randomizes the pinned seed to a fresh integer.
+ */
+function renderSeedControl(
+  node: BaseNode,
+  onChangeData: (patch: Record<string, unknown>) => void,
+) {
+  const rawSeed = (node.data as Record<string, unknown>).seed;
+  const hasSeed = typeof rawSeed === 'number' && Number.isFinite(rawSeed);
+  const seedVal = hasSeed ? (rawSeed as number) : 0;
+  return createElement(
+    Fragment,
+    null,
+    createElement('label', { className: 'ne-inspect-label' }, 'Seed'),
+    createElement(
+      'label',
+      { className: 'ne-inspect-checkbox' },
+      createElement('input', {
+        type: 'checkbox',
+        checked: !hasSeed,
+        onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+          if (e.target.checked) {
+            // Turn on Random → clear stored seed.
+            onChangeData({ seed: undefined });
+          } else {
+            // Turn off Random → pin a new random integer as the starting seed.
+            const initial = Math.floor(Math.random() * 2_147_483_647);
+            onChangeData({ seed: initial });
+          }
+        },
+      }),
+      ' Random seed each gen',
+    ),
+    !hasSeed
+      ? null
+      : createElement(
+          'div',
+          { className: 'ne-inspect-seed-row' },
+          createElement('input', {
+            className: 'ne-inspect-input',
+            type: 'number',
+            min: 0,
+            step: 1,
+            value: seedVal,
+            onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+              const n = Number(e.target.value);
+              onChangeData({ seed: Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0 });
+            },
+          }),
+          createElement(
+            'button',
+            {
+              type: 'button',
+              className: 'ne-inspect-chip',
+              title: 'Roll a new random seed',
+              onClick: () => onChangeData({ seed: Math.floor(Math.random() * 2_147_483_647) }),
+            },
+            '🎲 Roll',
+          ),
+        ),
+  );
+}
+
+/**
+ * Model-aware duration control. Reads the current model's `duration` input
+ * schema and renders either a select (Veo, Kling: enumerated durations) or a
+ * number input (Seedance: 3–12 range). Applies the schema's default so the
+ * field is never blank.
+ */
+function renderDurationControl(
+  node: BaseNode,
+  onChangeData: (patch: Record<string, unknown>) => void,
+) {
+  const modelId = String((node.data as Record<string, unknown>).modelId ?? '');
+  const model = modelId ? getFalModel(modelId) : null;
+  const durationInput: FalModelInput | undefined = model?.inputs.find((i) => i.key === 'duration');
+  if (!durationInput) return null;
+  const cur = (node.data as Record<string, unknown>).duration;
+  const curDefined = cur !== undefined && cur !== null && cur !== '';
+  const value: unknown = curDefined ? cur : durationInput.default;
+
+  // Auto-apply the schema default the FIRST time we render a node that has
+  // no duration set. Ensures the field is never blank when opened, and the
+  // executor always has a valid value to send.
+  useEffect(() => {
+    if (!curDefined && durationInput.default !== undefined) {
+      onChangeData({ duration: durationInput.default });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelId]);
+
+  const label = durationInput.label ?? 'Duration (seconds)';
+
+  if (durationInput.type === 'select' && Array.isArray(durationInput.options)) {
+    return createElement(
+      Fragment,
+      null,
+      createElement('label', { className: 'ne-inspect-label' }, label),
+      createElement(
+        'select',
+        {
+          className: 'ne-inspect-select',
+          value: String(value ?? ''),
+          onChange: (e: React.ChangeEvent<HTMLSelectElement>) =>
+            onChangeData({ duration: e.target.value }),
+        },
+        ...durationInput.options.map((opt) =>
+          createElement('option', { key: opt.value, value: opt.value }, opt.label),
+        ),
+      ),
+    );
+  }
+
+  // Number range fallback. Keep the schema's min/max/step and enforce them.
+  return createElement(
+    Fragment,
+    null,
+    createElement('label', { className: 'ne-inspect-label' }, label),
+    createElement('input', {
+      className: 'ne-inspect-input',
+      type: 'number',
+      min: durationInput.min ?? 1,
+      max: durationInput.max ?? 60,
+      step: durationInput.step ?? 1,
+      value: Number(value ?? 5),
+      onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+        const n = Number(e.target.value);
+        onChangeData({ duration: Number.isFinite(n) ? n : (durationInput.default ?? 5) });
+      },
+    }),
+  );
+}
+
 const TextPromptInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) => {
   const value = String(node.data.text ?? '');
   return createElement(
@@ -721,6 +904,11 @@ const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
         ),
       ),
     ),
+    // Random Seed control (schema-driven — only renders when the current
+    // model has a `seed` input; every current image model does).
+    (getFalModel(modelId)?.inputs.some((i) => i.key === 'seed'))
+      ? renderSeedControl(node, onChangeData)
+      : null,
     // Generate
     createElement(
       'button',
@@ -746,7 +934,6 @@ const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
 const MovieGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
   const modelId = String(node.data.modelId ?? 'veo-3');
   const aspect = String(node.data.aspect_ratio ?? '16:9');
-  const duration = Number(node.data.duration ?? 5);
   const url = node.output?.dataUrl;
   const modelLocked = Boolean(url);
 
@@ -785,17 +972,14 @@ const MovieGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
         createElement('option', { key: a, value: a }, a),
       ),
     ),
-    createElement('label', { className: 'ne-inspect-label' }, 'Duration (seconds)'),
-    createElement('input', {
-      className: 'ne-inspect-input',
-      type: 'number',
-      min: 1,
-      max: 30,
-      step: 1,
-      value: duration,
-      onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
-        onChangeData({ duration: Number(e.target.value) || 5 }),
-    }),
+    // Duration control is now model-schema-driven: Veo/Kling get a select of
+    // valid enumerated durations, Seedance gets a clamped number field, and
+    // the schema's default fires automatically so the field is never blank.
+    renderDurationControl(node, onChangeData),
+    // Random Seed control (video models with a `seed` input in their schema).
+    (getFalModel(modelId)?.inputs.some((i) => i.key === 'seed'))
+      ? renderSeedControl(node, onChangeData)
+      : null,
     createElement(
       'button',
       {

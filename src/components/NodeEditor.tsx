@@ -420,13 +420,54 @@ export function NodeEditor(props: NodeEditorProps) {
   // -------------------------------------------------------------------------
 
   const triggerSave = useCallback(async () => {
-    const out = findOutNode(graph);
+    // Matt's rule: on save, always refresh the Out node from upstream so the
+    // storyboard panel picks up whatever the current graph would produce
+    // (rather than stale cached Out output from the last manual generate).
+    // We only re-run when the Out node has upstream edges AND the upstream
+    // chain has produced at least one media output somewhere (otherwise the
+    // save-just-to-close case would kick off a wasted generation).
+    let workingGraph = graphRef.current;
+    const outNodeForRefresh = findOutNode(workingGraph);
+    if (outNodeForRefresh) {
+      const hasUpstream = workingGraph.edges.some((e) => e.to.nodeId === outNodeForRefresh.id);
+      // Only bother if there's an upstream node with real media output already.
+      // (Skips the "save immediately after open, nothing generated yet" case.)
+      const upstreamHasMedia = hasUpstream && workingGraph.nodes.some((n) =>
+        workingGraph.edges.some((e) => e.to.nodeId === outNodeForRefresh.id && e.from.nodeId === n.id) &&
+        n.output && (n.output.kind === 'image' || n.output.kind === 'video') &&
+        Boolean(n.output.dataUrl),
+      );
+      if (upstreamHasMedia) {
+        try {
+          workingGraph = await executeGraph(workingGraph, {
+            startAt: outNodeForRefresh.id,
+            onEvent: (e) => {
+              if (e.kind === 'output') {
+                if (e.dataPatch) {
+                  dispatch({ type: 'UPDATE_NODE_DATA', id: e.nodeId, patch: e.dataPatch });
+                }
+                dispatch({ type: 'SET_NODE_OUTPUT', id: e.nodeId, output: e.output });
+              }
+            },
+          });
+          // Keep graphRef in lockstep so the rest of this function reads the
+          // freshly-refreshed working graph.
+          graphRef.current = workingGraph;
+        } catch (err) {
+          // Never block save on a refresh failure — fall back to the last
+          // known Out output and surface the error to the console.
+          console.warn('[NodeEditor] Out refresh failed, saving stale output:', err);
+        }
+      }
+    }
+
+    const out = findOutNode(workingGraph);
     if (!out || !out.output || !out.output.dataUrl) {
-      onSave(graph, null);
+      onSave(workingGraph, null);
       return;
     }
     if (out.output.kind === 'image') {
-      onSave(graph, {
+      onSave(workingGraph, {
         kind: 'image',
         dataUrl: out.output.dataUrl,
         mime: out.output.mime ?? 'image/png',
@@ -443,7 +484,7 @@ export function NodeEditor(props: NodeEditorProps) {
       } catch {
         poster = null;
       }
-      onSave(graph, {
+      onSave(workingGraph, {
         kind: 'video',
         dataUrl: out.output.dataUrl,
         mime: out.output.mime ?? 'video/mp4',
@@ -451,8 +492,8 @@ export function NodeEditor(props: NodeEditorProps) {
       });
       return;
     }
-    onSave(graph, null);
-  }, [graph, onSave]);
+    onSave(workingGraph, null);
+  }, [onSave, dispatch]);
 
   const triggerClose = useCallback(() => {
     if (dirtyRef.current) {
@@ -646,6 +687,40 @@ export function NodeEditor(props: NodeEditorProps) {
           setSelectedEdgeId(null);
           return;
         }
+      }
+
+      // F  = fit all nodes to canvas. Computes the bounding box of every node,
+      // adds a small margin, and picks a pan/zoom that centers everything.
+      if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault();
+        const g = graphRef.current;
+        if (!g.nodes.length) return;
+        const rect = canvasRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const n of g.nodes) {
+          const def = NODE_KINDS[n.kind];
+          const w = n.width ?? def.defaultWidth;
+          const h = n.height ?? def.defaultHeight;
+          if (n.x < minX) minX = n.x;
+          if (n.y < minY) minY = n.y;
+          if (n.x + w > maxX) maxX = n.x + w;
+          if (n.y + h > maxY) maxY = n.y + h;
+        }
+        const margin = 60;
+        const bw = (maxX - minX) + margin * 2;
+        const bh = (maxY - minY) + margin * 2;
+        const zx = rect.width / bw;
+        const zy = rect.height / bh;
+        const zoom = clamp(Math.min(zx, zy), MIN_ZOOM, MAX_ZOOM);
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2;
+        const panOffset = {
+          x: rect.width / 2 - centerX * zoom,
+          y: rect.height / 2 - centerY * zoom,
+        };
+        dispatch({ type: 'SET_VIEWPORT', panOffset, zoom });
+        return;
       }
     }
     function onKeyUp(e: KeyboardEvent) {
@@ -1284,7 +1359,14 @@ export function NodeEditor(props: NodeEditorProps) {
       return next;
     });
     try {
-      const nextGraph = await executeGraph(graphRef.current, {
+      // NOTE: intentionally do NOT dispatch SET_GRAPH after executeGraph
+      // finishes. executeGraph works on a snapshot of graphRef.current at the
+      // start of the run; if the user adds/moves/edits nodes while the model
+      // call is in flight, replacing the live graph with the snapshot clobbers
+      // those edits ("my new node disappeared when the render finished").
+      // The per-node SET_NODE_OUTPUT events already deliver every output back
+      // into the live graph.
+      await executeGraph(graphRef.current, {
         startAt: node.id,
         onEvent: (e) => {
           if (e.kind === 'started') {
@@ -1294,6 +1376,13 @@ export function NodeEditor(props: NodeEditorProps) {
               return next;
             });
           } else if (e.kind === 'output') {
+            // If the executor also mutated node.data (multi-image extras onto
+            // __history), land that in the live graph BEFORE the output
+            // dispatch so useHistoryMirror's comparison sees the correct
+            // updated history tail.
+            if (e.dataPatch) {
+              dispatch({ type: 'UPDATE_NODE_DATA', id: e.nodeId, patch: e.dataPatch });
+            }
             dispatch({ type: 'SET_NODE_OUTPUT', id: e.nodeId, output: e.output });
             setInFlight((prev) => {
               const next = new Set(prev);
@@ -1310,7 +1399,6 @@ export function NodeEditor(props: NodeEditorProps) {
           }
         },
       });
-      dispatch({ type: 'SET_GRAPH', graph: nextGraph, dirty: true });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setExecError(msg);
@@ -1556,7 +1644,7 @@ export function NodeEditor(props: NodeEditorProps) {
           </div>
 
           <div className="ne-hint">
-            Drag empty canvas to select · Shift-click to add · ⌘X/⌘C/⌘V · Opt-drag to duplicate · Space-drag to pan · tap Space to preview (⭶ icon on Text Prompt = expand) · ⌘S to save
+Drag empty canvas to select · Shift-click to add · ⌘X/⌘C/⌘V · Opt-drag to duplicate · Space-drag to pan · tap Space to preview · F to fit all · ⌘S to save
           </div>
         </div>
 

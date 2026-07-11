@@ -129,6 +129,31 @@ export function extractImageUrl(result: Record<string, unknown>): string | null 
   return null;
 }
 
+/**
+ * Extract ALL image URLs from a FAL result blob. Same shape logic as
+ * extractImageUrl but returns the full array so multi-image gens
+ * (num_images > 1) don't silently drop N-1 results.
+ */
+export function extractImageUrls(result: Record<string, unknown>): string[] {
+  if (!result || typeof result !== 'object') return [];
+  const out: string[] = [];
+  const images = (result as { images?: unknown }).images;
+  if (Array.isArray(images)) {
+    for (const item of images) {
+      if (item && typeof item === 'object') {
+        const url = (item as { url?: unknown }).url;
+        if (typeof url === 'string' && url) out.push(url);
+      } else if (typeof item === 'string' && item) {
+        out.push(item);
+      }
+    }
+  }
+  if (out.length > 0) return out;
+  // Fallback: single-image shapes.
+  const single = extractImageUrl(result);
+  return single ? [single] : [];
+}
+
 // Given a FAL result blob, best-effort extract the primary video URL.
 // Handles common shapes across Veo / Kling / Seedance / etc.
 export function extractVideoUrl(result: Record<string, unknown>): string | null {

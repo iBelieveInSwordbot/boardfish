@@ -220,15 +220,21 @@
 }
 @keyframes ne-spin { to { transform: rotate(360deg); } }
 
-/* --- Ports --- */
+/* --- Ports ---
+   Positioning MUST match portCanvasPos() in NodeEditor.tsx exactly, so wire
+   endpoints stay glued to port dot centers when nodes are resized. Constants:
+     NODE_HEADER_H = 32   ->  top: 32px
+     NODE_FOOTER_H = 26   ->  bottom: 26px
+     PORT_ROW_H    = 18   ->  gap: 18px
+   Ports are centered vertically in the available (header..footer) area. */
 .ne-ports-in, .ne-ports-out {
   position: absolute;
-  top: 32px; /* below header */
-  bottom: 26px; /* above resize handle */
+  top: 32px;
+  bottom: 26px;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 12px;
+  gap: 18px;
 }
 .ne-ports-in { left: -6px; align-items: flex-start; }
 .ne-ports-out { right: -6px; align-items: flex-end; }
@@ -265,6 +271,9 @@
   padding: 1px 5px;
   border-radius: 3px;
   white-space: nowrap;
+  /* Labels must NEVER cover interactive UI (media toolbar, video controls,
+   expand icon, etc.). Toolbar sits at z-index 6, so keep labels below. */
+  z-index: 1;
 }
 
 /* --- Resize handle (bottom-right corner of every node) --- */
@@ -407,8 +416,12 @@
   font-style: italic;
 }
 .ne-node-preview-thumb {
+  /* Grow to fill the container as the node resizes. Nothing here should
+     stop scale-up; the ne-media-thumb-wrap already clips overflow. */
   max-width: 100%;
-  max-height: 90px;
+  max-height: 100%;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
   border-radius: 4px;
   background: #0a0a0d;
@@ -533,6 +546,23 @@
   border-color: #4a86d5;
   color: #fff;
 }
+.ne-inspect-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #d0d0d6;
+  cursor: pointer;
+  user-select: none;
+}
+.ne-inspect-checkbox input { accent-color: #3a76c9; }
+.ne-inspect-seed-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 4px;
+}
+.ne-inspect-seed-row .ne-inspect-input { flex: 1; }
 .ne-inspect-generate {
   margin-top: 16px;
   width: 100%;
@@ -940,76 +970,77 @@
 .ne-media-thumb-wrap .ne-node-preview-thumb {
   width: 100%;
   height: 100%;
+  max-width: 100%;
+  max-height: 100%;
   object-fit: contain;
   background: #0d0d10;
   display: block;
 }
-.ne-media-arrow {
+/* Top-right media toolbar: prev / next / counter / download. Sits inside the
+   node's clipped area so buttons never leave the node rectangle. High
+   z-index so they float above the media, port labels, and video controls. */
+.ne-media-toolbar {
   position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 28px;
-  height: 28px;
-  border-radius: 999px;
-  border: 1px solid #444;
-  background: rgba(20, 20, 24, 0.75);
-  color: #f0ecdf;
-  cursor: pointer;
-  font-size: 18px;
-  line-height: 1;
+  top: 4px;
+  right: 4px;
   display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  background: rgba(14, 14, 18, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  z-index: 6;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
+}
+/* Reveal on hover of the whole node so the toolbar is easier to acquire.
+   Once visible, buttons accept pointer events. */
+.ne-node:hover .ne-media-toolbar,
+.ne-media-toolbar:hover,
+.ne-media-toolbar:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ne-media-toolbar-btn {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 0;
-  opacity: 0;
-  transition: opacity 0.12s;
+  background: transparent;
+  border: none;
+  color: #e6e6ea;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.1s ease;
 }
-.ne-media-thumb-wrap:hover .ne-media-arrow { opacity: 0.9; }
-.ne-media-arrow:hover { background: rgba(42, 42, 48, 0.95); opacity: 1; }
-.ne-media-arrow--prev { left: 6px; }
-.ne-media-arrow--next { right: 6px; }
-.ne-media-badge-row {
-  position: absolute;
-  right: 6px;
-  bottom: 6px;
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  opacity: 0;
-  transition: opacity 0.12s;
-}
-.ne-media-thumb-wrap:hover .ne-media-badge-row { opacity: 1; }
-.ne-media-counter {
-  padding: 2px 8px;
-  background: rgba(20, 20, 24, 0.85);
-  border: 1px solid #333;
-  border-radius: 10px;
-  color: #d8d5c9;
+.ne-media-toolbar-btn:hover { background: rgba(255, 255, 255, 0.12); }
+.ne-media-toolbar-btn svg { display: block; }
+.ne-media-toolbar-counter {
+  padding: 0 6px;
   font-size: 10px;
   font-family: 'Menlo', 'Courier New', monospace;
   letter-spacing: 0.04em;
+  color: #d8d5c9;
+  min-width: 34px;
+  text-align: center;
 }
-.ne-media-save {
-  width: 24px;
-  height: 24px;
-  border-radius: 999px;
-  border: 1px solid #444;
-  background: rgba(20, 20, 24, 0.85);
-  color: #f0ecdf;
-  cursor: pointer;
-  font-size: 11px;
-  line-height: 1;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.ne-media-save:hover { background: rgba(42, 42, 48, 0.95); }
 
 /* Native <video controls> UI stays inside the thumbnail; make sure the
-   default video element fills the wrapper. */
+   default video element fills the wrapper. Explicit cursor keeps the mouse
+   pointer visible when hovering over the play/pause bar (a Chromium issue
+   inside CSS-transformed parents that made the cursor vanish). */
 .ne-media-thumb-wrap video.ne-node-preview-thumb {
   background: #000;
+  cursor: default;
+}
+.ne-media-thumb-wrap video.ne-node-preview-thumb::-webkit-media-controls-panel,
+.ne-media-thumb-wrap video.ne-node-preview-thumb::-webkit-media-controls,
+.ne-media-thumb-wrap video.ne-node-preview-thumb::-webkit-media-controls-play-button {
+  cursor: pointer !important;
 }
 
 /* ---------- Fullscreen: toolbar + grid + compare ---------- */

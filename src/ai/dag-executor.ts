@@ -20,6 +20,7 @@
 import {
   runFalJob,
   extractImageUrl,
+  extractImageUrls,
   extractVideoUrl,
   urlToDataUrl,
 } from './client';
@@ -51,7 +52,7 @@ type NodeEdge = Edge;
 export type ExecutionEvent =
   | { kind: 'started';  nodeId: NodeId }
   | { kind: 'progress'; nodeId: NodeId; message: string }
-  | { kind: 'output';   nodeId: NodeId; output: BaseNode['output'] }
+  | { kind: 'output';   nodeId: NodeId; output: BaseNode['output']; dataPatch?: Record<string, unknown> }
   | { kind: 'failed';   nodeId: NodeId; error: string }
   | { kind: 'done';     graph: NodeGraph };
 
@@ -136,7 +137,20 @@ export async function executeGraph(
         signal,
       });
       node.output = mergeOutput(output, Date.now());
-      onEvent?.({ kind: 'output', nodeId, output: node.output });
+      // If runImageGen (or similar) mutated node.data during the run (e.g.
+      // pushed multi-image extras onto __history), forward that as a
+      // dataPatch so the live React state picks it up. Whitelist keys so
+      // we don't accidentally leak internal-only stuff.
+      const dataPatch: Record<string, unknown> = {};
+      if (Array.isArray((node.data as Record<string, unknown>).__history)) {
+        dataPatch.__history = (node.data as Record<string, unknown>).__history;
+      }
+      onEvent?.({
+        kind: 'output',
+        nodeId,
+        output: node.output,
+        dataPatch: Object.keys(dataPatch).length ? dataPatch : undefined,
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // Persisted output type doesn't carry error; store it on node.data.__runtime.
@@ -457,11 +471,47 @@ async function runImageGen(
   const res = await runFalJob(endpoint, payload);
   ctx.onProgress('FAL job complete, downloading image…');
 
-  const imgUrl = extractImageUrl(res.result);
-  if (!imgUrl) {
+  // Multi-image models (num_images > 1) return N images. Grab them all so no
+  // gen gets silently discarded — the first becomes `node.output` (the live
+  // current), the rest get pushed into `node.data.__history` right here so
+  // the history strip shows them immediately.
+  const imgUrls = extractImageUrls(res.result);
+  if (imgUrls.length === 0) {
     throw new Error(`Could not find an image URL in ${model.label} response.`);
   }
-  const { dataUrl, mime } = await urlToDataUrl(imgUrl);
+  const downloaded: Array<{ dataUrl: string; mime: string; sourceUrl: string }> = [];
+  for (const u of imgUrls) {
+    const { dataUrl: d, mime: m } = await urlToDataUrl(u);
+    downloaded.push({ dataUrl: d, mime: m, sourceUrl: u });
+  }
+  // Extras (indices 1..N-1) become synthetic history entries appended to the
+  // node's __history. Order: keep FAL's natural ordering (variant 1, 2, 3…).
+  // NOTE: we deliberately do NOT push the current `node.output` here — the
+  // React-side `useHistoryMirror` effect handles that push when it sees the
+  // new `generatedAt` on the incoming output. Doing it here too would cause
+  // a duplicate. Just append the N-1 extras.
+  if (downloaded.length > 1) {
+    const now = Date.now();
+    const existingHistory = Array.isArray((node.data as Record<string, unknown>).__history)
+      ? (((node.data as Record<string, unknown>).__history) as NodeOutput[]).slice()
+      : [];
+    for (let i = 1; i < downloaded.length; i++) {
+      const d = downloaded[i];
+      existingHistory.push({
+        kind: 'image',
+        dataUrl: d.dataUrl,
+        mime: d.mime,
+        sourceUrl: d.sourceUrl,
+        requestId: res.requestId,
+        generatedAt: now + i, // stable, monotonic per-extra timestamp
+      } as NodeOutput);
+    }
+    node.data = { ...node.data, __history: existingHistory };
+  }
+  const first = downloaded[0];
+  const imgUrl = first.sourceUrl;
+  const dataUrl = first.dataUrl;
+  const mime = first.mime;
   return {
     kind: 'image',
     dataUrl,
