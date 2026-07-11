@@ -350,11 +350,14 @@ export const FAL_MODELS: FalModelDef[] = [
     vendor: 'Kling (Kuaishou)',
     kind: 'video',
     endpoint: 'fal-ai/kling-video/v1.6/pro/text-to-video',
+    editEndpoint: 'fal-ai/kling-video/v1.6/pro/image-to-video',
+    refImageKey: 'image_url',
+    refImageIsArray: false,
     supportsImageInput: true,
     supportsPrompt: true,
     status: 'active',
     notes:
-      'Kling 1.6 Pro. For image-to-video variant, swap endpoint to fal-ai/kling-video/v1.6/pro/image-to-video. endpoint verified pending.',
+      'Kling 1.6 Pro. Auto-swaps to image-to-video endpoint when a first-frame image is wired in.',
     inputs: [
       PROMPT_INPUT,
       {
@@ -385,10 +388,13 @@ export const FAL_MODELS: FalModelDef[] = [
     vendor: 'Kling (Kuaishou)',
     kind: 'video',
     endpoint: 'fal-ai/kling-video/v1.6/standard/text-to-video',
+    editEndpoint: 'fal-ai/kling-video/v1.6/standard/image-to-video',
+    refImageKey: 'image_url',
+    refImageIsArray: false,
     supportsImageInput: true,
     supportsPrompt: true,
     status: 'active',
-    notes: 'Kling 1.6 Standard tier. endpoint verified pending.',
+    notes: 'Kling 1.6 Standard tier. Auto-swaps to image-to-video endpoint when a first-frame image is wired in.',
     inputs: [
       PROMPT_INPUT,
       {
@@ -419,10 +425,13 @@ export const FAL_MODELS: FalModelDef[] = [
     vendor: 'Kling (Kuaishou)',
     kind: 'video',
     endpoint: 'fal-ai/kling-video/v2/master/text-to-video',
+    editEndpoint: 'fal-ai/kling-video/v2/master/image-to-video',
+    refImageKey: 'image_url',
+    refImageIsArray: false,
     supportsImageInput: true,
     supportsPrompt: true,
     status: 'coming-soon',
-    notes: 'Kling 2 Master — flagship. endpoint verified pending.',
+    notes: 'Kling 2 Master — flagship. Auto-swaps to image-to-video endpoint when a first-frame image is wired in.',
     inputs: [
       PROMPT_INPUT,
       {
@@ -453,11 +462,14 @@ export const FAL_MODELS: FalModelDef[] = [
     vendor: 'ByteDance',
     kind: 'video',
     endpoint: 'fal-ai/bytedance/seedance/v1/pro/text-to-video',
+    editEndpoint: 'fal-ai/bytedance/seedance/v1/pro/image-to-video',
+    refImageKey: 'image_url',
+    refImageIsArray: false,
     supportsImageInput: true,
     supportsPrompt: true,
     status: 'active',
     notes:
-      'ByteDance Seedance 1 Pro — long-form, strong motion. For i2v use fal-ai/bytedance/seedance/v1/pro/image-to-video. endpoint verified pending.',
+      'ByteDance Seedance 1 Pro — long-form, strong motion. Auto-swaps to image-to-video endpoint when a first-frame image is wired in.',
     inputs: [
       PROMPT_INPUT,
       {
@@ -498,10 +510,13 @@ export const FAL_MODELS: FalModelDef[] = [
     vendor: 'ByteDance',
     kind: 'video',
     endpoint: 'fal-ai/bytedance/seedance/v1/lite/text-to-video',
+    editEndpoint: 'fal-ai/bytedance/seedance/v1/lite/image-to-video',
+    refImageKey: 'image_url',
+    refImageIsArray: false,
     supportsImageInput: true,
     supportsPrompt: true,
     status: 'active',
-    notes: 'Seedance 1 Lite — faster/cheaper draft tier. endpoint verified pending.',
+    notes: 'Seedance 1 Lite — faster/cheaper draft tier. Auto-swaps to image-to-video endpoint when a first-frame image is wired in.',
     inputs: [
       PROMPT_INPUT,
       {

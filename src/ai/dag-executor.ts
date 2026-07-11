@@ -497,9 +497,14 @@ async function runMovieGen(
     throw new Error(`Model ${modelId} (${model.label}) is not yet available.`);
   }
 
+  // Collect all upstream image refs. For video models we typically pass the
+  // first-frame image as `image_url` (singular), which each video model
+  // declares via refImageKey / refImageIsArray.
+  const refImages = collectRefImages(node, inputs);
   // Use the new-signature buildFalInput (pass `model`) so per-model type
-  // coercion runs (Kling duration as string, Seedance duration as number, etc.).
-  const payload = buildFalInput(node, inputs, model);
+  // coercion runs (Kling duration as string, Seedance duration as number, etc.)
+  // and refImages land under the model's declared refImageKey.
+  const payload = buildFalInput(node, inputs, model, refImages);
   // Guard against the #1 UX pitfall: user drops a Movie Gen node, hits
   // Generate, and gets a cryptic "Could not find a video URL" because FAL
   // rejected the empty-prompt payload. Fail fast with a clear message.
@@ -508,8 +513,15 @@ async function runMovieGen(
       `${model.label} needs a prompt. Type one into the node, or wire a Text Prompt into it.`,
     );
   }
-  ctx.onProgress(`Submitting to ${model.label} (${model.endpoint})…`);
-  const res = await runFalJob(model.endpoint, payload);
+  // Route to image-to-video endpoint when we have a first-frame ref image and
+  // the model exposes a dedicated i2v endpoint.
+  const endpoint = refImages.length > 0 && model.editEndpoint
+    ? model.editEndpoint
+    : model.endpoint;
+  ctx.onProgress(
+    `Submitting to ${model.label} (${endpoint})${refImages.length ? ' with first-frame reference' : ''}…`,
+  );
+  const res = await runFalJob(endpoint, payload);
   ctx.onProgress('FAL job complete, downloading video…');
 
   const vidUrl = extractVideoUrl(res.result);

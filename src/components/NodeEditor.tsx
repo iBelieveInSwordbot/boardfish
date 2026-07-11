@@ -217,7 +217,15 @@ export function NodeEditor(props: NodeEditorProps) {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
 
   // Space-key pan mode.
-  const [spaceDown, setSpaceDown] = useState(false);
+  // Modifier-key states.
+  //  - metaDown: ⌘ (mac) / Ctrl (win/linux) — hold to pan the canvas by dragging.
+  //  - Option/Alt-drag on a node duplicates it (FiCal-style) — checked at
+  //    pointer time via e.altKey, no persistent state needed.
+  //  - Spacebar opens fullscreen preview of the selected node (see below).
+  const [metaDown, setMetaDown] = useState(false);
+
+  // Fullscreen preview of the currently-selected node's output.
+  const [fullscreenNodeId, setFullscreenNodeId] = useState<NodeId | null>(null);
 
   // Refs for DOM / interaction state that shouldn't cause re-renders.
   const canvasRef = useRef<HTMLDivElement | null>(null);
@@ -455,6 +463,7 @@ export function NodeEditor(props: NodeEditorProps) {
 
       if (e.key === 'Escape') {
         if (contextMenu) { setContextMenu(null); return; }
+        if (fullscreenNodeId) { e.preventDefault(); setFullscreenNodeId(null); return; }
         if (!inField) {
           e.preventDefault();
           // If we have a multi-selection, clear it first; else close the editor.
@@ -470,6 +479,9 @@ export function NodeEditor(props: NodeEditorProps) {
 
       if (inField) return; // don't hijack typing
 
+      // Track ⌘/Ctrl state so pointer handlers can react (⌘-drag = pan).
+      if (e.metaKey || e.ctrlKey) setMetaDown(true);
+
       // Clipboard shortcuts.
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey) {
         const k = e.key.toLowerCase();
@@ -480,7 +492,15 @@ export function NodeEditor(props: NodeEditorProps) {
       }
 
       if (e.key === ' ') {
-        setSpaceDown(true);
+        // Spacebar toggles fullscreen preview of the primary selected node.
+        // If nothing is selected, do nothing.
+        e.preventDefault();
+        const pid = primaryIdRef.current;
+        if (fullscreenNodeId) {
+          setFullscreenNodeId(null);
+        } else if (pid) {
+          setFullscreenNodeId(pid);
+        }
         return;
       }
 
@@ -500,7 +520,7 @@ export function NodeEditor(props: NodeEditorProps) {
       }
     }
     function onKeyUp(e: KeyboardEvent) {
-      if (e.key === ' ') setSpaceDown(false);
+      if (!e.metaKey && !e.ctrlKey) setMetaDown(false);
     }
     window.addEventListener('keydown', onKey);
     window.addEventListener('keyup', onKeyUp);
@@ -508,7 +528,10 @@ export function NodeEditor(props: NodeEditorProps) {
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [triggerSave, triggerClose, selectedEdgeId, contextMenu, doCopy, doCut, doPaste, doSelectAll, setSelection]);
+  }, [
+    triggerSave, triggerClose, selectedEdgeId, contextMenu, doCopy, doCut,
+    doPaste, doSelectAll, setSelection, fullscreenNodeId,
+  ]);
 
   // -------------------------------------------------------------------------
   // Pan / zoom / marquee
@@ -523,8 +546,16 @@ export function NodeEditor(props: NodeEditorProps) {
       target.classList.contains('ne-edges');
     if (!onEmpty) return;
 
-    // Middle-button or space+drag starts pan.
-    const wantsPan = e.button === 1 || (e.button === 0 && spaceDown);
+    // Pull keyboard focus off any inspector/text-prompt textarea so keyboard
+    // shortcuts (⌘X to cut selection, Space to preview, etc.) work again.
+    const active = document.activeElement as HTMLElement | null;
+    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) {
+      active.blur();
+    }
+
+    // Middle-button or ⌘/Ctrl-drag on empty canvas starts pan.
+    // (Switched from Space-drag to ⌘-drag so Space is free for fullscreen preview.)
+    const wantsPan = e.button === 1 || (e.button === 0 && metaDown);
     if (wantsPan) {
       panningRef.current = {
         startX: e.clientX,
@@ -837,7 +868,65 @@ export function NodeEditor(props: NodeEditorProps) {
     if (e.button !== 0) return;
     e.stopPropagation();
 
+    // Steal focus back from any textarea so keyboard shortcuts work.
+    const active = document.activeElement as HTMLElement | null;
+    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) {
+      active.blur();
+    }
+
     const additive = e.shiftKey || e.metaKey;
+    const wantsDuplicate = e.altKey;
+
+    // Option-drag duplicates the current selection (FiCal-style). We clone
+    // the selected set in place (dx=dy=0), swap `node` for its new twin, and
+    // let the normal drag path move the copies. Original nodes stay put.
+    if (wantsDuplicate) {
+      const cur = selectedIdsRef.current;
+      // If the pointer-down node isn't in the current selection, dup just it.
+      const sourceIds = cur.has(node.id) && cur.size > 0
+        ? new Set<NodeId>(cur)
+        : new Set<NodeId>([node.id]);
+      const clip = copyNodesToClipboard(graphRef.current, sourceIds);
+      const { graph: nextGraph, newIds } = pasteClipboard(graphRef.current, clip, 0, 0);
+      // Find the paste-mapped id for the pointer-down node so we anchor drag
+      // on the correct copy. `pasteClipboard` doesn't expose the id map, so
+      // we recover it by matching order: `newIds` is in the same order as
+      // `clip.nodes`, which is in the same order as `g.nodes.filter(sel)`.
+      const orderedSourceIds = graphRef.current.nodes
+        .filter((n) => sourceIds.has(n.id))
+        .map((n) => n.id);
+      const idxOfAnchor = orderedSourceIds.indexOf(node.id);
+      const anchorNewId = idxOfAnchor >= 0 ? newIds[idxOfAnchor] : newIds[0];
+      dispatch({ type: 'PASTE_GRAPH', graph: nextGraph });
+      setSelection(newIds);
+      // Re-target the drag onto the new anchor copy. It shares (x,y) with
+      // the original, so screen coordinates line up.
+      const anchorCopy = nextGraph.nodes.find((n) => n.id === anchorNewId);
+      if (!anchorCopy) return;
+      const startPositions = new Map<NodeId, { x: number; y: number }>();
+      for (const id of newIds) {
+        const n = nextGraph.nodes.find((nn) => nn.id === id);
+        if (n) startPositions.set(id, { x: n.x, y: n.y });
+      }
+      const c = screenToCanvas(e.clientX, e.clientY);
+      const nc = nodeCenter(anchorCopy);
+      draggingRef.current = {
+        anchorId: anchorCopy.id,
+        offsetX: c.x - anchorCopy.x,
+        offsetY: c.y - anchorCopy.y,
+        startPositions,
+        anchorCenter: { x: nc.x, y: nc.y },
+        anchorSize: { w: nc.w, h: nc.h },
+        started: false,
+        downClient: { x: e.clientX, y: e.clientY },
+        additive: false,
+      };
+      suppressNextClickRef.current = anchorCopy.id;
+      canvasRef.current?.setPointerCapture(e.pointerId);
+      setSelectedEdgeId(null);
+      return;
+    }
+
     // Selection semantics:
     //   - plain click on unselected: replace selection with [node]
     //   - plain click on already-selected: keep selection (allows group drag)
@@ -1146,7 +1235,7 @@ export function NodeEditor(props: NodeEditorProps) {
         />
         <div
           ref={canvasRef}
-          className={`ne-canvas ${panningRef.current ? 'is-panning' : spaceDown ? 'is-space' : ''}`}
+          className={`ne-canvas ${panningRef.current ? 'is-panning' : metaDown ? 'is-space' : ''}`}
           onPointerDown={onCanvasPointerDown}
           onPointerMove={onCanvasPointerMove}
           onPointerUp={onCanvasPointerUp}
@@ -1279,6 +1368,9 @@ export function NodeEditor(props: NodeEditorProps) {
                 selected={selectedIds.has(node.id)}
                 inFlight={inFlight.has(node.id)}
                 graph={graph}
+                onChangeData={(patch) =>
+                  dispatch({ type: 'UPDATE_NODE_DATA', id: node.id, patch })
+                }
                 onHeaderPointerDown={(e) => onNodeHeaderPointerDown(e, node)}
                 onClick={(e) => onNodeClick(e, node.id)}
                 onContextMenu={(e) => onNodeContextMenu(e, node.id)}
@@ -1288,7 +1380,7 @@ export function NodeEditor(props: NodeEditorProps) {
           </div>
 
           <div className="ne-hint">
-            Drag empty canvas to select · Shift-click to add · ⌘X/⌘C/⌘V · Drag port endpoints to reroute · Drop a node on a wire to insert · Space+drag to pan · ⌘S to save
+            Drag empty canvas to select · Shift-click to add · ⌘X/⌘C/⌘V · Opt-drag to duplicate · Space to preview selected · ⌘-drag to pan · ⌘S to save
           </div>
         </div>
 
@@ -1348,6 +1440,41 @@ export function NodeEditor(props: NodeEditorProps) {
           </div>
         </div>
       )}
+
+      {/* Fullscreen preview of the selected node's output (Space toggles). */}
+      {fullscreenNodeId && (() => {
+        const n = graph.nodes.find((x) => x.id === fullscreenNodeId);
+        const url = n?.output?.dataUrl;
+        const kind = n?.output?.kind;
+        return (
+          <div
+            className="ne-fullscreen-backdrop"
+            onClick={() => setFullscreenNodeId(null)}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <div className="ne-fullscreen-inner" onClick={(e) => e.stopPropagation()}>
+              {url ? (
+                kind === 'video' ? (
+                  <video src={url} controls autoPlay loop playsInline />
+                ) : (
+                  <img src={url} alt="" draggable={false} />
+                )
+              ) : (
+                <div className="ne-fullscreen-empty">
+                  This node has no output yet. Run the graph, then press Space again.
+                </div>
+              )}
+              <button
+                className="ne-fullscreen-close"
+                onClick={() => setFullscreenNodeId(null)}
+                title="Close (Space / Esc)"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
