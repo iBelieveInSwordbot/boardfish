@@ -22,7 +22,12 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
-app.use(express.json({ limit: '5mb' }));
+// FAL requests to Nano Banana Pro with N reference images push the JSON
+// body past Express's default 100 kb limit fast. Each ref image is inlined
+// as a base64 data URL by the browser (raw file bytes * 1.33). Cap 100 mb
+// to accommodate 6 refs at 4K + headroom for edit endpoints. If you ever
+// see PayloadTooLargeError from bodyParser, bump this.
+app.use(express.json({ limit: '100mb' }));
 
 const PORT = Number(process.env.PORT || 5174);
 // Default bind is loopback-only. When serving over Tailscale (or any LAN), pass

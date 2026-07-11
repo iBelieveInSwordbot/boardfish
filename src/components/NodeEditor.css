@@ -1056,14 +1056,27 @@
 /* Native <video controls> UI stays inside the thumbnail; make sure the
    default video element fills the wrapper. Explicit cursor keeps the mouse
    pointer visible when hovering over the play/pause bar (a Chromium issue
-   inside CSS-transformed parents that made the cursor vanish). */
+   inside CSS-transformed parents that made the cursor vanish). We paint
+   the cursor at every level of the video subtree because the shadow-DOM
+   controls layer inherits from the video element and a transform ancestor
+   was clobbering the pointer sprite. */
+.ne-media-thumb-wrap {
+  cursor: default;
+}
 .ne-media-thumb-wrap video.ne-node-preview-thumb {
   background: #000;
   cursor: default;
 }
 .ne-media-thumb-wrap video.ne-node-preview-thumb::-webkit-media-controls-panel,
 .ne-media-thumb-wrap video.ne-node-preview-thumb::-webkit-media-controls,
-.ne-media-thumb-wrap video.ne-node-preview-thumb::-webkit-media-controls-play-button {
+.ne-media-thumb-wrap video.ne-node-preview-thumb::-webkit-media-controls-enclosure,
+.ne-media-thumb-wrap video.ne-node-preview-thumb::-webkit-media-controls-overlay-play-button,
+.ne-media-thumb-wrap video.ne-node-preview-thumb::-webkit-media-controls-play-button,
+.ne-media-thumb-wrap video.ne-node-preview-thumb::-webkit-media-controls-timeline,
+.ne-media-thumb-wrap video.ne-node-preview-thumb::-webkit-media-controls-mute-button,
+.ne-media-thumb-wrap video.ne-node-preview-thumb::-webkit-media-controls-fullscreen-button,
+.ne-media-thumb-wrap video.ne-node-preview-thumb::-webkit-media-controls-current-time-display,
+.ne-media-thumb-wrap video.ne-node-preview-thumb::-webkit-media-controls-time-remaining-display {
   cursor: pointer !important;
 }
 

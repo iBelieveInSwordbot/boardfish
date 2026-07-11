@@ -77,14 +77,15 @@ export function readNodeHistory(node: BaseNode): NodeOutput[] {
  * components hook into an effect that mirrors that behavior on the client
  * side. See `pushToHistory` for the reducer-friendly variant.
  */
-export const HISTORY_LIMIT = 24;
+// Matt's rule (2026-07-11): never auto-truncate history. Append forever;
+// the user prunes explicitly via the per-frame trash icon. Keeping the
+// constant exported for callers that still reference it, but it's advisory.
+export const HISTORY_LIMIT = Infinity;
 
 export function appendHistory(node: BaseNode, prev: NodeOutput | undefined): NodeOutput[] {
   const cur = readNodeHistory(node);
   if (!prev) return cur;
-  const next = [...cur, prev];
-  if (next.length > HISTORY_LIMIT) next.splice(0, next.length - HISTORY_LIMIT);
-  return next;
+  return [...cur, prev];
 }
 
 /**
@@ -162,7 +163,7 @@ export function promoteFrameToCurrent(
 
 /** Keys on `node.data` that are private editor state and should NOT be
  * serialized. Keep this list in sync with any new `__foo` piggy-backs. */
-const INTERNAL_DATA_KEYS = new Set(['__size', '__history', '__runtime']);
+const INTERNAL_DATA_KEYS = new Set(['__size', '__history', '__runtime', '__historyExtras', '__viewIdx']);
 
 function xmlEscape(s: string): string {
   return s
@@ -309,7 +310,21 @@ export function updateNodeData(
   let droppedPortIds: Set<PortId> | null = null;
   const nodes = g.nodes.map((n) => {
     if (n.id !== id) return n;
-    const nextData = { ...n.data, ...patch };
+    // Special-case: `__historyExtras` is a DELTA — append to live __history
+    // instead of overwriting. This lets the executor push multi-image extras
+    // without clobbering entries the mirror hook has already added.
+    const extrasRaw = patch.__historyExtras;
+    const patchClean = { ...patch };
+    if (Array.isArray(extrasRaw) && extrasRaw.length > 0) {
+      const existing = readNodeHistory(n);
+      const merged = [...existing, ...(extrasRaw as NodeOutput[])];
+      patchClean.__history = merged;
+      delete patchClean.__historyExtras;
+    } else if (Array.isArray(extrasRaw)) {
+      // Empty extras array — just drop the key so it doesn't linger on data.
+      delete patchClean.__historyExtras;
+    }
+    const nextData = { ...n.data, ...patchClean };
     const nextPorts = defaultPortsFor(n.kind, nextData);
     // Detect any ports that existed before but are gone now, so we can prune
     // edges below.

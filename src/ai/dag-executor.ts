@@ -137,13 +137,17 @@ export async function executeGraph(
         signal,
       });
       node.output = mergeOutput(output, Date.now());
-      // If runImageGen (or similar) mutated node.data during the run (e.g.
-      // pushed multi-image extras onto __history), forward that as a
-      // dataPatch so the live React state picks it up. Whitelist keys so
-      // we don't accidentally leak internal-only stuff.
+      // If runImageGen (or similar) staged multi-image extras during the
+      // run, forward them as a DELTA (`__historyExtras`) rather than the
+      // full `__history` array. The reducer appends to live __history so
+      // pushes from the mirror hook aren't lost.
       const dataPatch: Record<string, unknown> = {};
-      if (Array.isArray((node.data as Record<string, unknown>).__history)) {
-        dataPatch.__history = (node.data as Record<string, unknown>).__history;
+      const extras = (node.data as Record<string, unknown>).__historyExtras;
+      if (Array.isArray(extras) && extras.length > 0) {
+        dataPatch.__historyExtras = extras;
+        // Clear on the executor's snapshot so a subsequent run in the same
+        // pass doesn't double-forward stale extras.
+        node.data = { ...(node.data as Record<string, unknown>), __historyExtras: [] };
       }
       onEvent?.({
         kind: 'output',
@@ -484,20 +488,20 @@ async function runImageGen(
     const { dataUrl: d, mime: m } = await urlToDataUrl(u);
     downloaded.push({ dataUrl: d, mime: m, sourceUrl: u });
   }
-  // Extras (indices 1..N-1) become synthetic history entries appended to the
-  // node's __history. Order: keep FAL's natural ordering (variant 1, 2, 3…).
-  // NOTE: we deliberately do NOT push the current `node.output` here — the
+  // Extras (indices 1..N-1) become synthetic history entries. Stash them on
+  // `node.data.__historyExtras` (a DELTA, not the full replacement) so the
+  // React-side reducer can APPEND them to the live __history without
+  // clobbering entries the mirror hook has already pushed.
+  //
+  // We deliberately do NOT push the current `node.output` here — the
   // React-side `useHistoryMirror` effect handles that push when it sees the
-  // new `generatedAt` on the incoming output. Doing it here too would cause
-  // a duplicate. Just append the N-1 extras.
+  // new `generatedAt` on the incoming output.
   if (downloaded.length > 1) {
     const now = Date.now();
-    const existingHistory = Array.isArray((node.data as Record<string, unknown>).__history)
-      ? (((node.data as Record<string, unknown>).__history) as NodeOutput[]).slice()
-      : [];
+    const extras: NodeOutput[] = [];
     for (let i = 1; i < downloaded.length; i++) {
       const d = downloaded[i];
-      existingHistory.push({
+      extras.push({
         kind: 'image',
         dataUrl: d.dataUrl,
         mime: d.mime,
@@ -506,7 +510,7 @@ async function runImageGen(
         generatedAt: now + i, // stable, monotonic per-extra timestamp
       } as NodeOutput);
     }
-    node.data = { ...node.data, __history: existingHistory };
+    node.data = { ...node.data, __historyExtras: extras };
   }
   const first = downloaded[0];
   const imgUrl = first.sourceUrl;
