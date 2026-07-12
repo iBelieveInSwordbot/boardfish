@@ -34,8 +34,23 @@ function App() {
     }
   });
   const [lightboxOpen, setLightboxOpen] = useState(false);
-  // Panel id currently opened in the node editor (null = closed).
-  const [nodeEditorPanelId, setNodeEditorPanelId] = useState<string | null>(null);
+  // Node editor keep-alive stack. Each entry is a mounted NodeEditor.
+  // `detached: true` means it's still finishing gens in the background
+  // but the user has "closed" it and returned to the storyboard — the
+  // editor stays mounted (hidden) so FAL results still land on the panel.
+  // The most-recently-opened NON-detached entry is visible; everything
+  // else renders hidden. When a detached entry's last gen finishes,
+  // onDetachedFinish auto-saves and removes it from the stack.
+  type NodeEditorEntry = { panelId: string; detached: boolean };
+  const [nodeEditorStack, setNodeEditorStack] = useState<NodeEditorEntry[]>([]);
+  const visibleEditorPanelId = (() => {
+    // Walk from the end; the last non-detached entry is visible.
+    for (let i = nodeEditorStack.length - 1; i >= 0; i--) {
+      if (!nodeEditorStack[i].detached) return nodeEditorStack[i].panelId;
+    }
+    return null;
+  })();
+  const nodeEditorPanelId = visibleEditorPanelId;
   const [fullscreen, setFullscreen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
 
@@ -204,7 +219,15 @@ function App() {
         <Canvas
           state={state}
           dispatch={dispatch}
-          onOpenNodeEditor={(panelId) => setNodeEditorPanelId(panelId)}
+          onOpenNodeEditor={(panelId) => {
+            setNodeEditorStack((prev) => {
+              // If this panel is already mounted (visible or detached), bring
+              // it back to the top as non-detached instead of adding a
+              // duplicate instance. Its ongoing gens continue seamlessly.
+              const existing = prev.filter((e) => e.panelId !== panelId);
+              return [...existing, { panelId, detached: false }];
+            });
+          }}
         />
         {effectiveInspectorOpen && <Inspector state={state} dispatch={dispatch} />}
       </div>
@@ -230,8 +253,13 @@ function App() {
       {aiOpen && (
         <AIDrawer state={state} dispatch={dispatch} onClose={() => setAiOpen(false)} />
       )}
-      {nodeEditorPanelId && (() => {
-        const editing = flatPanels.find((p) => p.id === nodeEditorPanelId);
+      {/* Node editor stack — the LAST non-detached entry is visible; other
+          entries (either earlier or detached) render hidden but still receive
+          FAL results so gens survive bouncing back to the storyboard. */}
+      {nodeEditorStack.map((entry) => {
+        const { panelId, detached } = entry;
+        const isVisible = panelId === visibleEditorPanelId && !detached;
+        const editing = flatPanels.find((p) => p.id === panelId);
         if (!editing) return null;
         const rawSeedPrompt =
           editing.aiPrompt ??
@@ -274,8 +302,39 @@ function App() {
             editing.imageDataUrl ?? undefined,
             seedImageGenHistory.length > 0 ? seedImageGenHistory : undefined,
           );
+        // Shared save handler so detached-finish and explicit save both
+        // land the graph + Out media the same way.
+        function applyNodeEditorSave(nextGraph: NodeGraph, outMedia:
+          | { kind: 'image'; dataUrl: string; mime: string }
+          | { kind: 'video'; dataUrl: string; mime: string; posterDataUrl: string | null }
+          | null) {
+          dispatch({ type: 'SET_PANEL_NODE_GRAPH', panelId: editing!.id, graph: nextGraph });
+          if (outMedia?.kind === 'image') {
+            dispatch({
+              type: 'APPLY_AI_IMAGE',
+              panelId: editing!.id,
+              dataUrl: outMedia.dataUrl,
+              imageName: `Node ${new Date().toISOString().slice(0, 10)} ${editing!.id.slice(0, 6)}.jpg`,
+              prompt: seedPrompt,
+              generatedAt: Date.now(),
+            });
+            dispatch({ type: 'UPDATE_PANEL', id: editing!.id, patch: { videoDataUrl: null } });
+          } else if (outMedia?.kind === 'video') {
+            const poster = outMedia.posterDataUrl ?? editing!.imageDataUrl ?? '';
+            dispatch({
+              type: 'APPLY_AI_VIDEO',
+              panelId: editing!.id,
+              videoDataUrl: outMedia.dataUrl,
+              posterDataUrl: poster,
+              prompt: seedPrompt,
+              generatedAt: Date.now(),
+            });
+          }
+        }
         return (
           <NodeEditor
+            key={panelId}
+            hidden={!isVisible}
             initialGraph={savedGraph}
             panelPrompt={seedPrompt}
             panelAspect={ratioToLabel(state.settings.panelAspectRatio)}
@@ -288,40 +347,28 @@ function App() {
                 thumbUrl: p.imageDataUrl ?? undefined,
               }))}
             onSave={(nextGraph, outMedia) => {
-              // Persist the graph on the panel.
-              dispatch({ type: 'SET_PANEL_NODE_GRAPH', panelId: editing.id, graph: nextGraph });
-              // Apply the Out node's result to the panel.
-              if (outMedia?.kind === 'image') {
-                dispatch({
-                  type: 'APPLY_AI_IMAGE',
-                  panelId: editing.id,
-                  dataUrl: outMedia.dataUrl,
-                  imageName: `Node ${new Date().toISOString().slice(0, 10)} ${editing.id.slice(0, 6)}.jpg`,
-                  prompt: seedPrompt,
-                  generatedAt: Date.now(),
-                });
-                // Clear any prior video attachment (this Out is a still now).
-                dispatch({ type: 'UPDATE_PANEL', id: editing.id, patch: { videoDataUrl: null } });
-              } else if (outMedia?.kind === 'video') {
-                // Use the extracted first-frame poster (or the existing panel
-                // image as a last-resort fallback) so the storyboard grid
-                // and PDF export have a still to render.
-                const poster = outMedia.posterDataUrl ?? editing.imageDataUrl ?? '';
-                dispatch({
-                  type: 'APPLY_AI_VIDEO',
-                  panelId: editing.id,
-                  videoDataUrl: outMedia.dataUrl,
-                  posterDataUrl: poster,
-                  prompt: seedPrompt,
-                  generatedAt: Date.now(),
-                });
-              }
-              setNodeEditorPanelId(null);
+              applyNodeEditorSave(nextGraph, outMedia);
+              setNodeEditorStack((prev) => prev.filter((e) => e.panelId !== panelId));
             }}
-            onClose={() => setNodeEditorPanelId(null)}
+            onClose={() => {
+              // Idle close: unmount this editor.
+              setNodeEditorStack((prev) => prev.filter((e) => e.panelId !== panelId));
+            }}
+            onCloseWhileBusy={() => {
+              // In-flight close: flip this entry to detached so it stays
+              // mounted (hidden) and continues to receive FAL results.
+              setNodeEditorStack((prev) =>
+                prev.map((e) => (e.panelId === panelId ? { ...e, detached: true } : e)),
+              );
+              return true;
+            }}
+            onDetachedFinish={(nextGraph, outMedia) => {
+              applyNodeEditorSave(nextGraph, outMedia);
+              setNodeEditorStack((prev) => prev.filter((e) => e.panelId !== panelId));
+            }}
           />
         );
-      })()}
+      })}
       {lightboxOpen && selectedPanel && (
         <PanelLightbox
           panel={selectedPanel}

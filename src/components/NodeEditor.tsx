@@ -87,6 +87,24 @@ export type NodeEditorProps = {
       | null,
   ) => void;
   onClose: () => void;
+  /** When true, render as visually hidden but keep the component mounted so
+   *  in-flight FAL jobs still deliver results into the store. Used by the
+   *  keep-alive stack when the user closes an editor while gens are running. */
+  hidden?: boolean;
+  /** Fires when a hidden/detached editor's last in-flight gen finishes so the
+   *  App can auto-save and unmount it. Never fires while `hidden` is false. */
+  onDetachedFinish?: (
+    graph: NodeGraph,
+    outMedia:
+      | { kind: 'image'; dataUrl: string; mime: string }
+      | { kind: 'video'; dataUrl: string; mime: string; posterDataUrl: string | null }
+      | null,
+  ) => void;
+  /** Fires when the user hits Close while in-flight gens exist. The App is
+   *  expected to hide this editor (set hidden=true) rather than unmount it.
+   *  Return true to let the editor also flip to hidden internally; return
+   *  false to keep the current visibility. */
+  onCloseWhileBusy?: () => boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -185,7 +203,7 @@ const DROP_ON_WIRE_RADIUS = 40;
 // ---------------------------------------------------------------------------
 
 export function NodeEditor(props: NodeEditorProps) {
-  const { initialGraph, panelPrompt, panelAspect, availablePanels, onSave, onClose } = props;
+  const { initialGraph, panelPrompt, panelAspect, availablePanels, onSave, onClose, hidden, onDetachedFinish, onCloseWhileBusy } = props;
 
   // Seed default 3-node chain if the incoming graph is empty. Applied once.
   const seeded = useMemo<NodeGraph>(() => {
@@ -606,6 +624,62 @@ export function NodeEditor(props: NodeEditorProps) {
   // Save / close
   // -------------------------------------------------------------------------
 
+  /** Build the outMedia object for the current Out node output (or null if
+   *  Out has no media). Shared between triggerSave and the detached-finish
+   *  auto-save path. Does not run the graph — caller should refresh first if
+   *  they need latest outputs. */
+  const outMediaFromGraph = useCallback(async (g: NodeGraph) => {
+    const out = findOutNode(g);
+    if (!out || !out.output || !out.output.dataUrl) return null;
+    if (out.output.kind === 'image') {
+      return {
+        kind: 'image' as const,
+        dataUrl: out.output.dataUrl,
+        mime: out.output.mime ?? 'image/png',
+      };
+    }
+    if (out.output.kind === 'video') {
+      let poster: string | null = null;
+      try {
+        poster = await extractVideoPoster(out.output.dataUrl);
+      } catch {
+        poster = null;
+      }
+      return {
+        kind: 'video' as const,
+        dataUrl: out.output.dataUrl,
+        mime: out.output.mime ?? 'video/mp4',
+        posterDataUrl: poster,
+      };
+    }
+    return null;
+  }, []);
+
+  // Detached-finish: when hidden AND inFlight drops to 0, auto-save via
+  // onDetachedFinish so the App can unmount us. Requires that at least one
+  // gen actually ran while hidden (otherwise the very act of setting hidden
+  // would fire finish before anything happens).
+  const hadInFlightWhileHiddenRef = useRef(false);
+  useEffect(() => {
+    if (!hidden) {
+      hadInFlightWhileHiddenRef.current = false;
+      return;
+    }
+    if (inFlight.size > 0) {
+      hadInFlightWhileHiddenRef.current = true;
+      return;
+    }
+    // hidden AND inFlight is 0. If we saw in-flight earlier while hidden,
+    // fire the detached-finish handler now.
+    if (hadInFlightWhileHiddenRef.current && onDetachedFinish) {
+      hadInFlightWhileHiddenRef.current = false;
+      (async () => {
+        const media = await outMediaFromGraph(graphRef.current);
+        onDetachedFinish(graphRef.current, media);
+      })();
+    }
+  }, [hidden, inFlight, onDetachedFinish, outMediaFromGraph]);
+
   const triggerSave = useCallback(async () => {
     // Matt's rule: on save, always refresh the Out node from upstream so the
     // storyboard panel picks up whatever the current graph would produce
@@ -683,12 +757,21 @@ export function NodeEditor(props: NodeEditorProps) {
   }, [onSave, dispatch]);
 
   const triggerClose = useCallback(() => {
+    // If any gens are still running, prefer keep-alive over unmount so
+    // Matt can bounce back to the storyboard while things finish. The App
+    // hides us via `hidden` prop; we keep receiving FAL results and, when
+    // the last one lands, dispatch onDetachedFinish so the App can save
+    // and unmount us.
+    if (inFlightRef.current.size > 0 && onCloseWhileBusy) {
+      onCloseWhileBusy();
+      return;
+    }
     if (dirtyRef.current) {
       setConfirmClose(true);
     } else {
       onClose();
     }
-  }, [onClose]);
+  }, [onClose, onCloseWhileBusy]);
 
   // -------------------------------------------------------------------------
   // Export helpers (Save Image / XML)
@@ -790,6 +873,9 @@ export function NodeEditor(props: NodeEditorProps) {
   // -------------------------------------------------------------------------
 
   useEffect(() => {
+    // When keep-alive-hidden, don't hijack global keys — the storyboard
+    // owns them again so Matt can navigate panels while gens run.
+    if (hidden) return undefined;
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
       const inField =
@@ -959,7 +1045,7 @@ export function NodeEditor(props: NodeEditorProps) {
   }, [
     triggerSave, triggerClose, selectedEdgeId, contextMenu, doCopy, doCut,
     doPaste, doSelectAll, setSelection, fullscreenNodeId, promptEditorNodeId, spaceDown,
-    closeFullscreen, fullscreenMode,
+    closeFullscreen, fullscreenMode, hidden,
   ]);
 
   // -------------------------------------------------------------------------
@@ -1624,7 +1710,14 @@ export function NodeEditor(props: NodeEditorProps) {
 
   return (
     <PanelRefContext.Provider value={{ panels: availablePanels ?? [] }}>
-    <div className="ne-root" onClick={() => setContextMenu(null)}>
+    <div
+      className="ne-root"
+      onClick={() => setContextMenu(null)}
+      // When keep-alive-hidden, stay in the DOM tree but visually gone and
+      // non-interactive. FAL results still flow through dispatch → store.
+      style={hidden ? { display: 'none', pointerEvents: 'none' } : undefined}
+      aria-hidden={hidden ? 'true' : undefined}
+    >
       {/* Top bar */}
       <div className="ne-topbar">
         <div className="ne-topbar-title">Node Editor</div>
@@ -1965,6 +2058,31 @@ Drag empty canvas to select · Shift-click to add · ⌘X/⌘C/⌘V · Opt-drag 
                 // Keep the fullscreen cursor on the hearted frame so the
                 // counter reads its position (e.g. still "4/5" for that pick).
                 setFullscreenIndex(frameIdx);
+                // Also directly re-run every Out node so downstream picks
+                // up the pinned frame immediately (don't wait for the debounced
+                // auto-refresh signature loop — it can miss when the pin
+                // update is followed by a fullscreen state change on the same
+                // render). We patch the working graph in-place with the fresh
+                // __pinnedGeneratedAt before running so collectInputs sees it.
+                setTimeout(() => {
+                  const outNodeNow = graphRef.current.nodes.find((x) => x.kind === 'out');
+                  if (!outNodeNow) return;
+                  const hasUpstream = graphRef.current.edges.some((e) => e.to.nodeId === outNodeNow.id);
+                  if (!hasUpstream) return;
+                  executeGraph(graphRef.current, {
+                    startAt: outNodeNow.id,
+                    onEvent: (ev) => {
+                      if (ev.kind === 'output') {
+                        if (ev.dataPatch) {
+                          dispatch({ type: 'UPDATE_NODE_DATA', id: ev.nodeId, patch: ev.dataPatch });
+                        }
+                        dispatch({ type: 'SET_NODE_OUTPUT', id: ev.nodeId, output: ev.output });
+                      }
+                    },
+                  }).catch((err) => {
+                    console.warn('[NodeEditor] Out refresh after heart failed:', err);
+                  });
+                }, 0);
               }}
             />
           </div>
