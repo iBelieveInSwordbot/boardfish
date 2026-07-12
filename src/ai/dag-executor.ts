@@ -500,17 +500,43 @@ async function runImageGen(
   const endpoint = refImages.length > 0 && model.editEndpoint
     ? model.editEndpoint
     : model.endpoint;
-  ctx.onProgress(
-    `Submitting to ${model.label} (${endpoint})${refImages.length ? ` with ${refImages.length} ref image${refImages.length > 1 ? 's' : ''}` : ''}…`,
-  );
-  const res = await runFalJob(endpoint, payload);
-  ctx.onProgress('FAL job complete, downloading image…');
 
-  // Multi-image models (num_images > 1) return N images. Grab them all so no
-  // gen gets silently discarded — the first becomes `node.output` (the live
-  // current), the rest get pushed into `node.data.__history` right here so
-  // the history strip shows them immediately.
-  const imgUrls = extractImageUrls(res.result);
+  // Total variants requested. FAL's `num_images` is capped at 4 per job by
+  // most image endpoints, so we chunk into multiple concurrent jobs of up
+  // to 4 each. Cap the total at 20 to prevent runaway.
+  const requestedVariants = Math.max(1, Math.min(20, Math.floor(Number((node.data as { num_images?: unknown }).num_images ?? 1))));
+  const perJobCap = 4;
+  const chunks: number[] = [];
+  let remaining = requestedVariants;
+  while (remaining > 0) {
+    const c = Math.min(perJobCap, remaining);
+    chunks.push(c);
+    remaining -= c;
+  }
+  ctx.onProgress(
+    `Submitting ${chunks.length} job${chunks.length > 1 ? 's' : ''} to ${model.label} (${endpoint}) for ${requestedVariants} variant${requestedVariants > 1 ? 's' : ''}${refImages.length ? ` with ${refImages.length} ref image${refImages.length > 1 ? 's' : ''}` : ''}…`,
+  );
+
+  // Fire each chunked job concurrently. Each job gets its own num_images
+  // override on the payload; other keys (prompt, aspect, refs, seed) stay.
+  // If a seed is set and multiple jobs run, we offset each chunk by its
+  // index so we don't just get 4 copies of the same seed grid.
+  const jobs = chunks.map((chunkSize, chunkIdx) => {
+    const chunkPayload: Record<string, unknown> = { ...payload, num_images: chunkSize };
+    if (typeof chunkPayload.seed === 'number' && chunkIdx > 0) {
+      chunkPayload.seed = (chunkPayload.seed as number) + chunkIdx * 1_000_003;
+    }
+    return runFalJob(endpoint, chunkPayload);
+  });
+  const results = await Promise.all(jobs);
+  const firstReqId = results[0].requestId;
+  ctx.onProgress(`FAL jobs complete, downloading ${requestedVariants} image${requestedVariants > 1 ? 's' : ''}…`);
+
+  // Flatten all image URLs across all jobs, preserving order.
+  const imgUrls: string[] = [];
+  for (const r of results) {
+    imgUrls.push(...extractImageUrls(r.result));
+  }
   if (imgUrls.length === 0) {
     throw new Error(`Could not find an image URL in ${model.label} response.`);
   }
@@ -537,7 +563,7 @@ async function runImageGen(
         dataUrl: d.dataUrl,
         mime: d.mime,
         sourceUrl: d.sourceUrl,
-        requestId: res.requestId,
+        requestId: firstReqId,
         generatedAt: now + i, // stable, monotonic per-extra timestamp
       } as NodeOutput);
     }
@@ -552,7 +578,7 @@ async function runImageGen(
     dataUrl,
     mime,
     sourceUrl: imgUrl,
-    requestId: res.requestId,
+    requestId: firstReqId,
   };
 }
 
@@ -612,23 +638,66 @@ async function runMovieGen(
   const endpoint = refImages.length > 0 && model.editEndpoint
     ? model.editEndpoint
     : model.endpoint;
-  ctx.onProgress(
-    `Submitting to ${model.label} (${endpoint})${refImages.length ? ' with first-frame reference' : ''}…`,
-  );
-  const res = await runFalJob(endpoint, payload);
-  ctx.onProgress('FAL job complete, downloading video…');
 
-  const vidUrl = extractVideoUrl(res.result);
-  if (!vidUrl) {
+  // Variants: FAL video endpoints don't accept num_videos natively, so fire
+  // N parallel jobs of 1 each. Cap at 10 (each job costs 1–5 min and $$$).
+  const requestedVariants = Math.max(1, Math.min(10, Math.floor(Number((node.data as { num_videos?: unknown }).num_videos ?? 1))));
+  ctx.onProgress(
+    `Submitting ${requestedVariants} job${requestedVariants > 1 ? 's' : ''} to ${model.label} (${endpoint})${refImages.length ? ' with first-frame reference' : ''}…`,
+  );
+
+  // Per-job payload: same base, but bump the seed by job index when a seed
+  // is pinned so we don't get N identical videos.
+  const jobs = Array.from({ length: requestedVariants }, (_, i) => {
+    const jobPayload: Record<string, unknown> = { ...payload };
+    if (typeof jobPayload.seed === 'number' && i > 0) {
+      jobPayload.seed = (jobPayload.seed as number) + i * 1_000_003;
+    }
+    return runFalJob(endpoint, jobPayload);
+  });
+  const results = await Promise.all(jobs);
+  const firstReqId = results[0].requestId;
+  ctx.onProgress(`FAL jobs complete, downloading ${requestedVariants} video${requestedVariants > 1 ? 's' : ''}…`);
+
+  const vidUrls: string[] = [];
+  for (const r of results) {
+    const u = extractVideoUrl(r.result);
+    if (u) vidUrls.push(u);
+  }
+  if (vidUrls.length === 0) {
     throw new Error(`Could not find a video URL in ${model.label} response.`);
   }
-  const { dataUrl, mime } = await urlToDataUrl(vidUrl);
+  const downloaded: Array<{ dataUrl: string; mime: string; sourceUrl: string }> = [];
+  for (const u of vidUrls) {
+    const { dataUrl: d, mime: m } = await urlToDataUrl(u);
+    downloaded.push({ dataUrl: d, mime: m, sourceUrl: u });
+  }
+
+  // Extras (variants 2..N) become synthetic history entries via __historyExtras.
+  if (downloaded.length > 1) {
+    const now = Date.now();
+    const extras: NodeOutput[] = [];
+    for (let i = 1; i < downloaded.length; i++) {
+      const d = downloaded[i];
+      extras.push({
+        kind: 'video',
+        dataUrl: d.dataUrl,
+        mime: d.mime,
+        sourceUrl: d.sourceUrl,
+        requestId: firstReqId,
+        generatedAt: now + i,
+      } as NodeOutput);
+    }
+    node.data = { ...node.data, __historyExtras: extras };
+  }
+
+  const first = downloaded[0];
   return {
     kind: 'video',
-    dataUrl,
-    mime,
-    sourceUrl: vidUrl,
-    requestId: res.requestId,
+    dataUrl: first.dataUrl,
+    mime: first.mime,
+    sourceUrl: first.sourceUrl,
+    requestId: firstReqId,
   };
 }
 
@@ -721,6 +790,11 @@ function buildFalInput(
     if (k === '__runtime' || k.startsWith('__')) continue;
     // Drop any *_url / *_urls fields on the node; refImages arg is the source of truth.
     if (k === 'image_url' || k === 'image_urls') continue;
+    // num_videos is a node-level control ("how many jobs to fire"), not a
+    // FAL input. Executor handles concurrency; do not forward to FAL.
+    if (k === 'num_videos') continue;
+    // refCount is a UI-only stepper for how many ref ports to render.
+    if (k === 'refCount') continue;
     if (v === undefined || v === null) continue;
     if (typeof v === 'string' && v.trim() === '') continue;
     // Per-model coercion. If the model schema says this key is 'select', it

@@ -226,6 +226,8 @@ export function defaultDataFor(kind: NodeKind): Record<string, unknown> {
         // Veo 3 wants a string enum ("4s"/"6s"/"8s"); Kling/Seedance execute
         // via a per-model select/number coercion in the executor.
         duration: '8s',
+        // Variants: default 1. Executor fires N parallel FAL jobs.
+        num_videos: 1,
       };
     case 'out':
       return {};

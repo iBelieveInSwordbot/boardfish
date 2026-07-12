@@ -830,6 +830,59 @@ function renderSeedControl(
 }
 
 /**
+ * Shared variants control for Image Gen and Movie Gen. Renders four preset
+ * chips (1/2/3/4) plus a free-form number field for arbitrary counts.
+ * `dataKey` is the node.data field to write ('num_images' for images,
+ * 'num_videos' for movies). `max` bounds the arbitrary input.
+ */
+function renderVariantsControl(
+  node: BaseNode,
+  onChangeData: (patch: Record<string, unknown>) => void,
+  dataKey: 'num_images' | 'num_videos',
+  max: number,
+) {
+  const raw = Number((node.data as Record<string, unknown>)[dataKey]);
+  const value = Number.isFinite(raw) && raw >= 1 ? Math.min(max, Math.floor(raw)) : 1;
+  const presets = [1, 2, 3, 4];
+  return createElement(
+    Fragment,
+    null,
+    createElement('label', { className: 'ne-inspect-label' }, 'Variants'),
+    createElement(
+      'div',
+      { className: 'ne-inspect-chip-row' },
+      ...presets.map((n) =>
+        createElement(
+          'button',
+          {
+            key: n,
+            type: 'button',
+            className: 'ne-inspect-chip' + (value === n ? ' is-active' : ''),
+            onClick: () => onChangeData({ [dataKey]: n }),
+          },
+          String(n),
+        ),
+      ),
+      createElement('input', {
+        type: 'number',
+        className: 'ne-inspect-input ne-inspect-variants-custom',
+        min: 1,
+        max,
+        step: 1,
+        value,
+        title: `1–${max} variants (over ${presets[presets.length - 1]} fires additional concurrent jobs)`,
+        onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+          const n = Number(e.target.value);
+          if (!Number.isFinite(n)) return;
+          const clamped = Math.max(1, Math.min(max, Math.floor(n)));
+          onChangeData({ [dataKey]: clamped });
+        },
+      }),
+    ),
+  );
+}
+
+/**
  * Model-aware duration control. Reads the current model's `duration` input
  * schema and renders either a select (Veo, Kling: enumerated durations) or a
  * number input (Seedance: 3–12 range). Applies the schema's default so the
@@ -919,7 +972,6 @@ const TextPromptInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) =
 const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
   const modelId = String(node.data.modelId ?? 'nano-banana-pro');
   const aspect = String(node.data.aspect_ratio ?? '16:9');
-  const variants = Number(node.data.num_images ?? 1);
   const url = node.output?.dataUrl;
   // Once a node has produced output, lock the model dropdown. Different
   // models have different input schemas (variants, resolution, duration,
@@ -965,24 +1017,9 @@ const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
         createElement('option', { key: a, value: a }, a),
       ),
     ),
-    // Variants
-    createElement('label', { className: 'ne-inspect-label' }, 'Variants'),
-    createElement(
-      'div',
-      { className: 'ne-inspect-chip-row' },
-      ...[1, 2, 3, 4].map((n) =>
-        createElement(
-          'button',
-          {
-            key: n,
-            type: 'button',
-            className: 'ne-inspect-chip' + (variants === n ? ' is-active' : ''),
-            onClick: () => onChangeData({ num_images: n }),
-          },
-          String(n),
-        ),
-      ),
-    ),
+    // Variants (chips 1–4 + free-form input for arbitrary counts up to 20;
+    // executor chunks into FAL num_images-4 batches when count > 4).
+    renderVariantsControl(node, onChangeData, 'num_images', 20),
     // Ref inputs stepper. Nano Banana Pro accepts multiple reference
     // images; the executor already collects every image on inputs.images.
     // Bumping this adds `ref1`, `ref2`, … ports to the node. Range 1–6.
@@ -1091,6 +1128,10 @@ const MovieGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
     // valid enumerated durations, Seedance gets a clamped number field, and
     // the schema's default fires automatically so the field is never blank.
     renderDurationControl(node, onChangeData),
+    // Variants: FAL video endpoints don't accept num_videos natively, so the
+    // executor fires N parallel jobs of 1 each. Cap at 10 because each job
+    // costs 1–5 min and $$$; 10 concurrent is already aggressive.
+    renderVariantsControl(node, onChangeData, 'num_videos', 10),
     // Random Seed control (video models with a `seed` input in their schema).
     (getFalModel(modelId)?.inputs.some((i) => i.key === 'seed'))
       ? renderSeedControl(node, onChangeData)

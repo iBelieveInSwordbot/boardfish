@@ -582,6 +582,13 @@
   margin-top: 4px;
 }
 .ne-inspect-seed-row .ne-inspect-input { flex: 1; }
+
+/* Arbitrary-count input in the Variants chip row. Sits next to the 1/2/3/4
+   presets; a bit narrower than the seed input since values are small. */
+.ne-inspect-variants-custom {
+  width: 60px;
+  margin-left: 6px;
+}
 .ne-inspect-generate {
   margin-top: 16px;
   width: 100%;
