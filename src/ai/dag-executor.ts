@@ -303,6 +303,33 @@ type ResolvedInputs = {
   byPort: Record<string, NodeOutput | undefined>;
 };
 
+/**
+ * Return the node's effective output, honoring `data.__pinnedGeneratedAt`
+ * when set. The pin references a specific frame by its generatedAt timestamp
+ * rather than a positional index, so it survives new gens that shift the
+ * display order.
+ *
+ * Resolution:
+ *   - If __pinnedGeneratedAt matches node.output.generatedAt → node.output
+ *   - Else if it matches any history[i].generatedAt → that entry
+ *   - Otherwise (pin points at a deleted/missing frame) → node.output
+ */
+function resolvePinnedOutput(src: BaseNode): NodeOutput {
+  const pinnedAtRaw = (src.data as Record<string, unknown>).__pinnedGeneratedAt;
+  const pinnedAt = typeof pinnedAtRaw === 'number' && Number.isFinite(pinnedAtRaw) ? Math.floor(pinnedAtRaw) : null;
+  if (pinnedAt == null) return src.output as NodeOutput;
+  // Note: `BaseNode['output']` is the stored NodeOutput (with `generatedAt`)
+  // from nodes/types.ts. Cast via unknown so TS doesn't confuse it with the
+  // executor's local NodeOutput (which uses `updatedAt` instead).
+  type StoredOutput = { kind?: string; dataUrl?: string; text?: string; mime?: string; generatedAt?: number };
+  const cur = src.output as unknown as StoredOutput | undefined;
+  if (cur && cur.generatedAt === pinnedAt) return cur as unknown as NodeOutput;
+  const histRaw = (src.data as Record<string, unknown>).__history;
+  const hist = Array.isArray(histRaw) ? histRaw as StoredOutput[] : [];
+  const found = hist.find((h) => h.generatedAt === pinnedAt);
+  return ((found ?? cur) as unknown) as NodeOutput;
+}
+
 function collectInputs(
   nodeId: NodeId,
   incoming: Map<NodeId, NodeEdge[]>,
@@ -319,7 +346,11 @@ function collectInputs(
   for (const e of inc) {
     const src = nodesById.get(e.from.nodeId);
     if (!src?.output) continue;
-    const o = src.output;
+    // If the source node has a pinned history frame (user hearted a
+    // version in fullscreen preview), use that as the effective output
+    // instead of `node.output`. Keeps ordering stable while letting the
+    // user choose which version downstream consumers see.
+    const o = resolvePinnedOutput(src);
     if (e.to.portId) inputs.byPort[e.to.portId] = o;
     if (o.text) inputs.texts.push(o.text);
     if (o.dataUrl) {

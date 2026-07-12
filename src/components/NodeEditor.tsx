@@ -520,16 +520,20 @@ export function NodeEditor(props: NodeEditorProps) {
       .sort()
       .join('|');
     // Upstream media signature: which upstream nodes have output and what.
+    // Includes __pinnedGeneratedAt so hearting a different history frame
+    // upstream triggers an Out refresh (dag-executor resolves pinned).
     const media = graph.nodes
       .filter((n) => upstream.has(n.id))
       .map((n) => {
         const o = n.output;
-        if (!o) return `${n.id}:_`;
+        const pinnedRaw = (n.data as Record<string, unknown>).__pinnedGeneratedAt;
+        const pinnedFp = typeof pinnedRaw === 'number' ? `@${pinnedRaw}` : '';
+        if (!o) return `${n.id}:_${pinnedFp}`;
         const url = (o as { dataUrl?: string }).dataUrl ?? '';
         // First+last 24 chars of the data-URL are plenty to fingerprint changes
         // without holding tons of prefix in memory.
         const fp = url ? `${url.slice(0, 24)}…${url.slice(-24)}` : '_';
-        return `${n.id}:${o.kind}:${fp}`;
+        return `${n.id}:${o.kind}:${fp}${pinnedFp}`;
       })
       .sort()
       .join('|');
@@ -1910,6 +1914,15 @@ Drag empty canvas to select · Shift-click to add · ⌘X/⌘C/⌘V · Opt-drag 
             <FullscreenBody
               frames={frames}
               idx={idx}
+              pinnedIdx={(() => {
+                // Convert __pinnedGeneratedAt → display index by matching against
+                // the current frames list (index 0 = live output).
+                const raw = (n.data as Record<string, unknown>).__pinnedGeneratedAt;
+                const pinnedAt = typeof raw === 'number' && Number.isFinite(raw) ? Math.floor(raw) : null;
+                if (pinnedAt == null) return 0;
+                const found = frames.findIndex((f) => f.when === pinnedAt);
+                return found >= 0 ? found : 0;
+              })()}
               mode={fullscreenMode}
               gridSize={fullscreenGridSize}
               picks={fullscreenPicks}
@@ -1924,26 +1937,34 @@ Drag empty canvas to select · Shift-click to add · ⌘X/⌘C/⌘V · Opt-drag 
               onSetPicks={setFullscreenPicks}
               onClose={closeFullscreen}
               onFavorite={(frameIdx: number) => {
-                // frames[0] is current — no-op. For i>=1, map into the
-                // reducer's oldest-first history index and promote.
-                if (frameIdx <= 0) return;
+                // Heart marks a version as "selected/pinned" for the node's
+                // effective downstream output. It does NOT reorder history
+                // (Matt's explicit rule 2026-07-12): the frame stays where
+                // it was in the display list, the counter position stays,
+                // the node thumb shows the hearted image on next open.
+                //
+                // Pin is stored as __pinnedGeneratedAt (the timestamp of the
+                // pinned frame) so it survives new gens that shift indices.
+                // __viewIdx is synced so the node thumb opens on the hearted
+                // frame after fullscreen close. dag-executor's collectInputs
+                // reads __pinnedGeneratedAt to pick the effective producer
+                // output for downstream nodes.
                 const nn = graphRef.current.nodes.find((x) => x.id === fullscreenNodeId);
                 if (!nn) return;
-                const hist = readNodeHistory(nn);
-                const historyIndex = hist.length - frameIdx;
-                if (historyIndex < 0 || historyIndex >= hist.length) return;
-                dispatch({ type: 'PROMOTE_FRAME', id: nn.id, historyIndex });
-                // Snap the view cursor back to 0 (the newly-current image).
-                setFullscreenIndex(0);
-                // Clean up compare picks referring to the promoted index
-                // (indices shifted: what was `frameIdx` is now `0`, the old
-                // current shifted to the tail). Simplest: drop that pick.
-                setFullscreenPicks((prev) => {
-                  if (!prev.has(frameIdx)) return prev;
-                  const nx = new Set(prev);
-                  nx.delete(frameIdx);
-                  return nx;
+                const frames = getFullscreenFrames(nn);
+                const targetFrame = frames[frameIdx];
+                if (!targetFrame) return;
+                dispatch({
+                  type: 'UPDATE_NODE_DATA',
+                  id: nn.id,
+                  patch: {
+                    __pinnedGeneratedAt: targetFrame.when ?? 0,
+                    __viewIdx: frameIdx,
+                  },
                 });
+                // Keep the fullscreen cursor on the hearted frame so the
+                // counter reads its position (e.g. still "4/5" for that pick).
+                setFullscreenIndex(frameIdx);
               }}
             />
           </div>
@@ -2182,14 +2203,25 @@ function ZoomableFrame({ frame }: { frame: FullscreenFrame }) {
   );
 }
 
-/** Filled heart SVG used for the "make current" action. Kept as a JSX
- *  constant so all three placements (toolbar, grid tile, compare cell)
- *  render identically. Sized 14px so it fits inside a 22–24px button. */
-const HEART_SVG = (
+/** Heart icons for the "pin as selected" action. Filled = this frame is
+ *  currently pinned; outline = clickable to pin. Both share size and stroke
+ *  so button size is identical whether pinned or not. */
+const HEART_FILLED_SVG = (
   <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
     <path
       d="M12 21s-7.5-4.35-9.75-9C.6 8.25 2.85 4.5 6.75 4.5c2.1 0 3.75 1.05 5.25 3 1.5-1.95 3.15-3 5.25-3 3.9 0 6.15 3.75 4.5 7.5C19.5 16.65 12 21 12 21z"
       fill="currentColor"
+    />
+  </svg>
+);
+const HEART_OUTLINE_SVG = (
+  <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+    <path
+      d="M12 21s-7.5-4.35-9.75-9C.6 8.25 2.85 4.5 6.75 4.5c2.1 0 3.75 1.05 5.25 3 1.5-1.95 3.15-3 5.25-3 3.9 0 6.15 3.75 4.5 7.5C19.5 16.65 12 21 12 21z"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinejoin="round"
     />
   </svg>
 );
@@ -2198,6 +2230,7 @@ const HEART_SVG = (
 function FullscreenBody(props: {
   frames: FullscreenFrame[];
   idx: number;
+  pinnedIdx: number;
   mode: 'single' | 'grid' | 'compare';
   gridSize: number;
   picks: Set<number>;
@@ -2214,7 +2247,7 @@ function FullscreenBody(props: {
   onFavorite: (frameIdx: number) => void;
 }) {
   const {
-    frames, idx, mode, gridSize, picks,
+    frames, idx, pinnedIdx, mode, gridSize, picks,
     currentFrame: frame, currentUrl: url, currentKind: kind,
     nav, timeStr,
     onSetIndex, onSetMode, onSetGridSize, onSetPicks, onClose,
@@ -2314,19 +2347,20 @@ function FullscreenBody(props: {
           </div>
         )}
 
-        {/* Heart: promote the currently-viewed frame to be the node's output.
-            Only meaningful in single mode (in grid/compare the hearts are
-            on the tiles themselves). Disabled when we're already on the
-            current frame (idx=0) or there's no output at all. */}
-        {mode === 'single' && (
+        {/* Heart: mark the currently-viewed frame as the node's pinned
+            selection (what downstream nodes read). Does NOT reorder history
+            — the frame stays at its position, the counter stays where it is.
+            Filled when this frame is the pinned one, outline otherwise. */}
+        {mode === 'single' && frames.length > 0 && (
           <button
-            className="ne-fs-favorite ne-fs-toolbar-heart"
+            className={`ne-fs-favorite ne-fs-toolbar-heart ${idx === pinnedIdx ? 'is-pinned' : ''}`}
             onClick={() => onFavorite(idx)}
-            disabled={idx === 0 || frames.length === 0}
-            title={idx === 0 ? 'This is already the current output' : 'Make this the current output'}
-            aria-label="Make current"
+            title={idx === pinnedIdx
+              ? 'This is the currently pinned selection'
+              : 'Pin this version as the node\'s selection'}
+            aria-label="Pin as selection"
           >
-            {HEART_SVG}
+            {idx === pinnedIdx ? HEART_FILLED_SVG : HEART_OUTLINE_SVG}
           </button>
         )}
         <button
@@ -2410,17 +2444,20 @@ function FullscreenBody(props: {
                   <div className="ne-fs-grid-tile-badges">
                     <span className="ne-fs-grid-tile-num">{isCurrent ? '● current' : `v${frames.length - i}`}</span>
                   </div>
-                  {/* Heart: make this version the node's current output. */}
-                  {!isCurrent && (
-                    <button
-                      className="ne-fs-favorite ne-fs-grid-tile-fav"
-                      onClick={(e) => { e.stopPropagation(); onFavorite(i); }}
-                      title="Make this the current output"
-                      aria-label="Make current"
-                    >
-                      {HEART_SVG}
-                    </button>
-                  )}
+                  {/* Heart: pin this version as the node's selection. Filled
+                      when it's the pinned one; outline otherwise. Always
+                      visible on the pinned tile so users know which is
+                      selected. */}
+                  <button
+                    className={`ne-fs-favorite ne-fs-grid-tile-fav ${i === pinnedIdx ? 'is-pinned always-visible' : ''}`}
+                    onClick={(e) => { e.stopPropagation(); onFavorite(i); }}
+                    title={i === pinnedIdx
+                      ? 'This is the currently pinned selection'
+                      : 'Pin this version as the node\'s selection'}
+                    aria-label="Pin as selection"
+                  >
+                    {i === pinnedIdx ? HEART_FILLED_SVG : HEART_OUTLINE_SVG}
+                  </button>
                   <div className="ne-fs-grid-tile-check">{picked ? '✓' : ''}</div>
                 </div>
               );
@@ -2446,16 +2483,16 @@ function FullscreenBody(props: {
                   <div className="ne-fs-compare-caption">
                     <span>{isCurrent ? '● current' : `v${frames.length - i}`}</span>
                     {f.when ? <span className="ne-fs-compare-time">{new Date(f.when).toLocaleTimeString()}</span> : null}
-                    {!isCurrent && (
-                      <button
-                        className="ne-fs-favorite ne-fs-compare-fav"
-                        onClick={(e) => { e.stopPropagation(); onFavorite(i); }}
-                        title="Make this the current output"
-                        aria-label="Make current"
-                      >
-                        {HEART_SVG}
-                      </button>
-                    )}
+                    <button
+                      className={`ne-fs-favorite ne-fs-compare-fav ${i === pinnedIdx ? 'is-pinned' : ''}`}
+                      onClick={(e) => { e.stopPropagation(); onFavorite(i); }}
+                      title={i === pinnedIdx
+                        ? 'This is the currently pinned selection'
+                        : 'Pin this version as the node\'s selection'}
+                      aria-label="Pin as selection"
+                    >
+                      {i === pinnedIdx ? HEART_FILLED_SVG : HEART_OUTLINE_SVG}
+                    </button>
                     <button
                       className="ne-fs-compare-remove"
                       title="Remove from compare"

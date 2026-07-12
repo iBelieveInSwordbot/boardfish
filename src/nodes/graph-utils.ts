@@ -163,7 +163,7 @@ export function promoteFrameToCurrent(
 
 /** Keys on `node.data` that are private editor state and should NOT be
  * serialized. Keep this list in sync with any new `__foo` piggy-backs. */
-const INTERNAL_DATA_KEYS = new Set(['__size', '__history', '__runtime', '__historyExtras', '__viewIdx']);
+const INTERNAL_DATA_KEYS = new Set(['__size', '__history', '__runtime', '__historyExtras', '__viewIdx', '__pinnedIdx', '__pinnedGeneratedAt']);
 
 function xmlEscape(s: string): string {
   return s

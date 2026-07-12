@@ -238,11 +238,23 @@ function renderMediaThumb(opts: {
 
   // Clamp the stored view cursor to a valid index. When history shrinks (user
   // deletes a frame from the strip) we snap back to 0 rather than leaving a
-  // dangling cursor pointing past the end of the array.
+  // dangling cursor pointing past the end of the array. If __viewIdx is
+  // unset, fall back to the pinned frame's display slot (resolved from
+  // __pinnedGeneratedAt) so the node opens on the user's chosen version.
   const rawViewIdx = Number((node.data as Record<string, unknown>).__viewIdx);
-  const viewIdx = Number.isFinite(rawViewIdx) && rawViewIdx >= 0 && rawViewIdx < totalFrames
-    ? Math.floor(rawViewIdx)
-    : 0;
+  const validViewIdx = Number.isFinite(rawViewIdx) && rawViewIdx >= 0 && rawViewIdx < totalFrames;
+  let fallbackIdx = 0;
+  const pinnedAtRaw = (node.data as Record<string, unknown>).__pinnedGeneratedAt;
+  const pinnedAt = typeof pinnedAtRaw === 'number' && Number.isFinite(pinnedAtRaw) ? Math.floor(pinnedAtRaw) : null;
+  if (pinnedAt != null && !validViewIdx) {
+    if (node.output && node.output.generatedAt === pinnedAt) {
+      fallbackIdx = 0;
+    } else {
+      const foundInHist = historyNewestFirst.findIndex((h) => h.generatedAt === pinnedAt);
+      if (foundInHist >= 0) fallbackIdx = foundInHist + 1;
+    }
+  }
+  const viewIdx = validViewIdx ? Math.floor(rawViewIdx) : fallbackIdx;
 
   // Resolve the frame at this cursor:
   //   viewIdx = 0 → currentUrl (live output)
@@ -378,16 +390,32 @@ function renderMediaThumb(opts: {
           )
         : null,
       totalFrames > 1
-        ? createElement(
-            'span',
-            {
-              className: 'ne-media-toolbar-counter' + (viewIdx !== 0 ? ' is-off-canonical' : ''),
-              title: viewIdx === 0
-                ? 'Live current — downstream nodes see this frame.'
-                : 'Viewing a history frame. Double-click the media to make it canonical.',
-            },
-            `${viewIdx + 1} / ${totalFrames}`,
-          )
+        ? (() => {
+            // Resolve pinned position from __pinnedGeneratedAt by matching
+            // against the display list. Default is the live output (idx 0).
+            const pinnedAtRaw = (node.data as Record<string, unknown>).__pinnedGeneratedAt;
+            const pinnedAt = typeof pinnedAtRaw === 'number' && Number.isFinite(pinnedAtRaw) ? Math.floor(pinnedAtRaw) : null;
+            let pinnedIdx = 0;
+            if (pinnedAt != null) {
+              if (node.output && node.output.generatedAt === pinnedAt) {
+                pinnedIdx = 0;
+              } else {
+                const foundInHist = historyNewestFirst.findIndex((h) => h.generatedAt === pinnedAt);
+                if (foundInHist >= 0) pinnedIdx = foundInHist + 1;
+              }
+            }
+            const isOnPinned = viewIdx === pinnedIdx;
+            return createElement(
+              'span',
+              {
+                className: 'ne-media-toolbar-counter' + (isOnPinned ? '' : ' is-off-canonical'),
+                title: isOnPinned
+                  ? 'Pinned selection — downstream nodes see this frame.'
+                  : 'Viewing a non-pinned frame. Heart it in fullscreen to pin.',
+              },
+              `${viewIdx + 1} / ${totalFrames}`,
+            );
+          })()
         : null,
       createElement(
         'button',
