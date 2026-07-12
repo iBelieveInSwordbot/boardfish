@@ -1325,3 +1325,73 @@
   justify-content: center;
 }
 .ne-fs-compare-remove:hover { background: #2a2a30; color: #f0ecdf; }
+
+/* Heart / "make current" button — used in three places (single-view toolbar,
+   grid tile top-right, compare cell caption). Shared base for size/color.  */
+.ne-fs-favorite {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid #3a3a44;
+  background: rgba(28, 28, 32, 0.85);
+  color: #f0f0f5;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s, transform 0.08s;
+}
+.ne-fs-favorite:hover:not(:disabled) {
+  background: #d33858;
+  border-color: #d33858;
+  color: #fff;
+  transform: scale(1.06);
+}
+.ne-fs-favorite:active:not(:disabled) { transform: scale(0.95); }
+.ne-fs-favorite:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  color: #7a7a80;
+}
+
+/* Single-view toolbar heart lives next to the close button. The close button
+   already claims `margin-left: auto` on the toolbar, so we just need to nudge
+   the heart LEFT of the close and add a small gap. Order in DOM: heart, then
+   close, both trailing. */
+.ne-fs-toolbar-heart { margin-left: auto; margin-right: 6px; }
+/* When heart is present, prevent close from also grabbing all remaining space. */
+.ne-fs-toolbar-heart + .ne-fullscreen-close { margin-left: 0; }
+
+/* Grid-tile heart: top-right corner (pairs with the pick check on the same
+   corner — heart above, check below when picked). */
+.ne-fs-grid-tile-fav {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.1s, transform 0.08s;
+  z-index: 2;
+}
+.ne-fs-grid-tile:hover .ne-fs-grid-tile-fav { opacity: 1; }
+/* When picked, shift the check DOWN so heart still has the corner. */
+.ne-fs-grid-tile.is-picked .ne-fs-grid-tile-fav { opacity: 1; }
+.ne-fs-grid-tile.is-picked .ne-fs-grid-tile-check {
+  top: 34px; /* below the heart button */
+}
+
+/* Compare-cell heart lives inside the caption strip; align with the remove ✕. */
+.ne-fs-compare-fav {
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  border: 1px solid #3a3a44;
+  color: #9a9a9f;
+}
+.ne-fs-compare-fav:hover:not(:disabled) {
+  background: #d33858;
+  border-color: #d33858;
+  color: #fff;
+}

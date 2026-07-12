@@ -1923,6 +1923,28 @@ Drag empty canvas to select · Shift-click to add · ⌘X/⌘C/⌘V · Opt-drag 
               onSetGridSize={setFullscreenGridSize}
               onSetPicks={setFullscreenPicks}
               onClose={closeFullscreen}
+              onFavorite={(frameIdx: number) => {
+                // frames[0] is current — no-op. For i>=1, map into the
+                // reducer's oldest-first history index and promote.
+                if (frameIdx <= 0) return;
+                const nn = graphRef.current.nodes.find((x) => x.id === fullscreenNodeId);
+                if (!nn) return;
+                const hist = readNodeHistory(nn);
+                const historyIndex = hist.length - frameIdx;
+                if (historyIndex < 0 || historyIndex >= hist.length) return;
+                dispatch({ type: 'PROMOTE_FRAME', id: nn.id, historyIndex });
+                // Snap the view cursor back to 0 (the newly-current image).
+                setFullscreenIndex(0);
+                // Clean up compare picks referring to the promoted index
+                // (indices shifted: what was `frameIdx` is now `0`, the old
+                // current shifted to the tail). Simplest: drop that pick.
+                setFullscreenPicks((prev) => {
+                  if (!prev.has(frameIdx)) return prev;
+                  const nx = new Set(prev);
+                  nx.delete(frameIdx);
+                  return nx;
+                });
+              }}
             />
           </div>
         );
@@ -2160,6 +2182,18 @@ function ZoomableFrame({ frame }: { frame: FullscreenFrame }) {
   );
 }
 
+/** Filled heart SVG used for the "make current" action. Kept as a JSX
+ *  constant so all three placements (toolbar, grid tile, compare cell)
+ *  render identically. Sized 14px so it fits inside a 22–24px button. */
+const HEART_SVG = (
+  <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+    <path
+      d="M12 21s-7.5-4.35-9.75-9C.6 8.25 2.85 4.5 6.75 4.5c2.1 0 3.75 1.05 5.25 3 1.5-1.95 3.15-3 5.25-3 3.9 0 6.15 3.75 4.5 7.5C19.5 16.65 12 21 12 21z"
+      fill="currentColor"
+    />
+  </svg>
+);
+
 /** Fullscreen preview UI: single-view, grid, and side-by-side compare. */
 function FullscreenBody(props: {
   frames: FullscreenFrame[];
@@ -2177,12 +2211,14 @@ function FullscreenBody(props: {
   onSetGridSize: (n: number) => void;
   onSetPicks: (s: Set<number>) => void;
   onClose: () => void;
+  onFavorite: (frameIdx: number) => void;
 }) {
   const {
     frames, idx, mode, gridSize, picks,
     currentFrame: frame, currentUrl: url, currentKind: kind,
     nav, timeStr,
     onSetIndex, onSetMode, onSetGridSize, onSetPicks, onClose,
+    onFavorite,
   } = props;
 
   function togglePick(i: number) {
@@ -2278,6 +2314,21 @@ function FullscreenBody(props: {
           </div>
         )}
 
+        {/* Heart: promote the currently-viewed frame to be the node's output.
+            Only meaningful in single mode (in grid/compare the hearts are
+            on the tiles themselves). Disabled when we're already on the
+            current frame (idx=0) or there's no output at all. */}
+        {mode === 'single' && (
+          <button
+            className="ne-fs-favorite ne-fs-toolbar-heart"
+            onClick={() => onFavorite(idx)}
+            disabled={idx === 0 || frames.length === 0}
+            title={idx === 0 ? 'This is already the current output' : 'Make this the current output'}
+            aria-label="Make current"
+          >
+            {HEART_SVG}
+          </button>
+        )}
         <button
           className="ne-fullscreen-close"
           onClick={onClose}
@@ -2344,6 +2395,7 @@ function FullscreenBody(props: {
           >
             {frames.map((f, i) => {
               const picked = picks.has(i);
+              const isCurrent = i === 0;
               return (
                 <div
                   key={i}
@@ -2356,8 +2408,19 @@ function FullscreenBody(props: {
                     ? <video src={f.url} muted playsInline preload="metadata" />
                     : <img src={f.url} alt="" draggable={false} />}
                   <div className="ne-fs-grid-tile-badges">
-                    <span className="ne-fs-grid-tile-num">{i === 0 ? '● current' : `v${frames.length - i}`}</span>
+                    <span className="ne-fs-grid-tile-num">{isCurrent ? '● current' : `v${frames.length - i}`}</span>
                   </div>
+                  {/* Heart: make this version the node's current output. */}
+                  {!isCurrent && (
+                    <button
+                      className="ne-fs-favorite ne-fs-grid-tile-fav"
+                      onClick={(e) => { e.stopPropagation(); onFavorite(i); }}
+                      title="Make this the current output"
+                      aria-label="Make current"
+                    >
+                      {HEART_SVG}
+                    </button>
+                  )}
                   <div className="ne-fs-grid-tile-check">{picked ? '✓' : ''}</div>
                 </div>
               );
@@ -2375,22 +2438,35 @@ function FullscreenBody(props: {
               gridAutoRows: '1fr',
             }}
           >
-            {compareList.map(({ i, f }) => (
-              <div key={i} className="ne-fs-compare-cell">
-                <ZoomableFrame frame={f} />
-                <div className="ne-fs-compare-caption">
-                  <span>{i === 0 ? '● current' : `v${frames.length - i}`}</span>
-                  {f.when ? <span className="ne-fs-compare-time">{new Date(f.when).toLocaleTimeString()}</span> : null}
-                  <button
-                    className="ne-fs-compare-remove"
-                    title="Remove from compare"
-                    onClick={(e) => { e.stopPropagation(); const nx = new Set(picks); nx.delete(i); onSetPicks(nx); }}
-                  >
-                    ✕
-                  </button>
+            {compareList.map(({ i, f }) => {
+              const isCurrent = i === 0;
+              return (
+                <div key={i} className="ne-fs-compare-cell">
+                  <ZoomableFrame frame={f} />
+                  <div className="ne-fs-compare-caption">
+                    <span>{isCurrent ? '● current' : `v${frames.length - i}`}</span>
+                    {f.when ? <span className="ne-fs-compare-time">{new Date(f.when).toLocaleTimeString()}</span> : null}
+                    {!isCurrent && (
+                      <button
+                        className="ne-fs-favorite ne-fs-compare-fav"
+                        onClick={(e) => { e.stopPropagation(); onFavorite(i); }}
+                        title="Make this the current output"
+                        aria-label="Make current"
+                      >
+                        {HEART_SVG}
+                      </button>
+                    )}
+                    <button
+                      className="ne-fs-compare-remove"
+                      title="Remove from compare"
+                      onClick={(e) => { e.stopPropagation(); const nx = new Set(picks); nx.delete(i); onSetPicks(nx); }}
+                    >
+                      ✕
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
             {compareList.length === 0 && (
               <div className="ne-fullscreen-empty">
                 Pick frames in Grid, then come back here to compare.
