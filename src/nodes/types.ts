@@ -255,7 +255,18 @@ export function defaultDataFor(kind: NodeKind): Record<string, unknown> {
 // the seeded chain reads like a pipeline.
 // ---------------------------------------------------------------------------
 
-export function seedDefaultGraph(prompt: string, seedImageDataUrl?: string): NodeGraph {
+export function seedDefaultGraph(
+  prompt: string,
+  seedImageDataUrl?: string,
+  /**
+   * Optional prior generations (oldest→newest) to seed onto the ImageGen
+   * node's `__history`. Used to import the storyboard panel's imageHistory
+   * into the auto-flow so 'default flow' users don't lose their earlier gens.
+   * The current (=most recent) gen is `seedImageDataUrl` and lives on the
+   * ImageGen node's `output`; these are the ones BEFORE that.
+   */
+  imageGenHistory?: NodeOutput[],
+): NodeGraph {
   const promptNode: BaseNode = {
     id: newId('n'),
     kind: 'text-prompt',
@@ -270,6 +281,11 @@ export function seedDefaultGraph(prompt: string, seedImageDataUrl?: string): Nod
   // image immediately on open, without needing to hit Generate first.
   const genData: Record<string, unknown> = { ...defaultDataFor('image-gen') };
   if (seedImageDataUrl) genData.image_url = seedImageDataUrl;
+  if (imageGenHistory && imageGenHistory.length > 0) {
+    // Store as internal history piggy-back. `graph-utils.readNodeHistory`
+    // reads this. Kept oldest→newest to match the rest of the codebase.
+    (genData as Record<string, unknown>).__history = imageGenHistory;
+  }
   const genNode: BaseNode = {
     id: newId('n'),
     kind: 'image-gen',

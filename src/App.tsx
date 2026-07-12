@@ -252,9 +252,28 @@ function App() {
         // the box (the behaviour that regressed when style-bleed got fixed).
         // Explicit override still wins: if the user saved a graph on this
         // panel, use that verbatim.
+        // When we seed a fresh default graph, also carry the panel's prior
+        // AI generations into the ImageGen node's history so opening the
+        // node editor shows all the versions the user made in storyboard.
+        // Ordered oldest→newest per graph-utils convention. Videos are
+        // skipped (ImageGen history is image-only in the node view).
+        const seedImageGenHistory = (editing.imageHistory ?? [])
+          .filter((v) => v.kind !== 'video' && v.dataUrl)
+          .slice()
+          .sort((a, b) => a.generatedAt - b.generatedAt)
+          .map((v) => ({
+            kind: 'image' as const,
+            dataUrl: v.dataUrl,
+            mime: 'image/jpeg',
+            generatedAt: v.generatedAt || Date.now(),
+          }));
         const savedGraph =
           (editing.nodeGraph as NodeGraph | undefined) ??
-          seedDefaultGraph(seedPrompt, editing.imageDataUrl ?? undefined);
+          seedDefaultGraph(
+            seedPrompt,
+            editing.imageDataUrl ?? undefined,
+            seedImageGenHistory.length > 0 ? seedImageGenHistory : undefined,
+          );
         return (
           <NodeEditor
             initialGraph={savedGraph}
