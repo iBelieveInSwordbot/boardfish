@@ -241,6 +241,42 @@ function App() {
           ‹ Inspector
         </button>
       )}
+
+      {/* Detached-gens pill: shows in the storyboard when one or more node
+          editors are running gens in the background. Clicking a chip reopens
+          the paused editor for that panel. */}
+      {(() => {
+        const detachedEntries = nodeEditorStack.filter((e) => e.detached);
+        if (detachedEntries.length === 0 || fullscreen) return null;
+        return (
+          <div className="detached-gens-pill" title="Node editors still running gens in the background">
+            <span className="detached-gens-pill-dot" />
+            <span className="detached-gens-pill-label">
+              {detachedEntries.length === 1 ? '1 panel generating' : `${detachedEntries.length} panels generating`}
+            </span>
+            {detachedEntries.map((e) => {
+              const idx = flatPanels.findIndex((p) => p.id === e.panelId);
+              const label = idx >= 0 ? `Panel ${idx + 1}` : e.panelId.slice(0, 6);
+              return (
+                <button
+                  key={e.panelId}
+                  type="button"
+                  className="detached-gens-pill-chip"
+                  title={`Reopen ${label}`}
+                  onClick={() => {
+                    setNodeEditorStack((prev) => {
+                      const rest = prev.filter((x) => x.panelId !== e.panelId);
+                      return [...rest, { panelId: e.panelId, detached: false }];
+                    });
+                  }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        );
+      })()}
       {fullscreen && (
         <button
           className="fullscreen-exit"
@@ -347,8 +383,10 @@ function App() {
                 thumbUrl: p.imageDataUrl ?? undefined,
               }))}
             onSave={(nextGraph, outMedia) => {
+              // Persist only; unmounting is owned by onClose /
+              // onDetachedFinish so keep-alive detach can survive an
+              // explicit ⌘S while gens are still running.
               applyNodeEditorSave(nextGraph, outMedia);
-              setNodeEditorStack((prev) => prev.filter((e) => e.panelId !== panelId));
             }}
             onClose={() => {
               // Idle close: unmount this editor.

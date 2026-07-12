@@ -608,6 +608,61 @@ input, textarea, select {
 }
 .lightbox-toggle-captions:hover { background: rgba(20, 20, 24, 0.95); }
 
+/* Detached-gens pill — floats bottom-left of the storyboard while node
+   editors are running gens in the background. Clicking a panel chip reopens
+   the paused editor. */
+.detached-gens-pill {
+  position: fixed;
+  left: 20px;
+  bottom: 20px;
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  background: rgba(20, 20, 24, 0.92);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 999px;
+  color: #f0ecdf;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.4);
+  backdrop-filter: blur(8px);
+  animation: detached-gens-pulse 2.4s ease-in-out infinite;
+}
+@keyframes detached-gens-pulse {
+  0%, 100% { box-shadow: 0 10px 24px rgba(0,0,0,0.4), 0 0 0 0 rgba(211, 56, 88, 0.35); }
+  50%      { box-shadow: 0 10px 24px rgba(0,0,0,0.4), 0 0 0 8px rgba(211, 56, 88, 0); }
+}
+.detached-gens-pill-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #d33858;
+  box-shadow: 0 0 8px rgba(211, 56, 88, 0.7);
+}
+.detached-gens-pill-label {
+  font-family: 'Menlo', 'Courier New', monospace;
+  font-size: 11px;
+  color: #d0d0d6;
+}
+.detached-gens-pill-chip {
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.15);
+  background: rgba(255,255,255,0.06);
+  color: #f0ecdf;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  letter-spacing: 0.03em;
+  transition: background 0.1s, border-color 0.1s;
+}
+.detached-gens-pill-chip:hover {
+  background: rgba(255,255,255,0.12);
+  border-color: rgba(255,255,255,0.25);
+}
+
 /* --- Toolbar --- */
 .toolbar {
   display: grid;

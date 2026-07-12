@@ -79,6 +79,9 @@ export type NodeEditorProps = {
   panelAspect: string;
   /** Options fed into the Panel Ref node's picker (id + label + imageDataUrl). */
   availablePanels?: PanelRefOption[];
+  /** Persist the graph + Out media to the panel. Does NOT unmount the editor;
+   *  App-side lifecycle is controlled by onClose / onDetachedFinish so keep-
+   *  alive detachment can be respected. */
   onSave: (
     graph: NodeGraph,
     outMedia:
@@ -655,10 +658,11 @@ export function NodeEditor(props: NodeEditorProps) {
     return null;
   }, []);
 
-  // Detached-finish: when hidden AND inFlight drops to 0, auto-save via
-  // onDetachedFinish so the App can unmount us. Requires that at least one
-  // gen actually ran while hidden (otherwise the very act of setting hidden
-  // would fire finish before anything happens).
+  // Detached-finish: when hidden AND inFlight drops to 0, refresh the Out
+  // node (so it captures the latest gen), then auto-save via onDetachedFinish
+  // so the App can unmount us. Requires that at least one gen actually ran
+  // while hidden (otherwise the very act of setting hidden would fire finish
+  // before anything happens).
   const hadInFlightWhileHiddenRef = useRef(false);
   useEffect(() => {
     if (!hidden) {
@@ -669,15 +673,44 @@ export function NodeEditor(props: NodeEditorProps) {
       hadInFlightWhileHiddenRef.current = true;
       return;
     }
-    // hidden AND inFlight is 0. If we saw in-flight earlier while hidden,
-    // fire the detached-finish handler now.
-    if (hadInFlightWhileHiddenRef.current && onDetachedFinish) {
-      hadInFlightWhileHiddenRef.current = false;
-      (async () => {
-        const media = await outMediaFromGraph(graphRef.current);
-        onDetachedFinish(graphRef.current, media);
-      })();
-    }
+    if (!hadInFlightWhileHiddenRef.current || !onDetachedFinish) return;
+    hadInFlightWhileHiddenRef.current = false;
+    (async () => {
+      // Force Out to refresh with the just-landed producer outputs BEFORE
+      // we extract outMedia. Otherwise the panel receives stale Out output
+      // from the pre-gen state.
+      const outNodeNow = findOutNode(graphRef.current);
+      if (outNodeNow) {
+        const hasUpstream = graphRef.current.edges.some((e) => e.to.nodeId === outNodeNow.id);
+        if (hasUpstream) {
+          try {
+            await executeGraph(graphRef.current, {
+              startAt: outNodeNow.id,
+              onEvent: (ev) => {
+                if (ev.kind === 'output') {
+                  if (ev.dataPatch) {
+                    dispatch({ type: 'UPDATE_NODE_DATA', id: ev.nodeId, patch: ev.dataPatch });
+                  }
+                  dispatch({ type: 'SET_NODE_OUTPUT', id: ev.nodeId, output: ev.output });
+                  // Manually update graphRef so the subsequent read sees
+                  // the fresh Out output without waiting for React commit.
+                  graphRef.current = {
+                    ...graphRef.current,
+                    nodes: graphRef.current.nodes.map((nn) =>
+                      nn.id === ev.nodeId ? { ...nn, output: ev.output } : nn,
+                    ),
+                  };
+                }
+              },
+            });
+          } catch (err) {
+            console.warn('[NodeEditor] Detached Out refresh failed:', err);
+          }
+        }
+      }
+      const media = await outMediaFromGraph(graphRef.current);
+      onDetachedFinish(graphRef.current, media);
+    })();
   }, [hidden, inFlight, onDetachedFinish, outMediaFromGraph]);
 
   const triggerSave = useCallback(async () => {
@@ -756,12 +789,24 @@ export function NodeEditor(props: NodeEditorProps) {
     onSave(workingGraph, null);
   }, [onSave, dispatch]);
 
+  /** Unmount OR detach the editor, whichever preserves in-flight gens.
+   *  Called from every close pathway (top-bar X, Escape, confirm-dialog
+   *  buttons) so no code path can accidentally kill a running FAL job. */
+  const finishClose = useCallback(() => {
+    if (inFlightRef.current.size > 0 && onCloseWhileBusy) {
+      onCloseWhileBusy();
+      return;
+    }
+    onClose();
+  }, [onClose, onCloseWhileBusy]);
+
   const triggerClose = useCallback(() => {
     // If any gens are still running, prefer keep-alive over unmount so
     // Matt can bounce back to the storyboard while things finish. The App
     // hides us via `hidden` prop; we keep receiving FAL results and, when
     // the last one lands, dispatch onDetachedFinish so the App can save
-    // and unmount us.
+    // and unmount us. This SUPERSEDES the dirty-check so the user never
+    // has to click through a dialog while things are cooking.
     if (inFlightRef.current.size > 0 && onCloseWhileBusy) {
       onCloseWhileBusy();
       return;
@@ -1978,8 +2023,17 @@ Drag empty canvas to select · Shift-click to add · ⌘X/⌘C/⌘V · Opt-drag 
             </div>
             <div className="ne-confirm-actions">
               <button className="ne-topbar-btn ghost" onClick={() => setConfirmClose(false)}>Keep editing</button>
-              <button className="ne-topbar-btn" onClick={() => { setConfirmClose(false); onClose(); }}>Discard</button>
-              <button className="ne-topbar-btn primary" onClick={() => { setConfirmClose(false); triggerSave(); onClose(); }}>Save & close</button>
+              <button className="ne-topbar-btn" onClick={() => { setConfirmClose(false); finishClose(); }}>Discard</button>
+              <button
+                className="ne-topbar-btn primary"
+                onClick={async () => {
+                  setConfirmClose(false);
+                  // Await save so the Out refresh finishes before we
+                  // unmount — otherwise Save + close races the refresh.
+                  await triggerSave();
+                  finishClose();
+                }}
+              >Save & close</button>
             </div>
           </div>
         </div>
