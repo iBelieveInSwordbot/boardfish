@@ -20,7 +20,15 @@ type SavedPanelV1 = {
   aiPrompt?: string;
   // AI history: prior generations. Each entry stores its image inside the zip
   // under images/history/<panelId>/<versionId>.<ext>. Loaded as PanelImageVersion.
-  imageHistory?: { id: string; imagePath: string; prompt: string; generatedAt: number }[];
+  // Extended in 2026-07-12: `kind` + `videoPath` support video versions.
+  imageHistory?: {
+    id: string;
+    imagePath: string;
+    prompt: string;
+    generatedAt: number;
+    kind?: 'image' | 'video';
+    videoPath?: string; // when kind='video'
+  }[];
   // Broadened in Boardfish 5 to match the extended PanelStyleMode set.
   // Older files (v3 with only 'pencil-sketch' | 'none') still validate.
   styleMode?: 'pencil-sketch' | 'ink-wash' | 'photoreal' | 'noir' | 'anime' | 'watercolor' | 'comic-ink' | 'none';
@@ -209,16 +217,35 @@ export async function saveProject(
         videoPath = `videos/panel-${panelSerial.toString().padStart(4, '0')}-${p.id}.${ext}`;
         zip.file(videoPath, dataUrlToBlob(p.videoDataUrl));
       }
-      // AI image history: save each version under images/history/<panelId>/
-      let savedHistory: { id: string; imagePath: string; prompt: string; generatedAt: number }[] | undefined;
+      // AI image/video history: save each version under images/history/<panelId>/
+      // and, for video kinds, additionally save the video payload under
+      // videos/history/<panelId>/.
+      let savedHistory: NonNullable<SavedPanelV1['imageHistory']> | undefined;
       if (p.imageHistory && p.imageHistory.length > 0) {
         savedHistory = [];
         for (const v of p.imageHistory) {
-          const vUrl = (await maybeDownscale(v.dataUrl, downscale, maxLongEdgePx)) as string;
-          const vExt = extForDataUrl(vUrl);
-          const vPath = `images/history/${p.id}/${v.id}.${vExt}`;
-          zip.file(vPath, dataUrlToBlob(vUrl));
-          savedHistory.push({ id: v.id, imagePath: vPath, prompt: v.prompt, generatedAt: v.generatedAt });
+          // Poster / image data-url: always saved (for video kinds this is the poster frame).
+          let vImagePath = '';
+          if (v.dataUrl) {
+            const vUrl = (await maybeDownscale(v.dataUrl, downscale, maxLongEdgePx)) as string;
+            const vExt = extForDataUrl(vUrl);
+            vImagePath = `images/history/${p.id}/${v.id}.${vExt}`;
+            zip.file(vImagePath, dataUrlToBlob(vUrl));
+          }
+          let vVideoPath: string | undefined;
+          if (v.kind === 'video' && v.videoDataUrl) {
+            const vExt = v.videoDataUrl.startsWith('data:video/webm') ? 'webm' : 'mp4';
+            vVideoPath = `videos/history/${p.id}/${v.id}.${vExt}`;
+            zip.file(vVideoPath, dataUrlToBlob(v.videoDataUrl));
+          }
+          savedHistory.push({
+            id: v.id,
+            imagePath: vImagePath,
+            prompt: v.prompt,
+            generatedAt: v.generatedAt,
+            kind: v.kind,
+            videoPath: vVideoPath,
+          });
         }
       }
       panelSerial += 1;
@@ -340,8 +367,19 @@ export async function loadProject(
             imageHistory: mp.imageHistory
               ? (await Promise.all(
                   mp.imageHistory.map(async (v) => {
-                    const dataUrl = await loadImage(v.imagePath);
-                    return dataUrl ? { id: v.id, dataUrl, prompt: v.prompt, generatedAt: v.generatedAt } : null;
+                    const dataUrl = (await loadImage(v.imagePath)) ?? '';
+                    const videoDataUrl = v.videoPath ? (await loadVideo(v.videoPath)) : null;
+                    // Skip entries with no recoverable media.
+                    if (!dataUrl && !videoDataUrl) return null;
+                    const entry: import('./types').PanelImageVersion = {
+                      id: v.id,
+                      dataUrl,
+                      prompt: v.prompt,
+                      generatedAt: v.generatedAt,
+                      kind: v.kind,
+                    };
+                    if (videoDataUrl) entry.videoDataUrl = videoDataUrl;
+                    return entry;
                   }),
                 )).filter((x): x is import('./types').PanelImageVersion => x !== null)
               : undefined,

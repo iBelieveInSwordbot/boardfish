@@ -481,6 +481,124 @@ export function NodeEditor(props: NodeEditorProps) {
   useEffect(() => { graphRef.current = state.graph; }, [state.graph]);
 
   // -------------------------------------------------------------------------
+  // Auto-refresh Out node whenever its upstream chain changes.
+  // Signature = set of edges feeding Out + the output-dataUrl fingerprint of
+  // each upstream node reachable from Out. When either changes we re-run
+  // Out (which is a cheap gather step — no model calls). Skips when nothing
+  // upstream has produced media yet, and while any node is in-flight.
+  // -------------------------------------------------------------------------
+  const inFlightRef = useRef<Set<NodeId>>(new Set());
+  useEffect(() => { inFlightRef.current = inFlight; }, [inFlight]);
+  const lastOutSigRef = useRef<string>('');
+  const outRefreshTimerRef = useRef<number | null>(null);
+
+  const outSignature = useMemo(() => {
+    const out = graph.nodes.find((n) => n.kind === 'out');
+    if (!out) return '';
+    // BFS upstream from Out through incoming edges.
+    const incoming = new Map<NodeId, Edge[]>();
+    for (const e of graph.edges) {
+      const arr = incoming.get(e.to.nodeId) ?? [];
+      arr.push(e);
+      incoming.set(e.to.nodeId, arr);
+    }
+    const upstream = new Set<NodeId>();
+    const stack: NodeId[] = [out.id];
+    while (stack.length > 0) {
+      const cur = stack.pop()!;
+      for (const e of incoming.get(cur) ?? []) {
+        if (!upstream.has(e.from.nodeId)) {
+          upstream.add(e.from.nodeId);
+          stack.push(e.from.nodeId);
+        }
+      }
+    }
+    // Edge signature: which edges terminate on Out (sorted for stability).
+    const outEdges = graph.edges
+      .filter((e) => e.to.nodeId === out.id)
+      .map((e) => `${e.from.nodeId}:${e.from.portId}->${e.to.portId}`)
+      .sort()
+      .join('|');
+    // Upstream media signature: which upstream nodes have output and what.
+    const media = graph.nodes
+      .filter((n) => upstream.has(n.id))
+      .map((n) => {
+        const o = n.output;
+        if (!o) return `${n.id}:_`;
+        const url = (o as { dataUrl?: string }).dataUrl ?? '';
+        // First+last 24 chars of the data-URL are plenty to fingerprint changes
+        // without holding tons of prefix in memory.
+        const fp = url ? `${url.slice(0, 24)}…${url.slice(-24)}` : '_';
+        return `${n.id}:${o.kind}:${fp}`;
+      })
+      .sort()
+      .join('|');
+    return `edges=${outEdges}||media=${media}`;
+  }, [graph]);
+
+  useEffect(() => {
+    if (!outSignature) return;
+    if (outSignature === lastOutSigRef.current) return;
+    // Skip auto-refresh while anything is in-flight — the in-flight run will
+    // deliver an output event that triggers the next signature change.
+    if (inFlightRef.current.size > 0) return;
+    // Skip when the current Out output already matches what upstream produced
+    // (i.e., signature seeded from a save/manual refresh).
+    if (lastOutSigRef.current === '') {
+      lastOutSigRef.current = outSignature;
+      return;
+    }
+    // Debounce so rapid edits (dragging a slider, typing prompt) don't fire
+    // a refresh on every keystroke. 200ms is plenty.
+    if (outRefreshTimerRef.current != null) {
+      window.clearTimeout(outRefreshTimerRef.current);
+    }
+    outRefreshTimerRef.current = window.setTimeout(async () => {
+      outRefreshTimerRef.current = null;
+      const outNode = findOutNode(graphRef.current);
+      if (!outNode) return;
+      const hasUpstream = graphRef.current.edges.some((e) => e.to.nodeId === outNode.id);
+      const upstreamHasMedia = hasUpstream && graphRef.current.nodes.some((n) =>
+        graphRef.current.edges.some((e) => e.to.nodeId === outNode.id && e.from.nodeId === n.id) &&
+        n.output && (n.output.kind === 'image' || n.output.kind === 'video') &&
+        Boolean(n.output.dataUrl),
+      );
+      if (!hasUpstream || !upstreamHasMedia) {
+        // No upstream media — clear Out.
+        if (outNode.output) {
+          dispatch({ type: 'SET_NODE_OUTPUT', id: outNode.id, output: undefined });
+        }
+        lastOutSigRef.current = outSignature;
+        return;
+      }
+      try {
+        await executeGraph(graphRef.current, {
+          startAt: outNode.id,
+          onEvent: (e) => {
+            if (e.kind === 'output') {
+              if (e.dataPatch) {
+                dispatch({ type: 'UPDATE_NODE_DATA', id: e.nodeId, patch: e.dataPatch });
+              }
+              dispatch({ type: 'SET_NODE_OUTPUT', id: e.nodeId, output: e.output });
+            }
+          },
+        });
+      } catch (err) {
+        console.warn('[NodeEditor] Out auto-refresh failed:', err);
+      } finally {
+        lastOutSigRef.current = outSignature;
+      }
+    }, 200);
+    return () => {
+      if (outRefreshTimerRef.current != null) {
+        window.clearTimeout(outRefreshTimerRef.current);
+        outRefreshTimerRef.current = null;
+      }
+    };
+    // dispatch is stable from useReducer
+  }, [outSignature, dispatch]);
+
+  // -------------------------------------------------------------------------
   // Save / close
   // -------------------------------------------------------------------------
 

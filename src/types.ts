@@ -39,9 +39,14 @@ export type TextField = {
 
 export type PanelImageVersion = {
   id: string;
+  /** Poster frame (for kind=video) or the image itself (for kind=image/undefined). */
   dataUrl: string;
   prompt: string;
   generatedAt: number; // ms since epoch
+  /** Optional — undefined = image (legacy). 'image' | 'video' for new entries. */
+  kind?: 'image' | 'video';
+  /** When kind='video', the actual video data-URL for playback. */
+  videoDataUrl?: string;
 };
 
 // Style tag applied to the panel's AI prompt at generation time. Mirrors the

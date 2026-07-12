@@ -288,20 +288,13 @@ function App() {
                 // image as a last-resort fallback) so the storyboard grid
                 // and PDF export have a still to render.
                 const poster = outMedia.posterDataUrl ?? editing.imageDataUrl ?? '';
-                if (poster) {
-                  dispatch({
-                    type: 'APPLY_AI_IMAGE',
-                    panelId: editing.id,
-                    dataUrl: poster,
-                    imageName: `Node ${new Date().toISOString().slice(0, 10)} ${editing.id.slice(0, 6)}.jpg`,
-                    prompt: seedPrompt,
-                    generatedAt: Date.now(),
-                  });
-                }
                 dispatch({
-                  type: 'UPDATE_PANEL',
-                  id: editing.id,
-                  patch: { videoDataUrl: outMedia.dataUrl },
+                  type: 'APPLY_AI_VIDEO',
+                  panelId: editing.id,
+                  videoDataUrl: outMedia.dataUrl,
+                  posterDataUrl: poster,
+                  prompt: seedPrompt,
+                  generatedAt: Date.now(),
                 });
               }
               setNodeEditorPanelId(null);

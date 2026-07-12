@@ -160,6 +160,10 @@ export type Action =
   // AI: replace the panel's current image with a new one, pushing the previous
   // image (if any) onto imageHistory. Preserves prompt+timestamp per version.
   | { type: 'APPLY_AI_IMAGE'; panelId: string; dataUrl: string; imageName: string; prompt: string; generatedAt: number }
+  // AI: replace the panel's current video with a new one, pushing the previous
+  // video (if any) onto imageHistory as a kind:'video' entry. Poster is required
+  // so the storyboard grid + PDF export still have a still to render.
+  | { type: 'APPLY_AI_VIDEO'; panelId: string; videoDataUrl: string; posterDataUrl: string; prompt: string; generatedAt: number }
   // AI: restore a previous image from history. Puts the current image onto history
   // and swaps in the chosen version.
   | { type: 'RESTORE_AI_IMAGE'; panelId: string; versionId: string }
@@ -479,23 +483,70 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
       const it = state.items[loc.itemIdx] as Extract<DocItem, { kind: 'storyboard' }>;
       const nextPanels = it.panels.map((p) => {
         if (p.id !== action.panelId) return p;
-        // If a current image exists, archive it onto history first (with its
-        // prompt if we know it, so restoring works cleanly).
-        const prior = p.imageDataUrl
-          ? [
-              ...(p.imageHistory ?? []),
-              {
-                id: cryptoRandomId(),
-                dataUrl: p.imageDataUrl,
-                prompt: p.aiPrompt ?? '',
-                generatedAt: Date.now(), // archive time; we don't know original gen time
-              } as import('./types').PanelImageVersion,
-            ]
-          : (p.imageHistory ?? []);
+        // Archive whichever media is currently "on" the panel. If both an
+        // image and a video exist, prefer archiving the video (that's the
+        // richer artifact) with the image as its poster.
+        const archived: import('./types').PanelImageVersion[] = [];
+        if (p.videoDataUrl) {
+          archived.push({
+            id: cryptoRandomId(),
+            dataUrl: p.imageDataUrl ?? '',
+            videoDataUrl: p.videoDataUrl,
+            kind: 'video',
+            prompt: p.aiPrompt ?? '',
+            generatedAt: Date.now(),
+          });
+        } else if (p.imageDataUrl) {
+          archived.push({
+            id: cryptoRandomId(),
+            dataUrl: p.imageDataUrl,
+            kind: 'image',
+            prompt: p.aiPrompt ?? '',
+            generatedAt: Date.now(),
+          });
+        }
+        const prior = [...(p.imageHistory ?? []), ...archived];
         return {
           ...p,
           imageDataUrl: action.dataUrl,
           imageName: action.imageName,
+          aiPrompt: action.prompt,
+          imageHistory: prior,
+        };
+      });
+      return { ...state, items: updateStoryboardPanels(state.items, loc.itemIdx, nextPanels) };
+    }
+    case 'APPLY_AI_VIDEO': {
+      const loc = findPanelLocation(state.items, action.panelId);
+      if (!loc) return state;
+      const it = state.items[loc.itemIdx] as Extract<DocItem, { kind: 'storyboard' }>;
+      const nextPanels = it.panels.map((p) => {
+        if (p.id !== action.panelId) return p;
+        // Archive whichever media the panel currently has as a versioned entry.
+        const archived: import('./types').PanelImageVersion[] = [];
+        if (p.videoDataUrl) {
+          archived.push({
+            id: cryptoRandomId(),
+            dataUrl: p.imageDataUrl ?? '',
+            videoDataUrl: p.videoDataUrl,
+            kind: 'video',
+            prompt: p.aiPrompt ?? '',
+            generatedAt: Date.now(),
+          });
+        } else if (p.imageDataUrl) {
+          archived.push({
+            id: cryptoRandomId(),
+            dataUrl: p.imageDataUrl,
+            kind: 'image',
+            prompt: p.aiPrompt ?? '',
+            generatedAt: Date.now(),
+          });
+        }
+        const prior = [...(p.imageHistory ?? []), ...archived];
+        return {
+          ...p,
+          videoDataUrl: action.videoDataUrl,
+          imageDataUrl: action.posterDataUrl,
           aiPrompt: action.prompt,
           imageHistory: prior,
         };
@@ -511,22 +562,43 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
         const history = p.imageHistory ?? [];
         const target = history.find((v) => v.id === action.versionId);
         if (!target) return p;
-        // Push the currently-displayed image (if any) onto history, then swap.
+        // Archive whatever is currently on the panel (image or video).
         const withoutTarget = history.filter((v) => v.id !== action.versionId);
-        const archivedCurrent = p.imageDataUrl
-          ? [
-              ...withoutTarget,
-              {
-                id: cryptoRandomId(),
-                dataUrl: p.imageDataUrl,
-                prompt: p.aiPrompt ?? '',
-                generatedAt: Date.now(),
-              } as import('./types').PanelImageVersion,
-            ]
-          : withoutTarget;
+        const archived: import('./types').PanelImageVersion[] = [];
+        if (p.videoDataUrl) {
+          archived.push({
+            id: cryptoRandomId(),
+            dataUrl: p.imageDataUrl ?? '',
+            videoDataUrl: p.videoDataUrl,
+            kind: 'video',
+            prompt: p.aiPrompt ?? '',
+            generatedAt: Date.now(),
+          });
+        } else if (p.imageDataUrl) {
+          archived.push({
+            id: cryptoRandomId(),
+            dataUrl: p.imageDataUrl,
+            kind: 'image',
+            prompt: p.aiPrompt ?? '',
+            generatedAt: Date.now(),
+          });
+        }
+        const archivedCurrent = [...withoutTarget, ...archived];
+        // Restoring: if the target is a video, restore both video+poster.
+        // Otherwise clear the current video and just swap in the image.
+        if (target.kind === 'video' && target.videoDataUrl) {
+          return {
+            ...p,
+            imageDataUrl: target.dataUrl || p.imageDataUrl,
+            videoDataUrl: target.videoDataUrl,
+            aiPrompt: target.prompt || p.aiPrompt,
+            imageHistory: archivedCurrent,
+          };
+        }
         return {
           ...p,
           imageDataUrl: target.dataUrl,
+          videoDataUrl: null,
           aiPrompt: target.prompt || p.aiPrompt,
           imageHistory: archivedCurrent,
         };

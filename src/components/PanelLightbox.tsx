@@ -28,13 +28,26 @@ type LightboxMode = 'single' | 'grid' | 'compare';
  * Build the frame list for grid/compare from a panel's history + current.
  * Order: current first, then imageHistory newest→oldest.
  * (Matches NodeEditor's fullscreen convention: index 0 = current.)
+ *
+ * Both image and video versions are included. `videoDataUrl` on the synthetic
+ * `current` entry is populated when the panel currently has a video.
  */
 function framesFor(panel: Panel): PanelImageVersion[] {
   const out: PanelImageVersion[] = [];
-  if (panel.imageDataUrl) {
+  if (panel.videoDataUrl) {
+    out.push({
+      id: 'current',
+      dataUrl: panel.imageDataUrl ?? '',
+      videoDataUrl: panel.videoDataUrl,
+      kind: 'video',
+      prompt: panel.aiPrompt ?? '',
+      generatedAt: 0,
+    });
+  } else if (panel.imageDataUrl) {
     out.push({
       id: 'current',
       dataUrl: panel.imageDataUrl,
+      kind: 'image',
       prompt: panel.aiPrompt ?? '',
       generatedAt: 0,
     });
@@ -56,7 +69,7 @@ function compareColsFor(n: number): number {
 
 /** Zoomable/pannable frame — copy of NodeEditor's ZoomableFrame, sized to a cell.
  *  Scroll = zoom to cursor, drag = pan, double-click = reset. */
-function ZoomableImage({ url }: { url: string }) {
+function ZoomableImage({ url, videoUrl }: { url: string; videoUrl?: string }) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [scale, setScale] = useState(1);
   const [tx, setTx] = useState(0);
@@ -122,12 +135,23 @@ function ZoomableImage({ url }: { url: string }) {
       onPointerCancel={endPan}
       onDoubleClick={onDoubleClick}
     >
-      <img
-        src={url}
-        alt=""
-        draggable={false}
-        style={{ transform: `translate(${tx}px, ${ty}px) scale(${scale})` }}
-      />
+      {videoUrl ? (
+        <video
+          src={videoUrl}
+          controls={!zoomed}
+          loop
+          playsInline
+          poster={url || undefined}
+          style={{ transform: `translate(${tx}px, ${ty}px) scale(${scale})` }}
+        />
+      ) : (
+        <img
+          src={url}
+          alt=""
+          draggable={false}
+          style={{ transform: `translate(${tx}px, ${ty}px) scale(${scale})` }}
+        />
+      )}
       <div className="ne-fs-compare-zoom-hud">
         {Math.round(scale * 100)}%
         {zoomed ? ' · drag to pan · dbl-click to reset' : ' · scroll to zoom'}
@@ -241,8 +265,11 @@ export function PanelLightbox({
         padding: mode === 'single' ? '5vh 5vw' : 0,
       }}
     >
-      {/* Mode toolbar — shown in all modes so user can switch quickly. Sits on
-          the storyboard canvas in single view; is a solid row in grid/compare. */}
+      {/* Mode toolbar — shown in all modes EXCEPT single-view-with-captions
+          (captions area needs the vertical space and would otherwise be
+          obscured by the floating pill). Sits as a blurred pill floating
+          above the panel in single view; solid row in grid/compare. */}
+      {!(mode === 'single' && showCaptions) && (
       <div
         className="ne-fs-toolbar"
         onClick={(e) => e.stopPropagation()}
@@ -342,6 +369,7 @@ export function PanelLightbox({
           ✕
         </button>
       </div>
+      )}
 
       {mode === 'single' && (
         <>
@@ -506,10 +534,21 @@ export function PanelLightbox({
                   onClick={() => togglePick(f.id)}
                   title={`${isCurrent ? '● current' : `v${frames.length - i}`}${f.generatedAt ? ' · ' + new Date(f.generatedAt).toLocaleString() : ''} — click to pick`}
                 >
-                  <img src={f.dataUrl} alt="" draggable={false} />
+                  {f.kind === 'video' && f.videoDataUrl ? (
+                    <video
+                      src={f.videoDataUrl}
+                      poster={f.dataUrl || undefined}
+                      muted
+                      playsInline
+                      preload="metadata"
+                    />
+                  ) : (
+                    <img src={f.dataUrl} alt="" draggable={false} />
+                  )}
                   <div className="ne-fs-grid-tile-badges">
                     <span className="ne-fs-grid-tile-num">
                       {isCurrent ? '● current' : `v${frames.length - i}`}
+                      {f.kind === 'video' ? ' ▶' : ''}
                     </span>
                   </div>
                   <div className="ne-fs-grid-tile-check">{picked ? '✓' : ''}</div>
@@ -537,9 +576,9 @@ export function PanelLightbox({
               const isCurrent = f.id === 'current';
               return (
                 <div key={f.id} className="ne-fs-compare-cell">
-                  <ZoomableImage url={f.dataUrl} />
+                  <ZoomableImage url={f.dataUrl} videoUrl={f.kind === 'video' ? f.videoDataUrl : undefined} />
                   <div className="ne-fs-compare-caption">
-                    <span>{isCurrent ? '● current' : `v${frames.length - idx}`}</span>
+                    <span>{isCurrent ? '● current' : `v${frames.length - idx}`}{f.kind === 'video' ? ' ▶' : ''}</span>
                     {f.generatedAt ? (
                       <span className="ne-fs-compare-time">
                         {new Date(f.generatedAt).toLocaleTimeString()}
