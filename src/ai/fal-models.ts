@@ -577,42 +577,6 @@ export const FAL_MODELS: FalModelDef[] = [
     ],
   },
 
-  {
-    id: 'grok-imagine-image',
-    label: 'Grok Imagine Image',
-    vendor: 'xAI',
-    kind: 'image',
-    endpoint: 'xai/grok-imagine-image',
-    editEndpoint: 'xai/grok-imagine-image/edit',
-    refImageKey: 'image_urls',
-    refImageIsArray: true,
-    supportsImageInput: true,
-    supportsPrompt: true,
-    status: 'active',
-    notes: 'xAI Grok Imagine — text + image inputs, native to X.',
-    inputs: [
-      PROMPT_INPUT,
-      {
-        key: 'aspect_ratio',
-        label: 'Aspect ratio',
-        type: 'aspect',
-        default: '16:9',
-        options: IMAGE_ASPECTS,
-      },
-      {
-        key: 'num_images',
-        label: 'Number of images',
-        type: 'number',
-        default: 1,
-        min: 1,
-        max: 4,
-        step: 1,
-      },
-      IMAGE_URL_INPUT,
-      SEED_INPUT,
-    ],
-  },
-
   // ============================================================
   // VIDEO MODELS
   // Per Matt's 2026-07-15 spec:
