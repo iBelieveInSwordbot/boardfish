@@ -11,6 +11,8 @@
 // Coords are canvas coords, NOT screen coords. Screen-to-canvas conversion
 // happens once in NodeEditor via the (panOffset, zoom) transform.
 
+import { getFalModel, resolveFalModelId } from '../ai/fal-models';
+
 export type NodeId = string;
 export type PortId = string;
 
@@ -137,29 +139,59 @@ export function defaultPortsFor(kind: NodeKind, data?: Record<string, unknown>):
         { id: 'out', side: 'out', dataType: 'text', label: 'text' },
       ];
     case 'image-gen': {
-      // Ref inputs are dynamic — Nano Banana Pro (and some others) accept
-      // multiple reference images. Inspector's +/− stepper drives
-      // data.refCount; 1..6. The FIRST ref keeps the legacy id `ref` so
-      // existing saved graphs (which wired to `ref`) don't lose their edge
-      // on load. Additional refs use `ref1`, `ref2`, …
-      const refCount = clampInt((data?.refCount as number) ?? 1, 1, 6);
+      // Ref inputs are dynamic. Model may declare either:
+      //   (a) refPorts: distinct named ports (e.g. first/last frame). Executor
+      //       routes each port's image to that port's falKey.
+      //   (b) maxRefInputs (or generic): a variable-count list; the +/−
+      //       stepper in the Inspector drives data.refCount within [1..cap].
+      // Legacy fallback: single 'ref' port.
+      const model = getFalModelForData(data);
       const ports: NodePort[] = [
         { id: 'prompt', side: 'in', dataType: 'text', label: 'prompt' },
       ];
-      for (let i = 0; i < refCount; i++) {
-        const id = i === 0 ? 'ref' : `ref${i}`;
-        const label = refCount === 1 ? 'ref (opt.)' : `ref ${i + 1}`;
-        ports.push({ id, side: 'in', dataType: 'image', label });
+      if (model?.refPorts && model.refPorts.length > 0) {
+        for (const rp of model.refPorts) {
+          ports.push({ id: rp.portId, side: 'in', dataType: 'image', label: rp.label });
+        }
+      } else {
+        const cap = clampInt(model?.maxRefInputs ?? 6, 1, 9);
+        const refCount = clampInt((data?.refCount as number) ?? 1, 1, cap);
+        for (let i = 0; i < refCount; i++) {
+          const id = i === 0 ? 'ref' : `ref${i}`;
+          const label = refCount === 1 ? 'ref (opt.)' : `ref ${i + 1}`;
+          ports.push({ id, side: 'in', dataType: 'image', label });
+        }
       }
       ports.push({ id: 'out', side: 'out', dataType: 'image', label: 'image' });
       return ports;
     }
-    case 'movie-gen':
-      return [
+    case 'movie-gen': {
+      // Model may declare refPorts (Veo 3.1 FLF: first + last) OR a
+      // maxRefInputs count (Seedance 2 Reference: up to 9). Default is a
+      // single optional 'first' frame port.
+      const model = getFalModelForData(data);
+      const ports: NodePort[] = [
         { id: 'prompt', side: 'in', dataType: 'text', label: 'prompt' },
-        { id: 'first', side: 'in', dataType: 'image', label: 'first frame (opt.)' },
-        { id: 'out', side: 'out', dataType: 'video', label: 'video' },
       ];
+      if (model?.refPorts && model.refPorts.length > 0) {
+        for (const rp of model.refPorts) {
+          ports.push({ id: rp.portId, side: 'in', dataType: 'image', label: rp.label });
+        }
+      } else if (model?.maxRefInputs && model.maxRefInputs > 1) {
+        const cap = clampInt(model.maxRefInputs, 1, 9);
+        const refCount = clampInt((data?.refCount as number) ?? 1, 1, cap);
+        for (let i = 0; i < refCount; i++) {
+          const id = i === 0 ? 'first' : `ref${i}`;
+          const label = refCount === 1 ? 'first frame (opt.)' : `ref ${i + 1}`;
+          ports.push({ id, side: 'in', dataType: 'image', label });
+        }
+      } else {
+        // Legacy default: single 'first' frame.
+        ports.push({ id: 'first', side: 'in', dataType: 'image', label: 'first frame (opt.)' });
+      }
+      ports.push({ id: 'out', side: 'out', dataType: 'video', label: 'video' });
+      return ports;
+    }
     case 'out':
       return [
         { id: 'in', side: 'in', dataType: 'any', label: 'panel image' },
@@ -200,6 +232,17 @@ export function defaultPortsFor(kind: NodeKind, data?: Record<string, unknown>):
         { id: 'out', side: 'out', dataType: 'any', label: 'out' },
       ];
   }
+}
+
+// Given a node's data blob, resolve its modelId (via alias map) and look up
+// the FAL model registry. Returns null when the node has no modelId or the
+// id doesn't match any registered model. Kept internal to this module so the
+// port fn can peek at model.refPorts / model.maxRefInputs.
+function getFalModelForData(data?: Record<string, unknown>) {
+  const raw = typeof data?.modelId === 'string' ? (data.modelId as string) : '';
+  if (!raw) return null;
+  const resolved = resolveFalModelId(raw) ?? raw;
+  return getFalModel(resolved);
 }
 
 function clampInt(n: number, lo: number, hi: number): number {

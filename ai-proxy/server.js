@@ -14,10 +14,12 @@
 import express from 'express';
 import { spawn } from 'node:child_process';
 import { readFile, unlink, mkdtemp } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import http from 'node:http';
+import https from 'node:https';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -582,9 +584,41 @@ if (SERVE_STATIC) {
   });
 }
 
-app.listen(PORT, HOST, () => {
+// Optional HTTPS. Point TLS_CERT_FILE + TLS_KEY_FILE at cert + key files
+// (e.g. Tailscale-issued certs: `tailscale cert swordbot.tail2a1eb4.ts.net`)
+// to serve the app over HTTPS. Chromium blocks "insecure download" on
+// http:// origins, so HTTPS is required when users need to download the
+// generated MP4s / renders.
+//
+// Behavior:
+//   * If TLS_CERT_FILE and TLS_KEY_FILE are both present, listen on HTTPS.
+//   * If HTTP_REDIRECT_PORT is also set, additionally spin up a tiny
+//     HTTP listener on that port that 301-redirects to https://<host>.
+//   * Missing / unreadable cert files log a warning and fall back to HTTP
+//     so the app never fails to boot because of a stale cert path.
+const TLS_CERT_FILE = process.env.TLS_CERT_FILE || '';
+const TLS_KEY_FILE  = process.env.TLS_KEY_FILE  || '';
+const HTTP_REDIRECT_PORT = process.env.HTTP_REDIRECT_PORT ? Number(process.env.HTTP_REDIRECT_PORT) : null;
+
+function tryLoadTlsOptions() {
+  if (!TLS_CERT_FILE || !TLS_KEY_FILE) return null;
+  try {
+    const cert = readFileSync(TLS_CERT_FILE);
+    const key  = readFileSync(TLS_KEY_FILE);
+    return { cert, key };
+  } catch (err) {
+    console.warn(`[boardfish-ai-proxy] TLS cert/key unreadable (${err.code || err.message}); falling back to HTTP.`);
+    return null;
+  }
+}
+
+const tlsOptions = tryLoadTlsOptions();
+const server = tlsOptions ? https.createServer(tlsOptions, app) : http.createServer(app);
+const scheme = tlsOptions ? 'https' : 'http';
+
+server.listen(PORT, HOST, () => {
   const bindLabel = HOST === '0.0.0.0' ? `all interfaces:${PORT}` : `${HOST}:${PORT}`;
-  console.log(`[boardfish-ai-proxy] listening on ${bindLabel}`);
+  console.log(`[boardfish-ai-proxy] listening (${scheme}) on ${bindLabel}`);
   console.log(`  Static app: ${SERVE_STATIC ? DIST_DIR : '(none — dev-mode, no dist/ found)'}`);
   console.log(`  POST /api/ronan/shot-list   { script, defaultAspect?, constraints?, sessionId?, directorRefs?, styleKey? }`);
   console.log(`  POST /api/ronan/refine      { instruction, shot, sessionId?, defaultAspect?, directorRefs? }`);
@@ -594,3 +628,17 @@ app.listen(PORT, HOST, () => {
   console.log(`  POST /api/image/generate    { prompt, aspectRatio? }`);
   console.log(`  GET  /api/health`);
 });
+
+// Optional HTTP -> HTTPS redirect listener. Runs alongside the HTTPS server
+// so links to the old http://host:5175/ still work.
+if (tlsOptions && HTTP_REDIRECT_PORT) {
+  const redirect = http.createServer((req, res) => {
+    const host = (req.headers.host || '').split(':')[0] || HOST;
+    const location = `https://${host}:${PORT}${req.url}`;
+    res.writeHead(301, { Location: location });
+    res.end();
+  });
+  redirect.listen(HTTP_REDIRECT_PORT, HOST, () => {
+    console.log(`[boardfish-ai-proxy] http\u2192https redirect on ${HOST}:${HTTP_REDIRECT_PORT} \u2192 https://<host>:${PORT}`);
+  });
+}

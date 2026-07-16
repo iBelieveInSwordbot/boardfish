@@ -36,12 +36,17 @@ const EMPTY: FalCostEstimate = { amount: null, isTotal: false, price: null };
  * - Pass `{ seconds: N, variants: M }` for video endpoints priced by
  *   "seconds". Each variant is a separate billed job, so total cost is
  *   `unit_price * seconds * variants`.
+ * - Pass `{ resolutionMultiplier: X }` when the endpoint's unit_price is a
+ *   baseline that scales with output resolution (Nano Banana Pro at 1K vs
+ *   2K vs 4K). The caller resolves the multiplier from the model's
+ *   `resolutionCostMultiplier` map + the node's selected resolution. When
+ *   omitted, defaults to 1.
  * - If neither matches the returned unit, fall back to showing the
  *   unit_price as an unmultiplied hint (e.g. token-priced Seedance).
  */
 export function useFalCostEstimate(
   endpointId: string | null | undefined,
-  quantity: { images?: number; seconds?: number; variants?: number },
+  quantity: { images?: number; seconds?: number; variants?: number; resolutionMultiplier?: number },
 ): FalCostEstimate {
   const [price, setPrice] = useState<FalPriceInfo | null>(null);
   const [failed, setFailed] = useState(false);
@@ -76,12 +81,15 @@ export function useFalCostEstimate(
   const images = quantity.images ?? null;
   const seconds = quantity.seconds ?? null;
   const variants = Math.max(1, quantity.variants ?? 1);
+  const resMul = quantity.resolutionMultiplier ?? 1;
 
   // Exact totals when unit matches the quantity we can measure ahead of time.
   if (unit === 'images' && images != null && images > 0) {
     // For images, the `images` count is already the total across all
     // variants — fal bills sum(num_images) across chunked jobs.
-    return { amount: unitPrice * images, isTotal: true, price };
+    // resMul lets image models with tiered resolution pricing (Nano Banana
+    // Pro: 1K/2K/4K) scale the base unit_price by the selected resolution.
+    return { amount: unitPrice * images * resMul, isTotal: true, price };
   }
   if (unit === 'seconds' && seconds != null && seconds > 0) {
     // For video, each variant is a separate billed job.

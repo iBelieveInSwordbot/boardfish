@@ -2,3 +2,9 @@ node_modules/
 dist/
 .DS_Store
 *.log
+
+# TLS certs (self-signed for HTTPS listener). Never commit private keys.
+tls/*.crt
+tls/*.key
+tls/openssl.cnf
+

@@ -35,7 +35,7 @@ import {
 } from 'react';
 import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from 'react';
 import type { BaseNode, Edge, NodeGraph, NodeId, NodeKind, PortId } from '../nodes/types';
-import { emptyGraph, seedDefaultGraph } from '../nodes/types';
+import { emptyGraph, seedDefaultGraph, newId } from '../nodes/types';
 import {
   addEdge,
   addNode,
@@ -1419,7 +1419,7 @@ export function NodeEditor(props: NodeEditorProps) {
         ? new Set<NodeId>(cur)
         : new Set<NodeId>([node.id]);
       const clip = copyNodesToClipboard(graphRef.current, sourceIds);
-      const { graph: nextGraph, newIds } = pasteClipboard(graphRef.current, clip, 0, 0);
+      const { graph: pastedGraph, newIds } = pasteClipboard(graphRef.current, clip, 0, 0);
       // Find the paste-mapped id for the pointer-down node so we anchor drag
       // on the correct copy. `pasteClipboard` doesn't expose the id map, so
       // we recover it by matching order: `newIds` is in the same order as
@@ -1429,6 +1429,39 @@ export function NodeEditor(props: NodeEditorProps) {
         .map((n) => n.id);
       const idxOfAnchor = orderedSourceIds.indexOf(node.id);
       const anchorNewId = idxOfAnchor >= 0 ? newIds[idxOfAnchor] : newIds[0];
+      // Preserve *incoming* external wires on the duplicate(s). For every
+      // edge whose destination is a copied node but whose source is NOT in
+      // the selection, add a new edge from the same source to the copy's
+      // matching input port. Outgoing/external and edges between
+      // non-selected nodes are left alone. Edges that were fully inside the
+      // selection are already handled by pasteClipboard.
+      const idMap = new Map<NodeId, NodeId>();
+      for (let i = 0; i < orderedSourceIds.length; i++) {
+        idMap.set(orderedSourceIds[i], newIds[i]);
+      }
+      // Skip any target port on the copy that pasteClipboard already wired
+      // (internal edge preserved) — one edge per input port is the invariant.
+      const occupiedInputs = new Set<string>();
+      for (const e of pastedGraph.edges) {
+        occupiedInputs.add(`${e.to.nodeId}:${e.to.portId}`);
+      }
+      const extraEdges: Edge[] = [];
+      for (const e of graphRef.current.edges) {
+        if (!sourceIds.has(e.to.nodeId)) continue;      // dest not copied
+        if (sourceIds.has(e.from.nodeId)) continue;     // internal (already handled)
+        const newToId = idMap.get(e.to.nodeId);
+        if (!newToId) continue;
+        if (occupiedInputs.has(`${newToId}:${e.to.portId}`)) continue;
+        extraEdges.push({
+          id: newId('e'),
+          from: { nodeId: e.from.nodeId, portId: e.from.portId },
+          to: { nodeId: newToId, portId: e.to.portId },
+        });
+        occupiedInputs.add(`${newToId}:${e.to.portId}`);
+      }
+      const nextGraph: NodeGraph = extraEdges.length > 0
+        ? { ...pastedGraph, edges: [...pastedGraph.edges, ...extraEdges] }
+        : pastedGraph;
       dispatch({ type: 'PASTE_GRAPH', graph: nextGraph });
       setSelection(newIds);
       // Re-target the drag onto the new anchor copy. It shares (x,y) with

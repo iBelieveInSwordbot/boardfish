@@ -1230,39 +1230,47 @@ const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
     // Variants (chips 1–4 + free-form input for arbitrary counts up to 20;
     // executor chunks into FAL num_images-4 batches when count > 4).
     renderVariantsControl(node, onChangeData, 'num_images', 20),
-    // Ref inputs stepper. Nano Banana Pro accepts multiple reference
-    // images; the executor already collects every image on inputs.images.
-    // Bumping this adds `ref1`, `ref2`, … ports to the node. Range 1–6.
-    createElement('label', { className: 'ne-inspect-label' }, 'Ref inputs'),
+    // Ref inputs stepper. Only shown for models that support a variable
+    // number of refs (maxRefInputs > 1 and no fixed refPorts). Fixed-port
+    // models (Veo 3.1 FLF: first+last) render exactly their declared ports
+    // and don't get a stepper.
     (() => {
-      const refCount = Math.max(1, Math.min(6, Number(node.data.refCount ?? 1)));
+      if (model?.refPorts && model.refPorts.length > 0) return null;
+      const cap = Math.max(1, Math.min(9, model?.maxRefInputs ?? 1));
+      if (cap <= 1) return null;
+      const refCount = Math.max(1, Math.min(cap, Number(node.data.refCount ?? 1)));
       return createElement(
-        'div',
-        { className: 'ne-inspect-chip-row' },
+        Fragment,
+        null,
+        createElement('label', { className: 'ne-inspect-label' }, 'Ref inputs'),
         createElement(
-          'button',
-          {
-            type: 'button',
-            className: 'ne-inspect-chip',
-            disabled: refCount <= 1,
-            onClick: () => onChangeData({ refCount: Math.max(1, refCount - 1) }),
-          },
-          '\u2212 input',
-        ),
-        createElement(
-          'button',
-          {
-            type: 'button',
-            className: 'ne-inspect-chip',
-            disabled: refCount >= 6,
-            onClick: () => onChangeData({ refCount: Math.min(6, refCount + 1) }),
-          },
-          '+ input',
-        ),
-        createElement(
-          'span',
-          { style: { fontSize: '11px', color: '#9a9aa2', alignSelf: 'center' } },
-          `${refCount} ref${refCount === 1 ? '' : 's'}`,
+          'div',
+          { className: 'ne-inspect-chip-row' },
+          createElement(
+            'button',
+            {
+              type: 'button',
+              className: 'ne-inspect-chip',
+              disabled: refCount <= 1,
+              onClick: () => onChangeData({ refCount: Math.max(1, refCount - 1) }),
+            },
+            '\u2212 input',
+          ),
+          createElement(
+            'button',
+            {
+              type: 'button',
+              className: 'ne-inspect-chip',
+              disabled: refCount >= cap,
+              onClick: () => onChangeData({ refCount: Math.min(cap, refCount + 1) }),
+            },
+            '+ input',
+          ),
+          createElement(
+            'span',
+            { style: { fontSize: '11px', color: '#9a9aa2', alignSelf: 'center' } },
+            `${refCount} / ${cap} ref${refCount === 1 ? '' : 's'}`,
+          ),
         ),
       );
     })(),
@@ -1295,16 +1303,26 @@ const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
     // Quantity is num_images (default 1, capped at the variants cap the
     // Inspector allows). The button falls back to plain "Generate" while
     // pricing loads or when the endpoint isn't priced by images.
-    createElement(GenerateButtonWithCost, {
-      endpointId: model?.endpoint ?? null,
-      quantity: {
-        images: Math.max(1, Math.min(20, Number(node.data.num_images ?? 1))),
-      },
-      disabled: inFlight,
-      inFlight,
-      busyLabel: 'Generating\u2026',
-      onClick: () => onGenerate(),
-    }),
+    //
+    // Nano Banana Pro (and any model with resolutionCostMultiplier) charges
+    // more at higher resolutions; the fal /pricing endpoint only returns a
+    // baseline. Look up the multiplier for the selected resolution and let
+    // the estimator apply it.
+    (() => {
+      const resValue = String(node.data.resolution ?? '');
+      const resMul = model?.resolutionCostMultiplier?.[resValue] ?? 1;
+      return createElement(GenerateButtonWithCost, {
+        endpointId: model?.endpoint ?? null,
+        quantity: {
+          images: Math.max(1, Math.min(20, Number(node.data.num_images ?? 1))),
+          resolutionMultiplier: resMul,
+        },
+        disabled: inFlight,
+        inFlight,
+        busyLabel: 'Generating\u2026',
+        onClick: () => onGenerate(),
+      });
+    })(),
     // Thumbnail
     url
       ? createElement(
@@ -1376,6 +1394,49 @@ const MovieGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
     // valid enumerated durations, Seedance gets a clamped number field, and
     // the schema's default fires automatically so the field is never blank.
     renderDurationControl(node, onChangeData),
+    // Ref inputs stepper for video models with variable ref counts
+    // (Seedance 2 Reference: up to 9). Fixed-port models (Veo 3.1 FLF) get
+    // one port per declaration and no stepper. Same shape as ImageGen.
+    (() => {
+      if (model?.refPorts && model.refPorts.length > 0) return null;
+      const cap = Math.max(1, Math.min(9, model?.maxRefInputs ?? 1));
+      if (cap <= 1) return null;
+      const refCount = Math.max(1, Math.min(cap, Number(node.data.refCount ?? 1)));
+      return createElement(
+        Fragment,
+        null,
+        createElement('label', { className: 'ne-inspect-label' }, 'Ref inputs'),
+        createElement(
+          'div',
+          { className: 'ne-inspect-chip-row' },
+          createElement(
+            'button',
+            {
+              type: 'button',
+              className: 'ne-inspect-chip',
+              disabled: refCount <= 1,
+              onClick: () => onChangeData({ refCount: Math.max(1, refCount - 1) }),
+            },
+            '\u2212 input',
+          ),
+          createElement(
+            'button',
+            {
+              type: 'button',
+              className: 'ne-inspect-chip',
+              disabled: refCount >= cap,
+              onClick: () => onChangeData({ refCount: Math.min(cap, refCount + 1) }),
+            },
+            '+ input',
+          ),
+          createElement(
+            'span',
+            { style: { fontSize: '11px', color: '#9a9aa2', alignSelf: 'center' } },
+            `${refCount} / ${cap} ref${refCount === 1 ? '' : 's'}`,
+          ),
+        ),
+      );
+    })(),
     // Variants: FAL video endpoints don't accept num_videos natively, so the
     // executor fires N parallel jobs of 1 each. Cap at 10 because each job
     // costs 1–5 min and $$$; 10 concurrent is already aggressive.

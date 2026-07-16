@@ -17,8 +17,11 @@ export type GenerateButtonWithCostProps = {
   /** Quantity signals — pass whichever matches the endpoint's unit.
    *  For video: `variants` multiplies the per-job cost since fal fires
    *  N separate jobs. For images, `images` is already the total across
-   *  chunked jobs so no `variants` needed. */
-  quantity: { images?: number; seconds?: number; variants?: number };
+   *  chunked jobs so no `variants` needed.
+   *  For image models with tiered resolution pricing (Nano Banana Pro:
+   *  1K/2K/4K), pass `resolutionMultiplier` derived from the model's
+   *  resolutionCostMultiplier map × the node's selected resolution. */
+  quantity: { images?: number; seconds?: number; variants?: number; resolutionMultiplier?: number };
   /** Disables the button (e.g. mid-generation). */
   disabled: boolean;
   /** Label shown while a run is in flight. */

@@ -835,13 +835,32 @@ function buildFalInput(
     else if (upstreamPrompt && existing) out.prompt = `${existing} ${upstreamPrompt}`.trim();
   }
 
-  // Ref images: source of truth is the passed-in refImages arg. Fall back to
-  // legacy behavior (first upstream image as `image_url`) for callers that
-  // don't pass refImages (movie-gen for now).
-  const refs = refImages ?? (inputs.images[0] ? [inputs.images[0]] : []);
-  if (refs.length > 0) {
-    if (refImageIsArray) out[refImageKey] = refs;
-    else out[refImageKey] = refs[0];
+  // Ref images. Three routing strategies, in priority order:
+  //
+  //  1. model.refPorts: distinct named ports (Veo 3.1 FLF has first + last).
+  //     Each port's image goes to the port's declared falKey. Any leftover
+  //     images (from upstream fan-out beyond declared ports) are dropped.
+  //
+  //  2. legacy passed-in refImages arg: caller aggregated all upstream image
+  //     inputs into a flat list; place under refImageKey.
+  //
+  //  3. fallback: first upstream image as `image_url` (legacy movie-gen).
+  if (model?.refPorts && model.refPorts.length > 0) {
+    for (const rp of model.refPorts) {
+      const upstream = inputs.byPort[rp.portId]?.dataUrl;
+      // Also accept a pasted URL directly on node.data (e.g. user pasted a
+      // last_frame_url string). Priority: wired port > data.
+      const fromData = (node.data as Record<string, unknown>)[rp.falKey];
+      const val = upstream ?? (typeof fromData === 'string' && fromData ? fromData : undefined);
+      if (val) out[rp.falKey] = val;
+      else delete out[rp.falKey];
+    }
+  } else {
+    const refs = refImages ?? (inputs.images[0] ? [inputs.images[0]] : []);
+    if (refs.length > 0) {
+      if (refImageIsArray) out[refImageKey] = refs;
+      else out[refImageKey] = refs[0];
+    }
   }
 
   return out;

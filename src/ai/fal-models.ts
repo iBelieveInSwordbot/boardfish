@@ -42,6 +42,23 @@ export type FalModelDef = {
   refImageKey?: string;
   // If true, refImageKey expects an array of URLs; if false, a single string.
   refImageIsArray?: boolean;
+  // When a model needs multiple *distinct* image input ports (e.g. Veo 3.1
+  // First/Last Frame needs both first_frame_url and last_frame_url), declare
+  // each here. The node renders one port per entry (in order); the executor
+  // routes whatever image reaches that port to `falKey` in the payload.
+  // Overrides refImageKey/refImageIsArray when present.
+  refPorts?: Array<{ portId: string; label: string; falKey: string }>;
+  // For gen nodes where the number of refs is user-controlled (Nano Banana
+  // Pro accepts 1–6; Seedance 2 Reference accepts up to 9), set the max.
+  // The Inspector's +/− stepper reads this cap.
+  maxRefInputs?: number;
+  // When the fal /models/pricing endpoint returns a single unit_price but
+  // the model actually charges more at higher resolutions (Nano Banana Pro
+  // at 1K vs 2K vs 4K), declare per-resolution multipliers here. The cost
+  // estimator reads node.data.resolution and multiplies unit_price by this.
+  // Keyed on the same string that appears in the resolution `select` input.
+  // Omit for models whose fal-returned price is already correct.
+  resolutionCostMultiplier?: Record<string, number>;
   inputs: FalModelInput[];           // input schema for the Inspector
   supportsImageInput?: boolean;      // takes an existing image as reference/edit source
   supportsPrompt: boolean;           // true for text-driven models
@@ -194,6 +211,14 @@ export const FAL_MODELS: FalModelDef[] = [
     editEndpoint: 'fal-ai/nano-banana-pro/edit',     // image-to-image / reference edit
     refImageKey: 'image_urls',
     refImageIsArray: true,
+    maxRefInputs: 6,
+    // Nano Banana Pro charges more at higher resolutions but fal's
+    // /models/pricing only returns a single baseline unit_price ($0.15,
+    // treated as the 1K tier). Multipliers below are approximate scaling
+    // factors reported by fal for 2K/4K output; tune when actual invoices
+    // land. The estimator applies this to the base unit_price so 1K stays
+    // matched to the returned value.
+    resolutionCostMultiplier: { '1K': 1, '2K': 2, '4K': 4 },
     supportsImageInput: true,
     supportsPrompt: true,
     status: 'active',
@@ -252,6 +277,10 @@ export const FAL_MODELS: FalModelDef[] = [
     editEndpoint: 'fal-ai/nano-banana-2/edit',
     refImageKey: 'image_urls',
     refImageIsArray: true,
+    maxRefInputs: 6,
+    // Nano Banana 2 exposes 0.5K/1K/2K/4K. Same scaling assumption as
+    // Nano Banana Pro (see comment above). 0.5K ≈ half a 1K.
+    resolutionCostMultiplier: { '0.5K': 0.5, '1K': 1, '2K': 2, '4K': 4 },
     supportsImageInput: true,
     supportsPrompt: true,
     status: 'active',
@@ -787,12 +816,15 @@ export const FAL_MODELS: FalModelDef[] = [
     vendor: 'Google',
     kind: 'video',
     endpoint: 'fal-ai/veo3.1/first-last-frame-to-video',
-    refImageKey: 'first_frame_url',
-    refImageIsArray: false,
+    // Two dedicated ports. Executor routes each to its own FAL key.
+    refPorts: [
+      { portId: 'first', label: 'first frame', falKey: 'first_frame_url' },
+      { portId: 'last',  label: 'last frame',  falKey: 'last_frame_url'  },
+    ],
     supportsImageInput: true,
     supportsPrompt: true,
     status: 'active',
-    notes: 'Veo 3.1 first/last frame interpolation. Wire a start image; optional last_frame_url below.',
+    notes: 'Veo 3.1 first/last frame interpolation. Wire images to BOTH first and last ports.',
     inputs: [
       PROMPT_INPUT,
       NEGATIVE_PROMPT_INPUT,
@@ -848,12 +880,14 @@ export const FAL_MODELS: FalModelDef[] = [
     vendor: 'Google',
     kind: 'video',
     endpoint: 'fal-ai/veo3.1/fast/first-last-frame-to-video',
-    refImageKey: 'first_frame_url',
-    refImageIsArray: false,
+    refPorts: [
+      { portId: 'first', label: 'first frame', falKey: 'first_frame_url' },
+      { portId: 'last',  label: 'last frame',  falKey: 'last_frame_url'  },
+    ],
     supportsImageInput: true,
     supportsPrompt: true,
     status: 'active',
-    notes: 'Veo 3.1 Fast first/last frame — cheaper draft variant.',
+    notes: 'Veo 3.1 Fast first/last frame — wire images to BOTH first and last ports.',
     inputs: [
       PROMPT_INPUT,
       NEGATIVE_PROMPT_INPUT,
@@ -1313,6 +1347,7 @@ export const FAL_MODELS: FalModelDef[] = [
     editEndpoint: 'bytedance/seedance-2.0/reference-to-video',
     refImageKey: 'image_urls',
     refImageIsArray: true,
+    maxRefInputs: 9,
     supportsImageInput: true,
     supportsPrompt: true,
     status: 'active',
