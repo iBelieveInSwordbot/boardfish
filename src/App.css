@@ -2213,6 +2213,11 @@ input, textarea, select {
   justify-content: center;
   margin-bottom: 18px;
 }
+.logo-loader-mark-wrap-wide {
+  /* Wide variant for the IBIS wordmark (aspect ~2.7:1). */
+  width: 280px;
+  height: 110px;
+}
 .logo-loader-glow {
   position: absolute;
   inset: 8px;
@@ -2225,7 +2230,6 @@ input, textarea, select {
 .logo-loader-mark {
   position: relative;
   z-index: 1;
-  filter: drop-shadow(0 0 12px rgba(134, 59, 255, 0.35));
 }
 .logo-loader-sweep-spin {
   animation: logo-loader-spin 2.2s linear infinite;
@@ -2238,10 +2242,13 @@ input, textarea, select {
   to   { transform: rotate(360deg); }
 }
 @keyframes logo-loader-slide {
-  0%   { transform: translateY(-30px); opacity: 0; }
+  /* Shimmer bar starts above the wordmark (viewBox y=480) and slides to
+     below the wordmark (viewBox y=745). Values are in SVG userspace px
+     because the transform is applied to a child of the <svg viewBox>. */
+  0%   { transform: translateY(-120px); opacity: 0; }
   20%  { opacity: 1; }
   80%  { opacity: 1; }
-  100% { transform: translateY(56px); opacity: 0; }
+  100% { transform: translateY(260px); opacity: 0; }
 }
 @keyframes logo-loader-breathe {
   0%, 100% { opacity: 0.28; transform: scale(0.94); }
