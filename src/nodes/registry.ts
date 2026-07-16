@@ -1986,6 +1986,12 @@ const PanelRefInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) => 
 
   const activeSb = storyboards.find((s) => s.id === activeSbId) ?? storyboards[0];
 
+  // Zoom slider for the thumbnail grid. 0 = default multi-column view (auto-fill
+  // with a small minmax), 1 = single-column 1×N with the biggest possible tiles.
+  // Values in between smoothly enlarge the column min-width. Kept as inspector-
+  // local state (not persisted on the node) since it's a view preference.
+  const [gridZoom, setGridZoom] = useState<number>(0);
+
   return createElement(
     'div',
     { className: 'ne-inspect-body' },
@@ -2022,16 +2028,44 @@ const PanelRefInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) => 
             : null,
           // Grid — tiles adopt the storyboard's panel aspect ratio so
           // portrait panels don't get their heads cropped by square thumbs.
+          // Zoom slider row — sits between the tabs and the grid.
+          activeSb && activeSb.panels.length > 1
+            ? createElement(
+                'div',
+                { className: 'ne-panelref-zoom' },
+                createElement('span', { className: 'ne-panelref-zoom-label' }, 'Grid size'),
+                createElement('input', {
+                  type: 'range',
+                  min: 0,
+                  max: 100,
+                  step: 1,
+                  value: Math.round(gridZoom * 100),
+                  onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
+                    setGridZoom(Number(e.target.value) / 100),
+                  className: 'ne-panelref-zoom-slider',
+                  title: 'Drag right for bigger tiles. Max = 1×N single column.',
+                }),
+              )
+            : null,
           activeSb
             ? (() => {
                 const ar = activeSb.panels[0]?.aspectRatio ?? 1;
                 // Portrait storyboards need narrower columns so tiles don't
                 // become huge vertically; landscape can use wider columns.
-                const minColPx = ar >= 1 ? 96 : Math.max(64, Math.round(96 * ar));
+                const baseMinCol = ar >= 1 ? 96 : Math.max(64, Math.round(96 * ar));
+                // Inspector drawer is 340px wide with ~16px horizontal padding
+                // in .ne-inspector-scroll + 4px of grid padding/gap accounting.
+                // Aim for a min-col near the usable width when zoomed all the
+                // way in — that forces `auto-fill` to lay out a single column.
+                const maxMinCol = 320;
+                const minColPx = Math.round(baseMinCol + (maxMinCol - baseMinCol) * gridZoom);
+                // When zoomed, drop the fixed max-height so big tiles are usable
+                // (the inspector's own scroll container handles overflow).
+                const isZoomed = gridZoom > 0.05;
                 return createElement(
                   'div',
                   {
-                    className: 'ne-panelref-grid',
+                    className: 'ne-panelref-grid' + (isZoomed ? ' is-zoomed' : ''),
                     style: {
                       gridTemplateColumns: `repeat(auto-fill, minmax(${minColPx}px, 1fr))`,
                     },

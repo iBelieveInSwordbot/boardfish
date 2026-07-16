@@ -661,6 +661,25 @@
   border-color: #4a86d5;
   color: #fff;
 }
+.ne-panelref-zoom {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0 4px;
+}
+.ne-panelref-zoom-label {
+  font-size: 10px;
+  color: #8a8a95;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.ne-panelref-zoom-slider {
+  flex: 1;
+  accent-color: #3a76c9;
+  cursor: pointer;
+  min-width: 0;
+}
 .ne-panelref-grid {
   display: grid;
   /* grid-template-columns is set inline based on the storyboard's aspect */
@@ -669,6 +688,12 @@
   overflow-y: auto;
   padding: 2px;
   align-items: start;
+}
+/* When the user zooms the grid, drop the internal max-height so big tiles are
+   fully visible — the inspector's own scroll container handles overflow. */
+.ne-panelref-grid.is-zoomed {
+  max-height: none;
+  overflow-y: visible;
 }
 .ne-panelref-tile {
   position: relative;
