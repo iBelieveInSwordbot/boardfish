@@ -2147,3 +2147,52 @@ input, textarea, select {
   pointer-events: none;
   z-index: 3;
 }
+
+/* ---------- Boardfish 6 AI Director additions ---------- */
+.ai-preview-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 12px 0 10px;
+  border-bottom: 1px solid #26262c;
+}
+.ai-preview-tab {
+  background: transparent;
+  color: #999;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+}
+.ai-preview-tab:hover { color: #ddd; }
+.ai-preview-tab.active {
+  color: #fff;
+  border-bottom-color: #4a9eff;
+}
+.ai-asset-editor {
+  margin-bottom: 12px;
+}
+.ai-asset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+}
+.ai-asset-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.ai-asset-row .ai-input,
+.ai-asset-row .ai-textarea {
+  flex: 1;
+}
+.ai-btn-icon {
+  min-width: 32px;
+  padding: 6px 10px;
+}
+.ai-tag-ref {
+  background: #1a2a3a !important;
+  color: #7fc7ff !important;
+}

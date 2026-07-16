@@ -74,6 +74,35 @@ export async function generatePanelImage(input: {
   return postJson<ImageGenResponse>('/api/image/generate', input);
 }
 
+// ---------- PDF / text import (Boardfish 6) ----------
+
+export type ImportPdfResponse = {
+  ok: true;
+  filename: string;
+  text: string;
+  pages: number;
+  kind: 'pdf' | 'text';
+};
+
+/**
+ * Upload a PDF (or plain text file) to the AI proxy and get the extracted
+ * text back. The browser hands off the raw File; the server does the parse.
+ */
+export async function importScriptFile(file: File): Promise<ImportPdfResponse> {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await fetch('/api/import/pdf', { method: 'POST', body: form });
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try {
+      const err = await res.json();
+      if (err?.error) msg = err.error;
+    } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+  return res.json() as Promise<ImportPdfResponse>;
+}
+
 // ---------- FAL passthrough (Boardfish 5 node editor) ----------
 //
 // Every FAL call from the browser goes through the local ai-proxy at

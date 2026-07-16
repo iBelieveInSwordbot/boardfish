@@ -18,7 +18,7 @@ export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector, onO
   return (
     <header className="toolbar">
       <div className="toolbar-brand">
-        <span className="brand-name">Boardfish 5 <span style={{ opacity: 0.55, fontSize: '0.75em', fontWeight: 500 }}>· video (beta)</span></span>
+        <span className="brand-name">Boardfish 6 <span style={{ opacity: 0.55, fontSize: '0.75em', fontWeight: 500 }}>· assets (beta)</span></span>
       </div>
       <div className="toolbar-project">
         <input

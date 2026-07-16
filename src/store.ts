@@ -190,6 +190,10 @@ export type Action =
   | { type: 'UPDATE_STORYBOARD_OVERRIDES'; id: string; patch: StoryboardOverrides; merge?: boolean }
   | { type: 'CLEAR_STORYBOARD_OVERRIDE'; id: string; section: 'grid' | 'panelAspect' | 'fields' | 'name' }
   | { type: 'SET_LAST_STORYBOARD_PANELS'; panels: Panel[]; name?: string }
+  // Boardfish 6 AI Director: append a whole sequence of pre-built items (title
+  // slide + asset storyboard + … + final storyboard) atomically. Used by the
+  // asset-first AI Director wizard.
+  | { type: 'APPEND_ITEMS'; items: DocItem[]; selectItemId?: string }
   // AI: replace the panel's current image with a new one, pushing the previous
   // image (if any) onto imageHistory. Preserves prompt+timestamp per version.
   | { type: 'APPLY_AI_IMAGE'; panelId: string; dataUrl: string; imageName: string; prompt: string; generatedAt: number }
@@ -784,6 +788,29 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
         ...state,
         items: [...state.items, newItem],
         selectedItemId: newItem.id,
+        selectedPanelIds: [],
+        lastClickedPanelId: null,
+      };
+    }
+    case 'APPEND_ITEMS': {
+      // Boardfish 6 AI Director: append a batch of pre-built items in one
+      // dispatch so the wizard can lay down title slides + asset storyboards
+      // + the final storyboard as a single atomic mutation. Storyboard panels
+      // still go through normalizePanel so their field shapes stay canonical.
+      const normalized = action.items.map((it): DocItem => {
+        if (it.kind === 'storyboard') {
+          return { ...it, panels: it.panels.map(normalizePanel) };
+        }
+        return it;
+      });
+      const nextItems = [...state.items, ...normalized];
+      const selectId = action.selectItemId
+        ?? normalized[normalized.length - 1]?.id
+        ?? state.selectedItemId;
+      return {
+        ...state,
+        items: nextItems,
+        selectedItemId: selectId,
         selectedPanelIds: [],
         lastClickedPanelId: null,
       };

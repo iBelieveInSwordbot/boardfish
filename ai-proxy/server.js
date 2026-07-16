@@ -1,8 +1,9 @@
-// Boardfish 5 AI proxy (branched from v4 baseline).
+// Boardfish 6 AI proxy (branched from v5 baseline).
 // Bridges the Vite dev server / built app to OpenClaw + FAL:
-//   POST /api/ronan/shot-list   → Ronan turns a script into a structured shot list
+//   POST /api/ronan/shot-list   → Ronan turns a script into a structured shot list + assets
 //   POST /api/ronan/refine      → Ronan rewrites a single shot with fresh direction
 //   POST /api/image/generate    → Nano Banana Pro renders one panel image (returns data URL)
+//   POST /api/import/pdf        → Extract plain text from an uploaded PDF (multipart)
 //   POST /api/fal/run           → Submit a job to any FAL model endpoint and wait for the result
 //   GET  /api/fal/health        → Whether FAL_KEY is configured on the server
 //   GET  /api/styles            → Named style presets
@@ -12,6 +13,7 @@
 // to the browser — the browser only sends job payloads through /api/fal/run.
 
 import express from 'express';
+import multer from 'multer';
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -241,11 +243,24 @@ CONSTRAINTS:
 ${styleLine}
 ${constraints ? `- Additional user constraints: ${constraints}` : ''}
 
+ALSO extract three asset lists from the script:
+
+- ACTORS: every named character who appears in a shot. If the script uses a generic role (WAITRESS, GUARD #2) but no name, use that role as the name. Do NOT invent minor background people who never speak or are only referenced in passing.
+- LOCATIONS: every distinct place a shot happens in. Match slug lines when present ("INT. DINER - NIGHT" → "Diner"). Merge repeats.
+- PROPS: important story objects the camera lingers on or that plot depends on (the letter, the pistol, the briefcase). Do NOT include ambient set dressing.
+
+For each asset, write a "description" that is a visually concrete prompt the same text-to-image model could render blind. Include the style directive verbatim at the end of the description if one is provided. Actor descriptions should describe the person head-to-toe (age, build, hair, wardrobe, notable features, expression) so a full-body reference image is generatable. Location descriptions should describe the place at the time of day it appears (lighting, era, mood, notable set pieces). Prop descriptions describe the object in isolation (material, era, condition, distinguishing features).
+
+For each shot, also fill in a "refs" object listing which of those asset names actually appear in that shot (subset of the asset names you produced above). This lets the storyboard tool wire the asset images in as visual references.
+
 RESPOND WITH ONE JSON OBJECT AND NOTHING ELSE. No markdown fences, no commentary before or after. Schema:
 
 {
   "title": "short project title you infer from the script",
   "directorNotes": "2-3 sentences on your overall approach (which director's sensibility, why)",
+  "actors": [ { "name": "JOE", "description": "full-body prompt describing JOE" } ],
+  "locations": [ { "name": "Diner", "description": "prompt describing the diner interior at night" } ],
+  "props": [ { "name": "Letter", "description": "prompt describing the crumpled hand-written letter" } ],
   "shots": [
     {
       "shotNumber": 1,
@@ -256,7 +271,8 @@ RESPOND WITH ONE JSON OBJECT AND NOTHING ELSE. No markdown fences, no commentary
       "angle": "EYE | HIGH | LOW | DUTCH | OVERHEAD",
       "aspectRatio": "16:9",
       "imagePrompt": "visually concrete text-to-image prompt: subject, action, lighting, mood, camera language. Append the style directive verbatim at the end if one is provided above.",
-      "directorNote": "why this shot at this beat, referencing the named directors when relevant. One line."
+      "directorNote": "why this shot at this beat, referencing the named directors when relevant. One line.",
+      "refs": { "actors": ["JOE"], "locations": ["Diner"], "props": [] }
     }
   ]
 }
@@ -558,6 +574,75 @@ app.post('/api/image/generate', async (req, res) => {
   }
 });
 
+// ---------- PDF / text import (Boardfish 6) ----------
+//
+// The AI Director drawer accepts a pasted script OR an uploaded file. This
+// endpoint accepts a multipart PDF (or a plain-text file) and returns the
+// extracted text as a string so the browser can drop it into the script
+// textarea. We use pdfjs-dist's legacy build so it runs in Node without a
+// browser DOM.
+
+const pdfUpload = multer({
+  storage: multer.memoryStorage(),
+  // 25 MB is enough for a 100-page feature-length screenplay PDF.
+  limits: { fileSize: 25 * 1024 * 1024 },
+});
+
+app.post('/api/import/pdf', pdfUpload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'no file uploaded (expected multipart field "file")' });
+  const filename = req.file.originalname || 'upload';
+  const mime = req.file.mimetype || '';
+  const buf = req.file.buffer;
+  try {
+    // Plain text passthrough for .txt / .fdx / .fountain
+    if (mime.startsWith('text/') || /\.(txt|fdx|fountain|md)$/i.test(filename)) {
+      const text = buf.toString('utf8');
+      return res.json({ ok: true, filename, text, pages: 1, kind: 'text' });
+    }
+    // Everything else is treated as PDF. pdfjs-dist loads and extracts text.
+    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    // pdfjs-dist worker: use fake worker in Node (no browser worker thread).
+    // See https://mozilla.github.io/pdf.js/getting_started/#nodejs.
+    // In legacy build the pdfjs.GlobalWorkerOptions.workerSrc read is
+    // guarded; setting `disableWorker` or leaving it unset is fine because
+    // getDocument() with the raw buffer runs the parse on the main thread.
+    const loadingTask = pdfjs.getDocument({ data: new Uint8Array(buf), useSystemFonts: true, disableFontFace: true });
+    const doc = await loadingTask.promise;
+    const parts = [];
+    for (let i = 1; i <= doc.numPages; i++) {
+      const page = await doc.getPage(i);
+      const tc = await page.getTextContent();
+      // Group runs by their vertical position to reconstruct line breaks.
+      // pdfjs items expose transform[5] = y-origin; when it changes we insert
+      // a newline. Same-line runs get joined with a single space.
+      let lastY = null;
+      let line = '';
+      const lines = [];
+      for (const item of tc.items) {
+        const s = ('str' in item) ? item.str : '';
+        const y = ('transform' in item && Array.isArray(item.transform)) ? item.transform[5] : null;
+        if (lastY !== null && y !== null && Math.abs(y - lastY) > 1) {
+          lines.push(line.trimEnd());
+          line = '';
+        }
+        line += s;
+        if ('hasEOL' in item && item.hasEOL) {
+          lines.push(line.trimEnd());
+          line = '';
+        }
+        lastY = y;
+      }
+      if (line.trim()) lines.push(line.trimEnd());
+      parts.push(lines.join('\n'));
+    }
+    const text = parts.join('\n\n').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    res.json({ ok: true, filename, text, pages: doc.numPages, kind: 'pdf' });
+  } catch (err) {
+    console.error('[import-pdf] error', err);
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
 // ---------- helpers ----------
 
 // Best-effort JSON extraction from a Ronan reply. Ronan is instructed to return
@@ -648,6 +733,7 @@ server.listen(PORT, HOST, () => {
   console.log(`  GET  /api/fal/health        → whether FAL_KEY is configured`);
   console.log(`  GET  /api/styles            → list of available style presets`);
   console.log(`  POST /api/image/generate    { prompt, aspectRatio? }`);
+  console.log(`  POST /api/import/pdf        multipart 'file' → { text, pages, kind }`);
   console.log(`  GET  /api/health`);
 });
 
