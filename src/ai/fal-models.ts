@@ -1101,6 +1101,54 @@ export const FAL_MODELS: FalModelDef[] = [
   },
 
   {
+    id: 'kling-v3-4k',
+    label: 'Kling v3 4K',
+    vendor: 'Kling (Kuaishou)',
+    kind: 'video',
+    // 4K tier is image-to-video only; there is no text-to-video endpoint.
+    endpoint: 'fal-ai/kling-video/v3/4k/image-to-video',
+    editEndpoint: 'fal-ai/kling-video/v3/4k/image-to-video',
+    refImageKey: 'start_image_url',
+    refImageIsArray: false,
+    supportsImageInput: true,
+    supportsPrompt: true,
+    status: 'active',
+    costHint: '~$0.42/sec (4K)',
+    notes: 'Kling v3 4K — top-tier native 4K Kling. Image-to-video only; wire a start image.',
+    inputs: [
+      PROMPT_INPUT,
+      NEGATIVE_PROMPT_INPUT,
+      {
+        key: 'aspect_ratio',
+        label: 'Aspect ratio',
+        type: 'aspect',
+        default: '16:9',
+        options: VIDEO_ASPECTS_WIDE_TALL_SQUARE,
+      },
+      {
+        key: 'duration',
+        label: 'Duration (seconds)',
+        type: 'select',
+        default: '5',
+        options: [
+          { value: '5',  label: '5s'  },
+          { value: '10', label: '10s' },
+        ],
+      },
+      {
+        key: 'cfg_scale',
+        label: 'CFG scale',
+        type: 'number',
+        default: 0.5,
+        min: 0,
+        max: 1,
+        step: 0.1,
+      },
+      SEED_INPUT,
+    ],
+  },
+
+  {
     id: 'kling-v3-turbo-standard',
     label: 'Kling v3 Turbo Standard',
     vendor: 'Kling (Kuaishou)',
@@ -1249,6 +1297,63 @@ export const FAL_MODELS: FalModelDef[] = [
         default: true,
       },
       IMAGE_URL_INPUT,
+      SEED_INPUT,
+    ],
+  },
+
+  {
+    id: 'seedance-2-ref',
+    label: 'Seedance 2 Reference',
+    vendor: 'ByteDance',
+    kind: 'video',
+    // Reference-to-video endpoint accepts up to 9 images + 3 videos + 3 audio
+    // clips. The graph only wires a single image today; more can be pasted
+    // into the raw inputs via Custom FAL if needed.
+    endpoint: 'bytedance/seedance-2.0/reference-to-video',
+    editEndpoint: 'bytedance/seedance-2.0/reference-to-video',
+    refImageKey: 'image_urls',
+    refImageIsArray: true,
+    supportsImageInput: true,
+    supportsPrompt: true,
+    status: 'active',
+    costHint: '~$0.30/sec (720p)',
+    notes: 'Seedance 2 Reference-to-Video — multi-reference i2v (up to 9 image refs). SOTA quality.',
+    inputs: [
+      PROMPT_INPUT,
+      {
+        key: 'aspect_ratio',
+        label: 'Aspect ratio',
+        type: 'aspect',
+        default: '16:9',
+        options: VIDEO_ASPECTS_WIDE_TALL_SQUARE,
+      },
+      {
+        key: 'duration',
+        label: 'Duration (seconds)',
+        type: 'number',
+        default: 5,
+        min: 3,
+        max: 12,
+        step: 1,
+      },
+      {
+        key: 'resolution',
+        label: 'Resolution',
+        type: 'select',
+        default: '720p',
+        options: [
+          { value: '480p',  label: '480p'  },
+          { value: '720p',  label: '720p'  },
+          { value: '1080p', label: '1080p' },
+          { value: '4k',    label: '4K'    },
+        ],
+      },
+      {
+        key: 'generate_audio',
+        label: 'Generate audio',
+        type: 'boolean',
+        default: true,
+      },
       SEED_INPUT,
     ],
   },
