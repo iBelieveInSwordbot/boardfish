@@ -1,5 +1,5 @@
 // Boardfish store — pure state + reducer. Zero deps.
-import { useEffect, useReducer } from 'react';
+import { useEffect, useReducer, useRef } from 'react';
 import type { DocItem, Panel, ProjectSettings, Slide, SlideTextBox, StoryboardOverrides, ThemePreset } from './types';
 import {
   cryptoRandomId,
@@ -952,21 +952,35 @@ function deepClonePanel(p: Panel): Panel {
   };
 }
 
-const LS_KEY = 'boardfish3:autosave:v10'; // v10: multi-select (selectedPanelIds[] + Panel[] clipboard)
+// Legacy localStorage key from v10 and earlier. localStorage caps at ~5 MB
+// per origin, which Boardfish's base64 data URLs blow through in seconds
+// (silent quota errors → stale/empty autosave → back-button = black panels).
+// v11 moves autosave into IndexedDB (see ./idb-store.ts) which has
+// essentially no size limit.
+const LS_KEY = 'boardfish3:autosave:v10';
+const IDB_KEY = 'boardfish3:autosave:v11';
+
+function hydrateSaved(parsed: unknown): BoardfishState | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const p = parsed as { settings?: ProjectSettings; items?: DocItem[] };
+  if (!p.settings || !Array.isArray(p.items)) return null;
+  return {
+    ...initialState(),
+    settings: normalizeSettings(p.settings),
+    items: normalizeItems(p.items),
+  };
+}
 
 export function useBoardfish() {
+  // Sync init: try legacy localStorage first so anything the user had before
+  // the IDB migration is still visible on the first paint. IDB rehydration
+  // happens right after mount and overwrites if it has fresher data.
   const [state, dispatch] = useReducer(reducer, undefined, () => {
     try {
       const raw = localStorage.getItem(LS_KEY);
       if (raw) {
-        const parsed = JSON.parse(raw) as { settings: ProjectSettings; items: DocItem[] };
-        if (parsed?.settings && Array.isArray(parsed.items)) {
-          return {
-            ...initialState(),
-            settings: normalizeSettings(parsed.settings),
-            items: normalizeItems(parsed.items),
-          };
-        }
+        const hydrated = hydrateSaved(JSON.parse(raw));
+        if (hydrated) return hydrated;
       }
     } catch {
       // ignore
@@ -974,12 +988,48 @@ export function useBoardfish() {
     return initialState();
   });
 
+  // Async hydrate from IndexedDB on mount. This is the modern source of
+  // truth — if a value exists here, it wins over the localStorage seed.
+  const hydratedRef = useRef(false);
   useEffect(() => {
+    if (hydratedRef.current) return;
+    hydratedRef.current = true;
+    (async () => {
+      try {
+        const { idbGet, requestPersistence } = await import('./idb-store');
+        // Nudge the browser to keep our data around even under storage pressure.
+        // Silently fine if declined — Boardfish still works, just evictable.
+        requestPersistence().catch(() => { /* noop */ });
+        const saved = await idbGet<{ settings: ProjectSettings; items: DocItem[] }>(IDB_KEY);
+        const hydrated = hydrateSaved(saved);
+        if (hydrated) dispatch({ type: 'LOAD_PROJECT', state: { settings: hydrated.settings, items: hydrated.items } });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[boardfish] IDB hydrate failed', err);
+      }
+    })();
+  }, []);
+
+  // Autosave: write every state change to IndexedDB (unbounded room) and
+  // to localStorage (fast sync fallback — best-effort, may hit quota with
+  // media-heavy projects, that's fine).
+  useEffect(() => {
+    const payload = { settings: state.settings, items: state.items };
+    // IDB write is async but we don't need to await it; failures are logged.
+    (async () => {
+      try {
+        const { idbSet } = await import('./idb-store');
+        await idbSet(IDB_KEY, payload);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[boardfish] IDB autosave failed', err);
+      }
+    })();
+    // Best-effort localStorage mirror for legacy readers / quick sync boot.
     try {
-      const payload = JSON.stringify({ settings: state.settings, items: state.items });
-      localStorage.setItem(LS_KEY, payload);
+      localStorage.setItem(LS_KEY, JSON.stringify(payload));
     } catch {
-      // ignore quota errors — user still has Save Project as durable path
+      // quota exceeded is expected once media accumulates — IDB is the real store.
     }
   }, [state.settings, state.items]);
 
