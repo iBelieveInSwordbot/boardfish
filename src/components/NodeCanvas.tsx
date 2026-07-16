@@ -191,7 +191,15 @@ export function NodeView(p: NodeViewProps) {
       data-node-id={node.id}
     >
       <div className="ne-node-header" onPointerDown={onHeaderPointerDown}>
-        <span>{def.label}</span>
+        <span>{
+          // Once a gen node has produced output, its Preview stamps
+          // `data.__headerLabel` with the model's friendly name (e.g.
+          // "Nano Banana Pro"). Prefer that so the canvas header shows
+          // which model each node is locked to.
+          String(
+            (node.data as Record<string, unknown>).__headerLabel ?? def.label,
+          )
+        }</span>
         <span className="ne-node-header-cat">{def.category}</span>
       </div>
       <div className="ne-node-body">

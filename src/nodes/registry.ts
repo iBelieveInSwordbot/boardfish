@@ -177,6 +177,39 @@ function useHistoryMirror(
   return history;
 }
 
+// ---------------------------------------------------------------------------
+// Header-label stamp — image-gen / movie-gen nodes.
+//
+// The node header on the canvas defaults to the kind's static label ("Image
+// Gen", "Movie Gen"). Once the node has been generated at least once its
+// model is locked (see modelLocked in the Inspector — same output-based
+// gate). We piggy-back a `data.__headerLabel` field that NodeCanvas reads
+// in preference to def.label so the header shows the friendly model name
+// ("Nano Banana Pro", "Veo 3", etc.).
+//
+// Runs on every render but only dispatches when the stamp is missing or
+// stale relative to the current modelId. Guarded on generatedAt so we only
+// stamp AFTER the node has produced output (matches modelLocked gating).
+// ---------------------------------------------------------------------------
+function useHeaderLabelStamp(
+  node: BaseNode,
+  onChangeData: ((patch: Record<string, unknown>) => void) | undefined,
+  modelId: string,
+): void {
+  useEffect(() => {
+    if (!onChangeData) return;
+    if (!node.output?.generatedAt) return;   // only stamp after first gen
+    const desired = modelLabel(modelId);
+    const current = (node.data as Record<string, unknown>).__headerLabel;
+    if (current === desired) return;
+    onChangeData({ __headerLabel: desired });
+    // Depend on generatedAt + modelId so a model swap on an unlocked node
+    // (before first gen) doesn't stamp anything; a re-gen with a different
+    // model — which shouldn't happen since model is locked — would refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [node.output?.generatedAt, modelId, onChangeData]);
+}
+
 // `renderHistoryStrip` was retired in favor of the shared renderMediaThumb
 // helper below, which combines the current output + history nav + save
 // button in a single control. Kept out of the bundle entirely.
@@ -498,6 +531,7 @@ const ImageGenPreview: FC<PreviewProps> = ({ node, onChangeData, onPromoteFrame 
   const url = node.output?.dataUrl;
   const model = String(node.data.modelId ?? 'nano-banana-pro');
   const aspect = String(node.data.aspect_ratio ?? '16:9');
+  useHeaderLabelStamp(node, onChangeData, model);
   return createElement(
     'div',
     { className: 'ne-node-preview ne-node-preview--image' + (url ? '' : ' is-empty') },
@@ -525,6 +559,7 @@ const MovieGenPreview: FC<PreviewProps> = ({ node, onChangeData, onPromoteFrame 
   const aspect = String(node.data.aspect_ratio ?? '16:9');
   const duration = node.data.duration ?? '8s';
   const prompt = String(node.data.prompt ?? '');
+  useHeaderLabelStamp(node, onChangeData, model);
   return createElement(
     'div',
     { className: 'ne-node-preview ne-node-preview--video' + (url ? '' : ' is-empty') },
