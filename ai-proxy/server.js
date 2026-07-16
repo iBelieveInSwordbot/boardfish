@@ -15,7 +15,8 @@
 import express from 'express';
 import multer from 'multer';
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
@@ -279,6 +280,124 @@ RESPOND WITH ONE JSON OBJECT AND NOTHING ELSE. No markdown fences, no commentary
 
 Return between 4 and 40 shots depending on script length. Keep asset descriptions terse (≤ 400 characters each) so the response fits in one turn. Do NOT include the JSON in a code fence. Do NOT prefix with any prose like "Here is" or "I'll board". Start your response with the { character and end with the } character. Do not use smart quotes (“ ”) inside strings; use straight quotes ONLY.`;
 }
+
+// ---------- Media store ----------
+// Persist generated images/videos to disk so browser localStorage doesn't
+// have to hold megabytes of base64. Client POSTs a data URL, we hash the
+// bytes, write to <MEDIA_DIR>/<sha>.<ext>, and return a stable URL that
+// survives page reloads / back button navigation.
+//
+// Layout:
+//   <MEDIA_DIR>/aa/aa11...ff.png
+//   <MEDIA_DIR>/aa/aa11...ff.mp4
+// The sha is content-addressed so identical bytes dedupe automatically.
+
+const MEDIA_DIR = process.env.MEDIA_DIR
+  ? path.resolve(process.env.MEDIA_DIR)
+  : path.resolve(__dirname, '..', 'data', 'media');
+
+try { mkdirSync(MEDIA_DIR, { recursive: true }); }
+catch (err) { console.warn(`[media] cannot create MEDIA_DIR (${MEDIA_DIR}):`, err.message); }
+
+const EXT_FOR_MIME = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+  'video/mp4': 'mp4',
+  'video/webm': 'webm',
+  'video/quicktime': 'mov',
+  'audio/mpeg': 'mp3',
+  'audio/mp4': 'm4a',
+  'audio/wav': 'wav',
+};
+
+const MIME_FOR_EXT = Object.fromEntries(
+  Object.entries(EXT_FOR_MIME).map(([m, e]) => [e, m])
+);
+// PNG magic: 89 50 4E 47
+function sniffMime(buf) {
+  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'image/png';
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  if (buf.length >= 12 && buf.slice(0, 4).toString('ascii') === 'RIFF' && buf.slice(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  if (buf.length >= 6 && buf.slice(0, 6).toString('ascii').startsWith('GIF8')) return 'image/gif';
+  // MP4 ftyp box at offset 4
+  if (buf.length >= 12 && buf.slice(4, 8).toString('ascii') === 'ftyp') return 'video/mp4';
+  return 'application/octet-stream';
+}
+
+function parseDataUrl(dataUrl) {
+  if (typeof dataUrl !== 'string') return null;
+  const m = dataUrl.match(/^data:([^;,]+)?(?:;([^,]+))?,(.*)$/);
+  if (!m) return null;
+  const mime = (m[1] || 'application/octet-stream').toLowerCase();
+  const isBase64 = (m[2] || '').split(';').includes('base64');
+  const payload = m[3] || '';
+  const buf = isBase64 ? Buffer.from(payload, 'base64') : Buffer.from(decodeURIComponent(payload), 'utf8');
+  return { mime, buf };
+}
+
+function storeMediaBytes(buf, mimeHint) {
+  const sniffed = sniffMime(buf);
+  const mime = (mimeHint && EXT_FOR_MIME[mimeHint]) ? mimeHint : sniffed;
+  const ext = EXT_FOR_MIME[mime] || 'bin';
+  const sha = createHash('sha256').update(buf).digest('hex');
+  const dir = path.join(MEDIA_DIR, sha.slice(0, 2));
+  try { mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
+  const filepath = path.join(dir, `${sha.slice(2)}.${ext}`);
+  if (!existsSync(filepath)) {
+    writeFileSync(filepath, buf);
+  }
+  return { sha, ext, mime, bytes: buf.length, filepath };
+}
+
+app.post('/api/media/put', async (req, res) => {
+  try {
+    const { dataUrl, mime: mimeHint } = req.body || {};
+    if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) {
+      return res.status(400).json({ error: 'dataUrl (data: URL string) required' });
+    }
+    const parsed = parseDataUrl(dataUrl);
+    if (!parsed) return res.status(400).json({ error: 'invalid data URL' });
+    const rec = storeMediaBytes(parsed.buf, mimeHint || parsed.mime);
+    const id = `${rec.sha}.${rec.ext}`;
+    res.json({
+      ok: true,
+      id,
+      url: `/api/media/${id}`,
+      mime: rec.mime,
+      bytes: rec.bytes,
+    });
+  } catch (err) {
+    console.error('[media/put] error', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/media/health', (_req, res) => {
+  res.json({ ok: true, dir: MEDIA_DIR, exists: existsSync(MEDIA_DIR) });
+});
+
+app.get('/api/media/:id', (req, res) => {
+  const id = String(req.params.id || '');
+  // Accept plain "<sha>.<ext>" — reject anything else to prevent path traversal.
+  if (!/^[a-f0-9]{64}\.[a-z0-9]{1,6}$/i.test(id)) {
+    return res.status(400).json({ error: 'invalid media id' });
+  }
+  const [sha, ext] = id.split('.');
+  const filepath = path.join(MEDIA_DIR, sha.slice(0, 2), `${sha.slice(2)}.${ext}`);
+  if (!existsSync(filepath)) return res.status(404).json({ error: 'not found' });
+  const mime = MIME_FOR_EXT[ext] || 'application/octet-stream';
+  try {
+    const stat = statSync(filepath);
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Length', String(stat.size));
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.sendFile(filepath);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ---------- Routes ----------
 

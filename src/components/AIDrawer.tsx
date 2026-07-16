@@ -575,14 +575,9 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
   return (
     <div
       className="ai-drawer-backdrop"
-      onClick={(e) => {
-        if (
-          e.target === e.currentTarget &&
-          stage.kind !== 'thinking' &&
-          stage.kind !== 'importing'
-        )
-          onClose();
-      }}
+      // NOTE: intentionally no backdrop-click dismissal. Matt asked for this to
+      // stay put even if you click outside. Close only via ✕, Cancel, or Esc.
+      onClick={() => { /* no-op */ }}
     >
       <div className="ai-drawer" style={{ maxWidth: 960 }}>
         <div className="ai-drawer-header">
