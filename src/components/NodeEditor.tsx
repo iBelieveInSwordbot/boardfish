@@ -65,6 +65,7 @@ import { PanelRefContext, type PanelRefOption } from '../nodes/registry';
 import { NodeView, ContextMenu, type ContextMenuState } from './NodeCanvas';
 import { InspectorPane } from './NodeInspector';
 import { FalCreditsPill } from './FalCreditsPill';
+import { useBulkCostEstimate } from '../ai/use-fal-cost';
 import './NodeEditor.css';
 
 // ---------------------------------------------------------------------------
@@ -1803,24 +1804,12 @@ export function NodeEditor(props: NodeEditorProps) {
         {/* 2026-07-15: bulk generate. When the lasso has ≥2 gen-capable
             nodes selected (Image Gen / Movie Gen / Custom FAL), show a
             "Generate all (N)" button that fires them in parallel. */}
-        {(() => {
-          const runnable = Array.from(selectedIds).filter((id) => {
-            const n = graph.nodes.find((x) => x.id === id);
-            return n && (n.kind === 'image-gen' || n.kind === 'movie-gen' || n.kind === 'custom-fal');
-          });
-          if (runnable.length < 2) return null;
-          const anyRunning = runnable.some((id) => inFlight.has(id));
-          return (
-            <button
-              className="ne-topbar-btn primary"
-              onClick={() => onBulkGenerate(runnable)}
-              disabled={anyRunning}
-              title={anyRunning ? 'Some of the selected gens are already running' : `Fire generate on all ${runnable.length} selected nodes`}
-            >
-              {anyRunning ? 'Running…' : `Generate all (${runnable.length})`}
-            </button>
-          );
-        })()}
+        <BulkGenerateButton
+          selectedIds={selectedIds}
+          graph={graph}
+          inFlight={inFlight}
+          onBulkGenerate={onBulkGenerate}
+        />
         {/* 2026-07-15: Per Matt, blue Save button and Export XML removed from
             the top bar. Per-node media download (⬇ icon in the media toolbar)
             and cmd-S auto-save on close cover the save-image cases. */}
@@ -2769,5 +2758,54 @@ function NodePalette({ onAdd }: { onAdd: (kind: NodeKind) => void }) {
       })}
       <div className="ne-palette-foot">Drag onto canvas, or drop image / video files anywhere.</div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// BulkGenerateButton — shown in the top bar when the lasso has ≥2 gen-capable
+// nodes selected. Also surfaces the summed cost estimate for the batch so
+// users know what a click will cost.
+// ---------------------------------------------------------------------------
+function BulkGenerateButton({
+  selectedIds,
+  graph,
+  inFlight,
+  onBulkGenerate,
+}: {
+  selectedIds: Set<NodeId>;
+  graph: NodeGraph;
+  inFlight: Set<NodeId>;
+  onBulkGenerate: (ids: NodeId[]) => void;
+}) {
+  const runnableNodes: BaseNode[] = [];
+  const runnableIds: NodeId[] = [];
+  for (const id of selectedIds) {
+    const n = graph.nodes.find((x) => x.id === id);
+    if (n && (n.kind === 'image-gen' || n.kind === 'movie-gen' || n.kind === 'custom-fal')) {
+      runnableNodes.push(n);
+      runnableIds.push(id);
+    }
+  }
+  // Hook must be called unconditionally (Rules of Hooks). We pass the
+  // node list either way and gate the render below.
+  const cost = useBulkCostEstimate(runnableNodes);
+  if (runnableIds.length < 2) return null;
+  const anyRunning = runnableIds.some((id) => inFlight.has(id));
+  const costLabel = cost.amount != null
+    ? ` (${cost.isPartial ? '~' : ''}${cost.amount < 0.01 ? `$${cost.amount.toFixed(3)}` : `$${cost.amount.toFixed(2)}`}${cost.isPartial ? '+' : ''})`
+    : '';
+  return (
+    <button
+      className="ne-topbar-btn primary"
+      onClick={() => onBulkGenerate(runnableIds)}
+      disabled={anyRunning}
+      title={
+        anyRunning
+          ? 'Some of the selected gens are already running'
+          : `Fire generate on all ${runnableIds.length} selected nodes${cost.amount != null ? ` — estimated ${cost.isPartial ? 'at least ' : ''}$${cost.amount.toFixed(2)}` : ''}`
+      }
+    >
+      {anyRunning ? 'Running…' : `Generate all (${runnableIds.length})${costLabel}`}
+    </button>
   );
 }

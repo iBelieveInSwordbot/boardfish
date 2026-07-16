@@ -11,6 +11,8 @@
 
 import { useEffect, useState } from 'react';
 import { fetchFalPrice, type FalPriceInfo } from './client';
+import type { BaseNode } from '../nodes/types';
+import { getFalModel, resolveFalModelId } from './fal-models';
 
 export type FalCostEstimate = {
   /** Rounded to two decimals for display. */
@@ -99,4 +101,140 @@ export function useFalCostEstimate(
   // Multiply the unit-price hint by variants so users at least see the
   // rough per-job cost scaled by how many jobs will fire.
   return { amount: unitPrice * variants, isTotal: false, price };
+}
+
+// ---------------------------------------------------------------------------
+// Bulk cost estimate — used by the "Generate all (N)" button in NodeEditor.
+//
+// Sums the exact-total cost of a set of gen-capable nodes (image-gen,
+// movie-gen, custom-fal). For each unique fal endpoint referenced by the
+// set, fetch the /api/fal/price once and reuse the result for every node
+// that hits that endpoint. Nodes whose endpoint is priced in units we
+// can't resolve pre-flight (tokens, compute-seconds) are counted as
+// partial (isPartial=true) so callers can decorate the label.
+//
+// Returns { amount, isPartial } where amount is the sum of exact-total
+// components. When ALL nodes are unpriceable, amount is null.
+// ---------------------------------------------------------------------------
+export type BulkCostEstimate = {
+  amount: number | null;
+  /** true when at least one node's cost couldn't be resolved (e.g. token-
+   *  priced endpoint). Callers can suffix the label with "+" or similar. */
+  isPartial: boolean;
+};
+
+/** Extract (endpointId, quantity) from a node so we can price it. */
+function costInputsForNode(
+  node: BaseNode,
+): { endpointId: string; quantity: { images?: number; seconds?: number; variants?: number; resolutionMultiplier?: number } } | null {
+  if (node.kind === 'image-gen') {
+    const rawId = String(node.data.modelId ?? 'nano-banana-pro');
+    const modelId = resolveFalModelId(rawId) ?? rawId;
+    const model = getFalModel(modelId);
+    if (!model?.endpoint) return null;
+    const images = Math.max(1, Math.min(20, Number(node.data.num_images ?? 1)));
+    const resValue = String(node.data.resolution ?? '');
+    const resMul = model.resolutionCostMultiplier?.[resValue] ?? 1;
+    return {
+      endpointId: model.endpoint,
+      quantity: { images, resolutionMultiplier: resMul },
+    };
+  }
+  if (node.kind === 'movie-gen') {
+    const rawId = String(node.data.modelId ?? 'veo-3');
+    const modelId = resolveFalModelId(rawId) ?? rawId;
+    const model = getFalModel(modelId);
+    if (!model?.endpoint) return null;
+    const rawDuration = node.data.duration;
+    const seconds = typeof rawDuration === 'number'
+      ? rawDuration
+      : typeof rawDuration === 'string'
+        ? parseFloat(rawDuration.replace(/[^0-9.]/g, ''))
+        : NaN;
+    const variants = Math.max(1, Math.min(10, Math.floor(Number(node.data.num_videos ?? 1))));
+    return {
+      endpointId: model.endpoint,
+      quantity: {
+        seconds: Number.isFinite(seconds) && seconds > 0 ? seconds : undefined,
+        variants,
+      },
+    };
+  }
+  if (node.kind === 'custom-fal') {
+    const endpoint = String(node.data.endpoint ?? '').trim();
+    if (!endpoint) return null;
+    // Custom FAL nodes don't have a known schema — we can only surface
+    // the unit-price hint (no quantity multiplication).
+    return { endpointId: endpoint, quantity: {} };
+  }
+  return null;
+}
+
+/**
+ * Bulk cost hook. Pass the array of nodes the button will fire on; the
+ * hook fetches pricing for each unique endpoint and returns the summed
+ * cost. Unresolvable endpoints are counted as partial (isPartial=true).
+ */
+export function useBulkCostEstimate(nodes: BaseNode[]): BulkCostEstimate {
+  // Collect unique endpoints from the input set.
+  const inputs = nodes.map(costInputsForNode).filter(
+    (x): x is NonNullable<ReturnType<typeof costInputsForNode>> => x !== null,
+  );
+  const uniqueEndpoints = Array.from(new Set(inputs.map((i) => i.endpointId)));
+  // Stable key for the effect dep so we don't re-fetch on unrelated renders.
+  const key = uniqueEndpoints.slice().sort().join('|');
+
+  const [priceMap, setPriceMap] = useState<Record<string, FalPriceInfo | null>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    if (uniqueEndpoints.length === 0) {
+      setPriceMap({});
+      return;
+    }
+    (async () => {
+      const entries = await Promise.all(
+        uniqueEndpoints.map(async (ep) => {
+          const p = await fetchFalPrice(ep);
+          return [ep, p] as const;
+        }),
+      );
+      if (cancelled) return;
+      const next: Record<string, FalPriceInfo | null> = {};
+      for (const [ep, p] of entries) next[ep] = p;
+      setPriceMap(next);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  if (inputs.length === 0) return { amount: null, isPartial: false };
+
+  let total = 0;
+  let anyExact = false;
+  let anyPartial = false;
+  for (const inp of inputs) {
+    const price = priceMap[inp.endpointId];
+    if (!price) { anyPartial = true; continue; }
+    const unit = (price.unit || '').toLowerCase();
+    const unitPrice = price.unitPrice || 0;
+    const { images, seconds, variants: v, resolutionMultiplier } = inp.quantity;
+    const variants = Math.max(1, v ?? 1);
+    const resMul = resolutionMultiplier ?? 1;
+    if (unit === 'images' && images != null && images > 0) {
+      total += unitPrice * images * resMul;
+      anyExact = true;
+    } else if (unit === 'seconds' && seconds != null && seconds > 0) {
+      total += unitPrice * seconds * variants;
+      anyExact = true;
+    } else {
+      // Token- or compute-priced — count the per-job unit price as a floor.
+      total += unitPrice * variants;
+      anyPartial = true;
+    }
+  }
+  return {
+    amount: anyExact || anyPartial ? total : null,
+    isPartial: anyPartial,
+  };
 }
