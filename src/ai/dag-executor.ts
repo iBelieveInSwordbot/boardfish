@@ -24,7 +24,7 @@ import {
   extractVideoUrl,
   urlToDataUrl,
 } from './client';
-import { getFalModel } from './fal-models';
+import { getFalModel, resolveFalModelId } from './fal-models';
 import type { FalModelDef } from './fal-models';
 import type { NodeGraph, BaseNode, NodeId, Edge } from '../nodes/types';
 
@@ -303,33 +303,6 @@ type ResolvedInputs = {
   byPort: Record<string, NodeOutput | undefined>;
 };
 
-/**
- * Return the node's effective output, honoring `data.__pinnedGeneratedAt`
- * when set. The pin references a specific frame by its generatedAt timestamp
- * rather than a positional index, so it survives new gens that shift the
- * display order.
- *
- * Resolution:
- *   - If __pinnedGeneratedAt matches node.output.generatedAt → node.output
- *   - Else if it matches any history[i].generatedAt → that entry
- *   - Otherwise (pin points at a deleted/missing frame) → node.output
- */
-function resolvePinnedOutput(src: BaseNode): NodeOutput {
-  const pinnedAtRaw = (src.data as Record<string, unknown>).__pinnedGeneratedAt;
-  const pinnedAt = typeof pinnedAtRaw === 'number' && Number.isFinite(pinnedAtRaw) ? Math.floor(pinnedAtRaw) : null;
-  if (pinnedAt == null) return src.output as NodeOutput;
-  // Note: `BaseNode['output']` is the stored NodeOutput (with `generatedAt`)
-  // from nodes/types.ts. Cast via unknown so TS doesn't confuse it with the
-  // executor's local NodeOutput (which uses `updatedAt` instead).
-  type StoredOutput = { kind?: string; dataUrl?: string; text?: string; mime?: string; generatedAt?: number };
-  const cur = src.output as unknown as StoredOutput | undefined;
-  if (cur && cur.generatedAt === pinnedAt) return cur as unknown as NodeOutput;
-  const histRaw = (src.data as Record<string, unknown>).__history;
-  const hist = Array.isArray(histRaw) ? histRaw as StoredOutput[] : [];
-  const found = hist.find((h) => h.generatedAt === pinnedAt);
-  return ((found ?? cur) as unknown) as NodeOutput;
-}
-
 function collectInputs(
   nodeId: NodeId,
   incoming: Map<NodeId, NodeEdge[]>,
@@ -346,11 +319,7 @@ function collectInputs(
   for (const e of inc) {
     const src = nodesById.get(e.from.nodeId);
     if (!src?.output) continue;
-    // If the source node has a pinned history frame (user hearted a
-    // version in fullscreen preview), use that as the effective output
-    // instead of `node.output`. Keeps ordering stable while letting the
-    // user choose which version downstream consumers see.
-    const o = resolvePinnedOutput(src);
+    const o = src.output;
     if (e.to.portId) inputs.byPort[e.to.portId] = o;
     if (o.text) inputs.texts.push(o.text);
     if (o.dataUrl) {
@@ -387,7 +356,7 @@ async function runNode(
     case 'movie-gen':        return runMovieGen(node, inputs, ctx);
     case 'out':              return runOut(inputs);
     case 'panel-ref':        return runPanelRef(node);
-    case 'custom-fal':       return runCustomFal(node, ctx);
+    case 'custom-fal':       return runCustomFal(node, inputs, ctx);
     default: {
       // Exhaustiveness guard without using `never` (keeps things loose in case
       // the parallel subagent introduces new node kinds).
@@ -476,10 +445,11 @@ async function runImageGen(
   inputs: ResolvedInputs,
   ctx: RunCtx,
 ): Promise<NodeOutput> {
-  const modelId = String((node.data as { modelId?: unknown }).modelId ?? '');
-  if (!modelId) throw new Error('image-gen node has no modelId set.');
+  const rawModelId = String((node.data as { modelId?: unknown }).modelId ?? '');
+  if (!rawModelId) throw new Error('image-gen node has no modelId set.');
+  const modelId = resolveFalModelId(rawModelId) ?? rawModelId;
   const model = getFalModel(modelId);
-  if (!model) throw new Error(`Unknown FAL model: ${modelId}`);
+  if (!model) throw new Error(`Unknown FAL model: ${rawModelId}` + (rawModelId !== modelId ? ` (aliased to ${modelId})` : ''));
   if (model.kind !== 'image') {
     throw new Error(`Model ${modelId} is a ${model.kind} model, not image.`);
   }
@@ -606,10 +576,11 @@ async function runMovieGen(
   inputs: ResolvedInputs,
   ctx: RunCtx,
 ): Promise<NodeOutput> {
-  const modelId = String((node.data as { modelId?: unknown }).modelId ?? '');
-  if (!modelId) throw new Error('movie-gen node has no modelId set.');
+  const rawModelId = String((node.data as { modelId?: unknown }).modelId ?? '');
+  if (!rawModelId) throw new Error('movie-gen node has no modelId set.');
+  const modelId = resolveFalModelId(rawModelId) ?? rawModelId;
   const model = getFalModel(modelId);
-  if (!model) throw new Error(`Unknown FAL model: ${modelId}`);
+  if (!model) throw new Error(`Unknown FAL model: ${rawModelId}` + (rawModelId !== modelId ? ` (aliased to ${modelId})` : ''));
   if (model.kind !== 'video') {
     throw new Error(`Model ${modelId} is a ${model.kind} model, not video.`);
   }
@@ -701,14 +672,51 @@ async function runMovieGen(
   };
 }
 
-async function runCustomFal(node: BaseNode, ctx: RunCtx): Promise<NodeOutput> {
-  const endpoint = String((node.data as { endpoint?: unknown }).endpoint ?? '');
-  const input = (node.data as { input?: unknown }).input;
-  if (!endpoint) throw new Error('custom-fal node has no endpoint set.');
-  const inputObj: Record<string, unknown> =
-    input && typeof input === 'object' && !Array.isArray(input)
-      ? (input as Record<string, unknown>)
-      : {};
+async function runCustomFal(
+  node: BaseNode,
+  inputs: ResolvedInputs,
+  ctx: RunCtx,
+): Promise<NodeOutput> {
+  const endpoint = String((node.data as { endpoint?: unknown }).endpoint ?? '').trim();
+  if (!endpoint) throw new Error('Custom FAL: no endpoint set. Open the Inspector and paste a fal.ai model slug (e.g. "fal-ai/flux-pro/v1.1").');
+
+  // Parse the free-form JSON payload from the Inspector. Empty/invalid
+  // JSON is treated as an empty object rather than an error — the user
+  // may be wiring purely upstream (prompt + image) with no extra keys.
+  const raw = (node.data as { inputJson?: unknown; input?: unknown }).inputJson
+    ?? (node.data as { input?: unknown }).input;
+  let inputObj: Record<string, unknown> = {};
+  if (typeof raw === 'string' && raw.trim() !== '') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        inputObj = parsed as Record<string, unknown>;
+      } else {
+        throw new Error('Custom FAL: input JSON must be an object (not an array/primitive).');
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Custom FAL: invalid input JSON — ${msg}`);
+    }
+  } else if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    inputObj = raw as Record<string, unknown>;
+  }
+
+  // Merge upstream inputs. Explicit keys in inputJson always win.
+  // - text on `prompt` port (or any text input) → `prompt`
+  // - image on `image` port (or first image input) → configured `imageKey` (default `image_url`)
+  const upstreamPrompt = inputs.byPort['prompt']?.text ?? inputs.texts[0];
+  if (upstreamPrompt && inputObj.prompt === undefined) {
+    inputObj.prompt = upstreamPrompt;
+  }
+  const upstreamImage = inputs.byPort['image']?.dataUrl ?? inputs.images[0];
+  if (upstreamImage) {
+    const imageKey = String((node.data as { imageKey?: unknown }).imageKey ?? 'image_url') || 'image_url';
+    if (inputObj[imageKey] === undefined) {
+      inputObj[imageKey] = imageKey.endsWith('s') ? [upstreamImage] : upstreamImage;
+    }
+  }
+
   ctx.onProgress(`Submitting to ${endpoint}…`);
   const res = await runFalJob(endpoint, inputObj);
   ctx.onProgress('FAL job complete.');

@@ -491,37 +491,26 @@ function SlideOverrides({
         <input type="checkbox" checked={sl.showFooter}
           onChange={(e) => dispatch({ type: 'UPDATE_SLIDE', id: sl.id, patch: { showFooter: e.target.checked } })} />
       </Row>
-      <Row label="Title">
-        <input
-          type="text"
-          value={sl.titleBox.text}
-          onChange={(e) =>
-            dispatch({
-              type: 'UPDATE_SLIDE_TEXTBOX',
-              slideId: sl.id,
-              which: 'title',
-              patch: { text: e.target.value },
-            })
-          }
-        />
-      </Row>
-      <Row label="Subtitle">
-        <input
-          type="text"
-          value={sl.subtitleBox.text}
-          onChange={(e) =>
-            dispatch({
-              type: 'UPDATE_SLIDE_TEXTBOX',
-              slideId: sl.id,
-              which: 'subtitle',
-              patch: { text: e.target.value },
-            })
-          }
-        />
-      </Row>
+      {sl.textBoxes.map((tb, idx) => (
+        <Row key={tb.id} label={idx === 0 ? 'Text' : `Text ${idx + 1}`}>
+          <input
+            type="text"
+            value={tb.text}
+            onChange={(e) =>
+              dispatch({
+                type: 'UPDATE_SLIDE_TEXTBOX',
+                slideId: sl.id,
+                textBoxId: tb.id,
+                patch: { text: e.target.value },
+              })
+            }
+          />
+        </Row>
+      ))}
       <Row label="Tip">
         <span style={{ fontSize: 11, opacity: 0.7 }}>
           Click a text box on the slide to change fonts, size, weight, alignment and color.
+          ⌘C / ⌘X / ⌘V / ⌘D and Option-drag duplicate the selected box.
         </span>
       </Row>
       <div className="button-row" style={{ marginTop: 8 }}>

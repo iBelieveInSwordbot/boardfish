@@ -59,11 +59,19 @@ type SavedSlideV4 = {
   subtitleBox: SlideTextBox;
   showFooter: boolean;
 };
+// v5 slide shape: arbitrary array of text boxes on a slide (Keynote-style).
+// The subtitle field is gone entirely; on load, v4 saves migrate to
+// `textBoxes: [titleBox]` (subtitle is dropped).
+type SavedSlideV5 = {
+  id: string;
+  textBoxes: SlideTextBox[];
+  showFooter: boolean;
+};
 type SavedItemV2 =
   | {
       id: string;
       kind: 'slide';
-      slide: SavedSlideV3 | SavedSlideV4;
+      slide: SavedSlideV3 | SavedSlideV4 | SavedSlideV5;
     }
   | {
       id: string;
@@ -72,7 +80,7 @@ type SavedItemV2 =
       overrides?: import('./types').StoryboardOverrides;
     };
 type SavedProjectV2 = {
-  version: 2 | 3 | 4;
+  version: 2 | 3 | 4 | 5;
   savedAt: string;
   settings: ProjectSettings;
   items: SavedItemV2[];
@@ -184,15 +192,14 @@ export async function saveProject(
   const savedItems: SavedItemV2[] = [];
   for (const it of state.items) {
     if (it.kind === 'slide') {
-      // v4 saves the two text boxes verbatim; slide images are gone in v4 and
-      // are intentionally not round-tripped.
+      // v5 saves the full textBoxes[] verbatim; slide images / subtitle field
+      // are gone as of v5 and are intentionally not round-tripped.
       savedItems.push({
         id: it.id,
         kind: 'slide',
         slide: {
           id: it.slide.id,
-          titleBox: it.slide.titleBox,
-          subtitleBox: it.slide.subtitleBox,
+          textBoxes: it.slide.textBoxes,
           showFooter: it.slide.showFooter,
         },
       });
@@ -279,7 +286,7 @@ export async function saveProject(
   };
 
   const manifest: SavedProjectV2 = {
-    version: 4, // v4 = v3 + Keynote-style slide text boxes (no more slide image field)
+    version: 5, // v5 = v4 + slide holds `textBoxes: SlideTextBox[]` (subtitle box removed)
     savedAt: new Date().toISOString(),
     settings: settingsForSave,
     items: savedItems,
@@ -322,20 +329,36 @@ export async function loadProject(
 
   let items: DocItem[];
 
-  if (manifestRaw.version === 2 || manifestRaw.version === 3 || manifestRaw.version === 4) {
+  if (
+    manifestRaw.version === 2 ||
+    manifestRaw.version === 3 ||
+    manifestRaw.version === 4 ||
+    manifestRaw.version === 5
+  ) {
     items = await Promise.all(
       manifestRaw.items.map(async (it): Promise<DocItem> => {
         if (it.kind === 'slide') {
-          const raw = it.slide as SavedSlideV3 & Partial<SavedSlideV4>;
-          // v4: text boxes are present—take them as-is.
-          if (raw.titleBox && raw.subtitleBox) {
+          const raw = it.slide as SavedSlideV3 & Partial<SavedSlideV4> & Partial<SavedSlideV5>;
+          // v5: textBoxes[] present — take them as-is.
+          if (Array.isArray(raw.textBoxes)) {
             return {
               id: it.id,
               kind: 'slide',
               slide: {
                 id: raw.id,
-                titleBox: raw.titleBox,
-                subtitleBox: raw.subtitleBox,
+                textBoxes: raw.textBoxes,
+                showFooter: raw.showFooter,
+              },
+            };
+          }
+          // v4: two text boxes present — migrate to textBoxes = [titleBox] (drop subtitle).
+          if (raw.titleBox) {
+            return {
+              id: it.id,
+              kind: 'slide',
+              slide: {
+                id: raw.id,
+                textBoxes: [raw.titleBox],
                 showFooter: raw.showFooter,
               },
             };

@@ -1,6 +1,13 @@
-// Freeform Keynote-style section title slide: two draggable, resizable, styleable
-// text boxes. No image UI. Coordinates are stored as PERCENTAGES of the slide-body
+// Freeform Keynote-style slide: an arbitrary number of draggable, resizable,
+// styleable text boxes. Coordinates are stored as PERCENTAGES of the slide-body
 // container so slides render correctly at any zoom or page size.
+//
+// v5 changes vs. v4:
+//   - No more subtitle box; slides hold an array of text boxes instead.
+//   - Selected box supports Cmd+C / Cmd+X / Cmd+V / Cmd+D and Option-drag to
+//     duplicate. Backspace/Delete removes the selected box (no clipboard).
+//   - A small "+ Text" button in the top-right of the slide body adds a new
+//     empty text box.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
@@ -11,7 +18,7 @@ import type {
   SlideTextAlign,
   SlideTextBox,
 } from '../types';
-import { SLIDE_FONT_FAMILIES, SLIDE_FONT_SIZES, SLIDE_FONT_WEIGHTS } from '../types';
+import { SLIDE_FONT_FAMILIES, SLIDE_FONT_SIZES, SLIDE_FONT_WEIGHTS, cryptoRandomId, newDefaultTextBox } from '../types';
 import type { Action } from '../store';
 
 type Props = {
@@ -20,10 +27,13 @@ type Props = {
   dispatch: React.Dispatch<Action>;
 };
 
-type Which = 'title' | 'subtitle';
-
 const MIN_WIDTH_PCT = 5;
 const MIN_HEIGHT_PCT = 3;
+
+// Module-level clipboard for slide text boxes. Shared across all Slide
+// components so ⌘C on one slide can be ⌘V'd on another. Stores the box data
+// sans id (id is minted at paste time).
+let _slideClipboard: Omit<SlideTextBox, 'id'> | null = null;
 
 /**
  * The container has `.slide-body` (100% of the page minus footer). Text boxes
@@ -32,25 +42,24 @@ const MIN_HEIGHT_PCT = 3;
  */
 export function SlideView({ slide, settings, dispatch }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [selected, setSelected] = useState<Which | null>(null);
-  const [editing, setEditing] = useState<Which | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   // Deselect when clicking the empty part of the slide.
   const onBackgroundPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.target === e.currentTarget) {
-      setSelected(null);
-      setEditing(null);
+      setSelectedId(null);
+      setEditingId(null);
     }
   };
 
-  // Cmd/Ctrl click anywhere in the app deselects too (spec).
+  // Cmd/Ctrl click OUTSIDE our container deselects too (matches Keynote feel).
   useEffect(() => {
     const onDocClick = (e: MouseEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
-      // If the click landed outside our container, drop selection.
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setSelected(null);
-        setEditing(null);
+        setSelectedId(null);
+        setEditingId(null);
       }
     };
     document.addEventListener('click', onDocClick);
@@ -61,25 +70,142 @@ export function SlideView({ slide, settings, dispatch }: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      if (editing) {
-        setEditing(null);
+      if (editingId) {
+        setEditingId(null);
         (document.activeElement as HTMLElement | null)?.blur?.();
-      } else if (selected) {
-        setSelected(null);
+      } else if (selectedId) {
+        setSelectedId(null);
       }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [editing, selected]);
+  }, [editingId, selectedId]);
 
   const updateBox = useCallback(
-    (which: Which, patch: Partial<SlideTextBox>) => {
-      dispatch({ type: 'UPDATE_SLIDE_TEXTBOX', slideId: slide.id, which, patch });
+    (textBoxId: string, patch: Partial<SlideTextBox>) => {
+      dispatch({ type: 'UPDATE_SLIDE_TEXTBOX', slideId: slide.id, textBoxId, patch });
     },
     [dispatch, slide.id],
   );
 
-  const activeBox = selected ? (selected === 'title' ? slide.titleBox : slide.subtitleBox) : null;
+  const activeBox = selectedId ? slide.textBoxes.find((b) => b.id === selectedId) ?? null : null;
+
+  // Helper: given an existing box, produce a duplicate with a fresh id + a
+  // small offset so the copy is visible.
+  const duplicateBox = useCallback((source: SlideTextBox, offsetPct = 2): SlideTextBox => {
+    const newX = Math.min(100 - source.width, Math.max(0, source.x + offsetPct));
+    const newY = Math.min(100 - source.height, Math.max(0, source.y + offsetPct));
+    return { ...source, id: cryptoRandomId(), x: newX, y: newY };
+  }, []);
+
+  // Clipboard/duplication keyboard shortcuts. Only active when a box is
+  // selected AND we're not currently editing text inside a box.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // Don't hijack keys while typing in a contentEditable, input, or textarea.
+      const target = e.target as HTMLElement | null;
+      const isTypingIntoField =
+        !!target &&
+        (target.isContentEditable ||
+          target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT');
+      if (isTypingIntoField) return;
+      if (editingId) return;
+
+      const meta = e.metaKey || e.ctrlKey;
+
+      // Delete / Backspace: remove selected box (no clipboard write). Only when
+      // a box is selected and we're not editing.
+      if ((e.key === 'Backspace' || e.key === 'Delete') && selectedId && !meta) {
+        // Only act if the event is happening within our slide (avoid stealing
+        // deletes from other UI). Cheapest heuristic: only act if our container
+        // is on the page and the currently focused element isn't elsewhere.
+        if (!containerRef.current) return;
+        e.preventDefault();
+        dispatch({ type: 'REMOVE_SLIDE_TEXTBOX', slideId: slide.id, textBoxId: selectedId });
+        setSelectedId(null);
+        return;
+      }
+
+      if (!meta) return;
+
+      const key = e.key.toLowerCase();
+
+      // ⌘C — copy selected box
+      if (key === 'c' && selectedId && activeBox) {
+        e.preventDefault();
+        const { id: _drop, ...rest } = activeBox;
+        void _drop;
+        _slideClipboard = structuredCloneCompat(rest);
+        return;
+      }
+      // ⌘X — cut selected box
+      if (key === 'x' && selectedId && activeBox) {
+        e.preventDefault();
+        const { id: _drop, ...rest } = activeBox;
+        void _drop;
+        _slideClipboard = structuredCloneCompat(rest);
+        dispatch({ type: 'REMOVE_SLIDE_TEXTBOX', slideId: slide.id, textBoxId: selectedId });
+        setSelectedId(null);
+        return;
+      }
+      // ⌘V — paste
+      if (key === 'v' && _slideClipboard) {
+        e.preventDefault();
+        // Offset the pasted box a bit so it's visible if source was on this slide.
+        const src = _slideClipboard;
+        const newBox: SlideTextBox = {
+          ...src,
+          id: cryptoRandomId(),
+          x: Math.min(100 - src.width, Math.max(0, src.x + 2)),
+          y: Math.min(100 - src.height, Math.max(0, src.y + 2)),
+        };
+        dispatch({ type: 'ADD_SLIDE_TEXTBOX', slideId: slide.id, textBox: newBox });
+        setSelectedId(newBox.id);
+        return;
+      }
+      // ⌘D — duplicate selected box in place with +2% offset
+      if (key === 'd' && selectedId && activeBox) {
+        e.preventDefault();
+        const dup = duplicateBox(activeBox);
+        dispatch({ type: 'ADD_SLIDE_TEXTBOX', slideId: slide.id, textBox: dup });
+        setSelectedId(dup.id);
+        return;
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [activeBox, dispatch, duplicateBox, editingId, selectedId, slide.id]);
+
+  const addNewTextBox = () => {
+    const box: SlideTextBox = {
+      ...newDefaultTextBox('Text'),
+      x: 30,
+      y: 30,
+      width: 40,
+      height: 15,
+    };
+    dispatch({ type: 'ADD_SLIDE_TEXTBOX', slideId: slide.id, textBox: box });
+    setSelectedId(box.id);
+    setEditingId(null);
+  };
+
+  /**
+   * Alt-drag handler: when the user starts a move with the alt key held, we
+   * duplicate the source box AT THE SAME COORDS and hand the drag off to the
+   * newly-added clone. Returns the id to use for the drag; the SlideTextBoxView
+   * will consult this via a callback prop.
+   */
+  const beginAltDuplicate = useCallback(
+    (source: SlideTextBox): string => {
+      const clone: SlideTextBox = { ...source, id: cryptoRandomId() };
+      dispatch({ type: 'ADD_SLIDE_TEXTBOX', slideId: slide.id, textBox: clone });
+      setSelectedId(clone.id);
+      return clone.id;
+    },
+    [dispatch, slide.id],
+  );
 
   return (
     <div
@@ -87,43 +213,45 @@ export function SlideView({ slide, settings, dispatch }: Props) {
       className="slide-body slide-body-freeform"
       onPointerDown={onBackgroundPointerDown}
     >
-      <SlideTextBoxView
-        which="title"
-        box={slide.titleBox}
-        containerRef={containerRef}
-        selected={selected === 'title'}
-        editing={editing === 'title'}
-        onSelect={() => setSelected('title')}
-        onBeginEdit={() => {
-          setSelected('title');
-          setEditing('title');
-        }}
-        onEndEdit={() => setEditing(null)}
-        onChange={(patch) => updateBox('title', patch)}
-      />
-      <SlideTextBoxView
-        which="subtitle"
-        box={slide.subtitleBox}
-        containerRef={containerRef}
-        selected={selected === 'subtitle'}
-        editing={editing === 'subtitle'}
-        onSelect={() => setSelected('subtitle')}
-        onBeginEdit={() => {
-          setSelected('subtitle');
-          setEditing('subtitle');
-        }}
-        onEndEdit={() => setEditing(null)}
-        onChange={(patch) => updateBox('subtitle', patch)}
-      />
+      {slide.textBoxes.map((box) => (
+        <SlideTextBoxView
+          key={box.id}
+          box={box}
+          containerRef={containerRef}
+          selected={selectedId === box.id}
+          editing={editingId === box.id}
+          onSelect={() => setSelectedId(box.id)}
+          onBeginEdit={() => {
+            setSelectedId(box.id);
+            setEditingId(box.id);
+          }}
+          onEndEdit={() => setEditingId(null)}
+          onChange={(patch) => updateBox(box.id, patch)}
+          onAltDuplicate={beginAltDuplicate}
+        />
+      ))}
 
-      {selected && activeBox && (
+      {selectedId && activeBox && (
         <FloatingToolbar
           box={activeBox}
-          onChange={(patch) => updateBox(selected, patch)}
+          onChange={(patch) => updateBox(activeBox.id, patch)}
           settings={settings}
           containerRef={containerRef}
         />
       )}
+
+      <button
+        type="button"
+        className="slide-body-add-textbox"
+        onClick={(e) => {
+          e.stopPropagation();
+          addNewTextBox();
+        }}
+        onPointerDown={(e) => e.stopPropagation()}
+        title="Add text box"
+      >
+        + Text
+      </button>
     </div>
   );
 }
@@ -133,7 +261,6 @@ export function SlideView({ slide, settings, dispatch }: Props) {
 // ---------------------------------------------------------------------------
 
 type TextBoxProps = {
-  which: Which;
   box: SlideTextBox;
   containerRef: React.RefObject<HTMLDivElement | null>;
   selected: boolean;
@@ -142,12 +269,26 @@ type TextBoxProps = {
   onBeginEdit: () => void;
   onEndEdit: () => void;
   onChange: (patch: Partial<SlideTextBox>) => void;
+  /**
+   * Alt-drag: when a move drag starts with the alt key held, the parent
+   * duplicates the source box in-place and returns the *new* box id so the
+   * drag continues on the clone (leaving the original untouched).
+   */
+  onAltDuplicate: (source: SlideTextBox) => string;
 };
 
 type ResizeHandleId = 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'w' | 'e';
 
 type DragMode =
-  | { kind: 'move'; startX: number; startY: number; boxX: number; boxY: number }
+  | {
+      kind: 'move';
+      startX: number;
+      startY: number;
+      boxX: number;
+      boxY: number;
+      /** id of the box actually being moved (may be a freshly-cloned alt-drag copy) */
+      targetId: string;
+    }
   | {
       kind: 'resize';
       handle: ResizeHandleId;
@@ -162,7 +303,7 @@ type DragMode =
     };
 
 function SlideTextBoxView(props: TextBoxProps) {
-  const { box, containerRef, selected, editing, onSelect, onBeginEdit, onEndEdit, onChange } = props;
+  const { box, containerRef, selected, editing, onSelect, onBeginEdit, onEndEdit, onChange, onAltDuplicate } = props;
   const boxRef = useRef<HTMLDivElement>(null);
   const editableRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragMode | null>(null);
@@ -175,12 +316,31 @@ function SlideTextBoxView(props: TextBoxProps) {
     const rect = container.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return;
     (e.target as Element).setPointerCapture?.(e.pointerId);
+
+    // Option/Alt held at drag-start: duplicate this box in place and reassign
+    // the drag target to the newly-added clone. Original stays put.
+    if (e.altKey) {
+      const newId = onAltDuplicate(box);
+      dragRef.current = {
+        kind: 'move',
+        startX: e.clientX,
+        startY: e.clientY,
+        boxX: box.x,
+        boxY: box.y,
+        targetId: newId,
+      };
+      // Selection follows the clone (onAltDuplicate already set it, but be explicit).
+      e.stopPropagation();
+      return;
+    }
+
     dragRef.current = {
       kind: 'move',
       startX: e.clientX,
       startY: e.clientY,
       boxX: box.x,
       boxY: box.y,
+      targetId: box.id,
     };
     onSelect();
     e.stopPropagation();
@@ -218,6 +378,10 @@ function SlideTextBoxView(props: TextBoxProps) {
       const dyPct = ((e.clientY - drag.startY) / rect.height) * 100;
 
       if (drag.kind === 'move') {
+        // If we're alt-dragging, the drag target is a different box id than
+        // `box`. In that case, only forward the update if this instance owns
+        // the target id — otherwise we'd corrupt the source box's coords.
+        if (drag.targetId !== box.id) return;
         const newX = clamp(drag.boxX + dxPct, 0, 100 - box.width);
         const newY = clamp(drag.boxY + dyPct, 0, 100 - box.height);
         onChange({ x: newX, y: newY });
@@ -226,7 +390,7 @@ function SlideTextBoxView(props: TextBoxProps) {
 
       // resize
       const shift = drag.shift || e.shiftKey;
-      let { boxX, boxY, boxW, boxH } = drag;
+      const { boxX, boxY, boxW, boxH } = drag;
       let newX = boxX;
       let newY = boxY;
       let newW = boxW;
@@ -245,13 +409,10 @@ function SlideTextBoxView(props: TextBoxProps) {
       }
 
       if (shift && (handle === 'nw' || handle === 'ne' || handle === 'sw' || handle === 'se')) {
-        // Preserve aspect ratio: pick the larger of the two deltas (in % of container)
-        // and derive the other. Simpler: lock height off of width.
         newH = newW / drag.aspect;
         if (handle.includes('n')) newY = boxY + (boxH - newH);
       }
 
-      // Clamp: keep the min sizes and keep the box on-screen.
       newW = Math.max(MIN_WIDTH_PCT, Math.min(newW, 100));
       newH = Math.max(MIN_HEIGHT_PCT, Math.min(newH, 100));
       newX = clamp(newX, 0, 100 - newW);
@@ -259,7 +420,7 @@ function SlideTextBoxView(props: TextBoxProps) {
 
       onChange({ x: newX, y: newY, width: newW, height: newH });
     },
-    [box.width, box.height, containerRef, onChange],
+    [box.id, box.width, box.height, containerRef, onChange],
   );
 
   const onPointerUp = useCallback(() => {
@@ -277,13 +438,11 @@ function SlideTextBoxView(props: TextBoxProps) {
     };
   }, [onPointerMove, onPointerUp]);
 
-  // Focus + select-all when entering edit mode
   useLayoutEffect(() => {
     if (!editing) return;
     const el = editableRef.current;
     if (!el) return;
     el.focus();
-    // Select all text on entry so a quick retype replaces the placeholder
     const range = document.createRange();
     range.selectNodeContents(el);
     const sel = window.getSelection();
@@ -308,7 +467,7 @@ function SlideTextBoxView(props: TextBoxProps) {
   };
 
   const isEmpty = box.text.trim().length === 0;
-  const placeholder = props.which === 'title' ? 'Section Title' : 'Subtitle (optional)';
+  const placeholder = 'Text';
 
   return (
     <div
@@ -321,7 +480,6 @@ function SlideTextBoxView(props: TextBoxProps) {
         onBeginEdit();
       }}
     >
-      {/* Selection frame (drawn behind text so it doesn't interfere with editing). */}
       <div className="slide-textbox-frame" />
 
       <div
@@ -378,9 +536,6 @@ function ResizeHandle({
     <div
       className={`slide-textbox-handle slide-textbox-handle-${position}`}
       onPointerDown={(e) => {
-        // Stop bubbling FIRST so the text-box's move-handler never fires
-        // for this pointer down. `beginResize` is expected to also call
-        // stopPropagation (harmless if it does).
         e.stopPropagation();
         onPointerDown(e);
       }}
@@ -401,8 +556,6 @@ type ToolbarProps = {
 };
 
 function FloatingToolbar({ box, onChange }: ToolbarProps) {
-  // Position: horizontally centered on the box, sitting just above it. If the
-  // box hugs the top of the slide, we drop it just below instead.
   const centerX = box.x + box.width / 2;
   const dropBelow = box.y < 8;
   const toolbarStyle: CSSProperties = {
@@ -539,10 +692,16 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
-// +/- step scales with current size so nudging feels natural at both 12px and 128px.
 function stepFor(size: number): number {
   if (size < 20) return 1;
   if (size < 48) return 2;
   if (size < 96) return 4;
   return 8;
+}
+
+function structuredCloneCompat<T>(value: T): T {
+  if (typeof structuredClone === 'function') {
+    return structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value)) as T;
 }

@@ -18,12 +18,13 @@
 //   - Inspector: full form; calls `onChangeData` with a shallow patch. Calls
 //     `onGenerate` when the user wants to execute starting at this node.
 
-import { createElement, useEffect, useRef, useContext, createContext, Fragment, type FC } from 'react';
+import { createElement, useEffect, useMemo, useRef, useState, useContext, createContext, Fragment, type FC } from 'react';
 import type { BaseNode, NodeKind, NodeOutput, NodePort } from './types';
 import { defaultDataFor, defaultPortsFor } from './types';
 import { appendHistory, readNodeHistory } from './graph-utils';
-import { FAL_MODELS, getFalModel } from '../ai/fal-models';
+import { FAL_MODELS, getFalModel, resolveFalModelId } from '../ai/fal-models';
 import type { FalModelInput } from '../ai/fal-models';
+import { GenerateButtonWithCost } from '../components/GenerateButtonWithCost';
 
 // ---------------------------------------------------------------------------
 // Panel-ref lookup context. NodeEditor provides the list of available
@@ -35,6 +36,10 @@ export type PanelRefOption = {
   label: string;         // "Storyboard 1 · Panel 3" style
   thumbUrl?: string;     // small preview if available
   imageDataUrl?: string; // full data URL (baked into the node on pick)
+  storyboardId: string;      // groups panels in the picker
+  storyboardLabel: string;   // display name of the parent storyboard (from overrides.name or fallback)
+  panelIndex: number;        // 1-based index within its storyboard
+  aspectRatio: number;       // width / height, resolved from storyboard override or project default
 };
 
 export const PanelRefContext = createContext<{
@@ -238,23 +243,11 @@ function renderMediaThumb(opts: {
 
   // Clamp the stored view cursor to a valid index. When history shrinks (user
   // deletes a frame from the strip) we snap back to 0 rather than leaving a
-  // dangling cursor pointing past the end of the array. If __viewIdx is
-  // unset, fall back to the pinned frame's display slot (resolved from
-  // __pinnedGeneratedAt) so the node opens on the user's chosen version.
+  // dangling cursor pointing past the end of the array.
   const rawViewIdx = Number((node.data as Record<string, unknown>).__viewIdx);
-  const validViewIdx = Number.isFinite(rawViewIdx) && rawViewIdx >= 0 && rawViewIdx < totalFrames;
-  let fallbackIdx = 0;
-  const pinnedAtRaw = (node.data as Record<string, unknown>).__pinnedGeneratedAt;
-  const pinnedAt = typeof pinnedAtRaw === 'number' && Number.isFinite(pinnedAtRaw) ? Math.floor(pinnedAtRaw) : null;
-  if (pinnedAt != null && !validViewIdx) {
-    if (node.output && node.output.generatedAt === pinnedAt) {
-      fallbackIdx = 0;
-    } else {
-      const foundInHist = historyNewestFirst.findIndex((h) => h.generatedAt === pinnedAt);
-      if (foundInHist >= 0) fallbackIdx = foundInHist + 1;
-    }
-  }
-  const viewIdx = validViewIdx ? Math.floor(rawViewIdx) : fallbackIdx;
+  const viewIdx = Number.isFinite(rawViewIdx) && rawViewIdx >= 0 && rawViewIdx < totalFrames
+    ? Math.floor(rawViewIdx)
+    : 0;
 
   // Resolve the frame at this cursor:
   //   viewIdx = 0 → currentUrl (live output)
@@ -390,32 +383,16 @@ function renderMediaThumb(opts: {
           )
         : null,
       totalFrames > 1
-        ? (() => {
-            // Resolve pinned position from __pinnedGeneratedAt by matching
-            // against the display list. Default is the live output (idx 0).
-            const pinnedAtRaw = (node.data as Record<string, unknown>).__pinnedGeneratedAt;
-            const pinnedAt = typeof pinnedAtRaw === 'number' && Number.isFinite(pinnedAtRaw) ? Math.floor(pinnedAtRaw) : null;
-            let pinnedIdx = 0;
-            if (pinnedAt != null) {
-              if (node.output && node.output.generatedAt === pinnedAt) {
-                pinnedIdx = 0;
-              } else {
-                const foundInHist = historyNewestFirst.findIndex((h) => h.generatedAt === pinnedAt);
-                if (foundInHist >= 0) pinnedIdx = foundInHist + 1;
-              }
-            }
-            const isOnPinned = viewIdx === pinnedIdx;
-            return createElement(
-              'span',
-              {
-                className: 'ne-media-toolbar-counter' + (isOnPinned ? '' : ' is-off-canonical'),
-                title: isOnPinned
-                  ? 'Pinned selection — downstream nodes see this frame.'
-                  : 'Viewing a non-pinned frame. Heart it in fullscreen to pin.',
-              },
-              `${viewIdx + 1} / ${totalFrames}`,
-            );
-          })()
+        ? createElement(
+            'span',
+            {
+              className: 'ne-media-toolbar-counter' + (viewIdx !== 0 ? ' is-off-canonical' : ''),
+              title: viewIdx === 0
+                ? 'Current output — downstream nodes see this frame.'
+                : 'Viewing a history frame. Double-click the media (or heart it in fullscreen) to make it current.',
+            },
+            `${viewIdx + 1} / ${totalFrames}`,
+          )
         : null,
       createElement(
         'button',
@@ -722,12 +699,71 @@ const PromptConcatPreview: FC<PreviewProps> = ({ node, graph }) => {
   );
 };
 
-const CustomFalPreview: FC<PreviewProps> = () =>
-  createElement(
+const CustomFalPreview: FC<PreviewProps> = ({ node, onChangeData, onPromoteFrame }) => {
+  const history = useHistoryMirror(node, onChangeData);
+  const out = node.output;
+  const endpoint = String(node.data.endpoint ?? '').trim();
+  const kind: 'image' | 'video' | null =
+    out?.kind === 'image' ? 'image'
+    : out?.kind === 'video' ? 'video'
+    : null;
+  const url = out?.dataUrl;
+
+  // Text/unknown outputs: show a small JSON blob.
+  if (out && !kind) {
+    const text = out.text ?? '';
+    return createElement(
+      'div',
+      { className: 'ne-node-preview' },
+      createElement(
+        'pre',
+        {
+          style: {
+            margin: 0,
+            padding: '6px 8px',
+            fontSize: '10px',
+            lineHeight: '1.3',
+            color: '#c0c0c8',
+            background: '#1a1a1f',
+            border: '1px solid #2a2a30',
+            borderRadius: '4px',
+            maxHeight: '120px',
+            overflow: 'auto',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          },
+        },
+        truncate(text, 800) || '(empty)',
+      ),
+      createElement(
+        'div',
+        { className: 'ne-node-preview-caption' },
+        endpoint ? truncate(endpoint, 32) : '🧪 Custom FAL',
+      ),
+    );
+  }
+
+  return createElement(
     'div',
-    { className: 'ne-node-preview ne-node-preview--stub' },
-    createElement('div', { className: 'ne-node-preview-empty' }, '\ud83e\uddea custom FAL \u2014 coming soon'),
+    { className: 'ne-node-preview ne-node-preview--' + (kind ?? 'image') + (url ? '' : ' is-empty') },
+    kind
+      ? renderMediaThumb({
+          node,
+          kind,
+          currentUrl: url,
+          history,
+          onPromoteFrame,
+          onChangeData,
+          labelHint: `custom-fal-${(endpoint.split('/').pop() ?? 'out').toLowerCase()}`,
+        })
+      : createElement('div', { className: 'ne-node-preview-empty' }, endpoint ? '🧪 ready' : '🧪 paste an endpoint'),
+    createElement(
+      'div',
+      { className: 'ne-node-preview-caption' },
+      endpoint ? truncate(endpoint, 40) : 'Custom FAL',
+    ),
   );
+};
 
 const PanelRefPreview: FC<PreviewProps> = ({ node }) => {
   const imageDataUrl = String(node.data.imageDataUrl ?? '');
@@ -769,6 +805,143 @@ const PanelRefPreview: FC<PreviewProps> = ({ node }) => {
  *   - When unchecked, a numeric field lets the user pin a specific seed.
  *   - Roll button randomizes the pinned seed to a fresh integer.
  */
+/**
+ * Render a single schema-driven form control for one `FalModelInput`.
+ * Handles select/aspect (both are dropdowns), text, number, and boolean.
+ * Skips `image-url` (rendered as ports on the node) and `seed` (rendered
+ * via renderSeedControl). Returns null for keys the caller wants to skip.
+ *
+ * The value written back to `node.data[input.key]` matches the FAL schema:
+ *   - select/aspect → string
+ *   - number → number
+ *   - boolean → boolean
+ *   - text → string (undefined when blank to keep FAL happy)
+ */
+function renderSchemaInput(
+  node: BaseNode,
+  onChangeData: (patch: Record<string, unknown>) => void,
+  input: FalModelInput,
+) {
+  const raw = (node.data as Record<string, unknown>)[input.key];
+  const cur = raw === undefined || raw === null ? (input.default ?? '') : raw;
+
+  // Aspect + select share the same UI
+  if (input.type === 'select' || input.type === 'aspect') {
+    const opts = input.options ?? [];
+    return createElement(
+      Fragment,
+      { key: input.key },
+      createElement('label', { className: 'ne-inspect-label' }, input.label),
+      createElement(
+        'select',
+        {
+          className: 'ne-inspect-select',
+          value: String(cur ?? ''),
+          onChange: (e: React.ChangeEvent<HTMLSelectElement>) =>
+            onChangeData({ [input.key]: e.target.value }),
+        },
+        ...opts.map((o) => createElement('option', { key: o.value, value: o.value }, o.label)),
+      ),
+      input.help
+        ? createElement('div', { className: 'ne-inspect-note', style: { fontSize: '11px' } }, input.help)
+        : null,
+    );
+  }
+
+  if (input.type === 'number') {
+    const val = typeof cur === 'number' && Number.isFinite(cur) ? cur : Number(cur);
+    return createElement(
+      Fragment,
+      { key: input.key },
+      createElement('label', { className: 'ne-inspect-label' }, input.label),
+      createElement('input', {
+        className: 'ne-inspect-input',
+        type: 'number',
+        min: input.min,
+        max: input.max,
+        step: input.step ?? 1,
+        value: Number.isFinite(val) ? val : (typeof input.default === 'number' ? input.default : 0),
+        onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+          const n = Number(e.target.value);
+          if (!Number.isFinite(n)) return;
+          let clamped = n;
+          if (input.min !== undefined) clamped = Math.max(input.min, clamped);
+          if (input.max !== undefined) clamped = Math.min(input.max, clamped);
+          onChangeData({ [input.key]: clamped });
+        },
+      }),
+    );
+  }
+
+  if (input.type === 'boolean') {
+    const checked = typeof cur === 'boolean' ? cur : (input.default === true);
+    return createElement(
+      'label',
+      { key: input.key, className: 'ne-inspect-checkbox', style: { marginTop: '8px' } },
+      createElement('input', {
+        type: 'checkbox',
+        checked,
+        onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
+          onChangeData({ [input.key]: e.target.checked }),
+      }),
+      ' ' + input.label,
+    );
+  }
+
+  if (input.type === 'text') {
+    // Long-ish text fields (system_prompt, negative_prompt, last_frame_url)
+    // get a textarea; single-line otherwise.
+    const isLong = /prompt|url|instruction/i.test(input.key);
+    return createElement(
+      Fragment,
+      { key: input.key },
+      createElement('label', { className: 'ne-inspect-label' }, input.label),
+      isLong
+        ? createElement('textarea', {
+            className: 'ne-inspect-textarea',
+            rows: 3,
+            value: String(cur ?? ''),
+            placeholder: input.help,
+            onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+              const v = e.target.value;
+              onChangeData({ [input.key]: v === '' ? undefined : v });
+            },
+          })
+        : createElement('input', {
+            className: 'ne-inspect-input',
+            type: 'text',
+            value: String(cur ?? ''),
+            placeholder: input.help,
+            onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+              const v = e.target.value;
+              onChangeData({ [input.key]: v === '' ? undefined : v });
+            },
+          }),
+    );
+  }
+
+  // image-url / seed → rendered elsewhere
+  return null;
+}
+
+/**
+ * Given a model, render schema-driven inputs for every key NOT in `skipKeys`.
+ * Keeps the inspector current whenever fal-models.ts adds new options.
+ */
+function renderSchemaExtras(
+  node: BaseNode,
+  onChangeData: (patch: Record<string, unknown>) => void,
+  model: import('../ai/fal-models').FalModelDef | null,
+  skipKeys: Set<string>,
+) {
+  if (!model) return null;
+  return model.inputs
+    .filter((inp) => !skipKeys.has(inp.key))
+    .filter((inp) => inp.type !== 'image-url' && inp.type !== 'seed')
+    .map((inp) => renderSchemaInput(node, onChangeData, inp))
+    .filter(Boolean);
+}
+
 function renderSeedControl(
   node: BaseNode,
   onChangeData: (patch: Record<string, unknown>) => void,
@@ -897,14 +1070,33 @@ function renderDurationControl(
   const durationInput: FalModelInput | undefined = model?.inputs.find((i) => i.key === 'duration');
   if (!durationInput) return null;
   const cur = (node.data as Record<string, unknown>).duration;
-  const curDefined = cur !== undefined && cur !== null && cur !== '';
-  const value: unknown = curDefined ? cur : durationInput.default;
 
-  // Auto-apply the schema default the FIRST time we render a node that has
-  // no duration set. Ensures the field is never blank when opened, and the
-  // executor always has a valid value to send.
+  // Validate the current value against the new model's schema. When you
+  // switch from Veo ("8s", string) to Seedance (integer 3-12), the string
+  // "8s" is defined but invalid for the number input, and Number("8s")
+  // = NaN would render as blank. Same the other way around: a raw number
+  // 5 isn't in Kling's enumerated options.
+  const isValidForSchema = (() => {
+    if (cur === undefined || cur === null || cur === '') return false;
+    if (durationInput.type === 'select' && Array.isArray(durationInput.options)) {
+      return durationInput.options.some((o) => String(o.value) === String(cur));
+    }
+    // number input
+    const n = typeof cur === 'number' ? cur : parseFloat(String(cur).replace(/[^0-9.]/g, ''));
+    if (!Number.isFinite(n)) return false;
+    if (durationInput.min !== undefined && n < durationInput.min) return false;
+    if (durationInput.max !== undefined && n > durationInput.max) return false;
+    return true;
+  })();
+
+  const value: unknown = isValidForSchema ? cur : durationInput.default;
+
+  // Auto-apply the schema default whenever the current value doesn't
+  // match this model's duration schema. Fires on mount and on model
+  // switch. Ensures the field is never blank and the executor always
+  // has a valid value to send.
   useEffect(() => {
-    if (!curDefined && durationInput.default !== undefined) {
+    if (!isValidForSchema && durationInput.default !== undefined) {
       onChangeData({ duration: durationInput.default });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -970,15 +1162,22 @@ const TextPromptInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) =
 };
 
 const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
-  const modelId = String(node.data.modelId ?? 'nano-banana-pro');
-  const aspect = String(node.data.aspect_ratio ?? '16:9');
+  const rawModelId = String(node.data.modelId ?? 'nano-banana-pro');
+  const modelId = resolveFalModelId(rawModelId) ?? rawModelId;
   const url = node.output?.dataUrl;
+  const model = getFalModel(modelId);
   // Once a node has produced output, lock the model dropdown. Different
   // models have different input schemas (variants, resolution, duration,
   // etc.), so switching mid-flight silently strips the wrong keys or sends
   // stale ones. If the user really wants a different model, they can add
   // a new Image Gen node.
   const modelLocked = Boolean(url);
+
+  // Auto-heal a stale/aliased modelId once the resolver has mapped it.
+  useEffect(() => {
+    if (rawModelId !== modelId) onChangeData({ modelId });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawModelId, modelId]);
 
   return createElement(
     'div',
@@ -1003,20 +1202,31 @@ const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
         ),
       ),
     ),
-    // Aspect
-    createElement('label', { className: 'ne-inspect-label' }, 'Aspect Ratio'),
-    createElement(
-      'select',
-      {
-        className: 'ne-inspect-select',
-        value: aspect,
-        onChange: (e: React.ChangeEvent<HTMLSelectElement>) =>
-          onChangeData({ aspect_ratio: e.target.value }),
-      },
-      ...ASPECT_RATIOS.map((a) =>
-        createElement('option', { key: a, value: a }, a),
-      ),
-    ),
+    // Schema-driven aspect / image_size: pick whichever aspect-shaped input
+    // this model actually uses (aspect_ratio, image_size, or neither). Falls
+    // back to the hardcoded ASPECT_RATIOS list if the model has none.
+    (() => {
+      const aspectInput =
+        model?.inputs.find((i) => i.type === 'aspect') ??
+        model?.inputs.find((i) => i.key === 'image_size');
+      if (aspectInput) return renderSchemaInput(node, onChangeData, aspectInput);
+      // Fallback for models with no aspect input at all.
+      return createElement(
+        Fragment,
+        null,
+        createElement('label', { className: 'ne-inspect-label' }, 'Aspect Ratio'),
+        createElement(
+          'select',
+          {
+            className: 'ne-inspect-select',
+            value: String(node.data.aspect_ratio ?? '16:9'),
+            onChange: (e: React.ChangeEvent<HTMLSelectElement>) =>
+              onChangeData({ aspect_ratio: e.target.value }),
+          },
+          ...ASPECT_RATIOS.map((a) => createElement('option', { key: a, value: a }, a)),
+        ),
+      );
+    })(),
     // Variants (chips 1–4 + free-form input for arbitrary counts up to 20;
     // executor chunks into FAL num_images-4 batches when count > 4).
     renderVariantsControl(node, onChangeData, 'num_images', 20),
@@ -1056,22 +1266,45 @@ const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
         ),
       );
     })(),
+    // Schema-driven extras: resolution, output_format, quality,
+    // safety_tolerance, negative_prompt, system_prompt, generate_audio,
+    // etc. Excludes keys already rendered by the fixed controls above.
+    renderSchemaExtras(
+      node,
+      onChangeData,
+      model,
+      new Set([
+        'prompt',        // wired from text-prompt or upstream concat
+        'aspect_ratio',  // rendered by the aspect block above
+        'image_size',    // " (GPT Image 2 / Flux 2)
+        'num_images',    // Variants chip row
+        'seed',          // renderSeedControl below
+        // Ref-image keys are ports on the node, not fields.
+        'image_url',
+        'image_urls',
+        'first_frame_url',
+        'start_image_url',
+      ]),
+    ),
     // Random Seed control (schema-driven — only renders when the current
     // model has a `seed` input; every current image model does).
-    (getFalModel(modelId)?.inputs.some((i) => i.key === 'seed'))
+    (model?.inputs.some((i) => i.key === 'seed'))
       ? renderSeedControl(node, onChangeData)
       : null,
-    // Generate
-    createElement(
-      'button',
-      {
-        type: 'button',
-        className: 'ne-inspect-generate',
-        disabled: inFlight,
-        onClick: () => onGenerate(),
+    // Generate — cost hint pulled from /api/fal/price for this endpoint.
+    // Quantity is num_images (default 1, capped at the variants cap the
+    // Inspector allows). The button falls back to plain "Generate" while
+    // pricing loads or when the endpoint isn't priced by images.
+    createElement(GenerateButtonWithCost, {
+      endpointId: model?.endpoint ?? null,
+      quantity: {
+        images: Math.max(1, Math.min(20, Number(node.data.num_images ?? 1))),
       },
-      inFlight ? 'Generating\u2026' : 'Generate',
-    ),
+      disabled: inFlight,
+      inFlight,
+      busyLabel: 'Generating\u2026',
+      onClick: () => onGenerate(),
+    }),
     // Thumbnail
     url
       ? createElement(
@@ -1084,10 +1317,17 @@ const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
 };
 
 const MovieGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
-  const modelId = String(node.data.modelId ?? 'veo-3');
-  const aspect = String(node.data.aspect_ratio ?? '16:9');
+  const rawModelId = String(node.data.modelId ?? 'veo-3');
+  const modelId = resolveFalModelId(rawModelId) ?? rawModelId;
   const url = node.output?.dataUrl;
+  const model = getFalModel(modelId);
   const modelLocked = Boolean(url);
+
+  // Auto-heal a stale/aliased modelId (e.g. veo-3-fast → veo-3-1-fast).
+  useEffect(() => {
+    if (rawModelId !== modelId) onChangeData({ modelId });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawModelId, modelId]);
 
   return createElement(
     'div',
@@ -1111,19 +1351,27 @@ const MovieGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
         ),
       ),
     ),
-    createElement('label', { className: 'ne-inspect-label' }, 'Aspect Ratio'),
-    createElement(
-      'select',
-      {
-        className: 'ne-inspect-select',
-        value: aspect,
-        onChange: (e: React.ChangeEvent<HTMLSelectElement>) =>
-          onChangeData({ aspect_ratio: e.target.value }),
-      },
-      ...['16:9', '9:16', '1:1'].map((a) =>
-        createElement('option', { key: a, value: a }, a),
-      ),
-    ),
+    // Schema-driven aspect (each Veo variant restricts to different options;
+    // Kling adds 1:1; Veo 3.1 FLF adds 'auto').
+    (() => {
+      const aspectInput = model?.inputs.find((i) => i.type === 'aspect');
+      if (aspectInput) return renderSchemaInput(node, onChangeData, aspectInput);
+      return createElement(
+        Fragment,
+        null,
+        createElement('label', { className: 'ne-inspect-label' }, 'Aspect Ratio'),
+        createElement(
+          'select',
+          {
+            className: 'ne-inspect-select',
+            value: String(node.data.aspect_ratio ?? '16:9'),
+            onChange: (e: React.ChangeEvent<HTMLSelectElement>) =>
+              onChangeData({ aspect_ratio: e.target.value }),
+          },
+          ...['16:9', '9:16', '1:1'].map((a) => createElement('option', { key: a, value: a }, a)),
+        ),
+      );
+    })(),
     // Duration control is now model-schema-driven: Veo/Kling get a select of
     // valid enumerated durations, Seedance gets a clamped number field, and
     // the schema's default fires automatically so the field is never blank.
@@ -1132,20 +1380,54 @@ const MovieGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
     // executor fires N parallel jobs of 1 each. Cap at 10 because each job
     // costs 1–5 min and $$$; 10 concurrent is already aggressive.
     renderVariantsControl(node, onChangeData, 'num_videos', 10),
+    // Schema-driven extras: resolution, negative_prompt, generate_audio,
+    // auto_fix, cfg_scale, safety_tolerance, last_frame_url, etc.
+    // Excludes keys already rendered above (aspect, duration, ref-image ports).
+    renderSchemaExtras(
+      node,
+      onChangeData,
+      model,
+      new Set([
+        'prompt',
+        'aspect_ratio',
+        'duration',
+        'seed',
+        'image_url',
+        'image_urls',
+        'first_frame_url',
+        'start_image_url',
+      ]),
+    ),
     // Random Seed control (video models with a `seed` input in their schema).
-    (getFalModel(modelId)?.inputs.some((i) => i.key === 'seed'))
+    (model?.inputs.some((i) => i.key === 'seed'))
       ? renderSeedControl(node, onChangeData)
       : null,
-    createElement(
-      'button',
-      {
-        type: 'button',
-        className: 'ne-inspect-generate',
+    // Generate — cost = unit_price × seconds × num_videos for per-second
+    // pricing. Duration values vary by model: Veo uses "8s" (string with
+    // 's' suffix), Kling uses "5" (numeric string), Seedance uses 5
+    // (raw number). Parse robustly so the estimate is correct across all.
+    // num_videos > 1 fires that many parallel jobs, each billed separately.
+    (() => {
+      const rawDuration = node.data.duration;
+      const durationSecs =
+        typeof rawDuration === 'number'
+          ? rawDuration
+          : typeof rawDuration === 'string'
+            ? parseFloat(rawDuration.replace(/[^0-9.]/g, ''))
+            : NaN;
+      const variants = Math.max(1, Math.min(10, Math.floor(Number(node.data.num_videos ?? 1))));
+      return createElement(GenerateButtonWithCost, {
+        endpointId: model?.endpoint ?? null,
+        quantity: {
+          seconds: Number.isFinite(durationSecs) && durationSecs > 0 ? durationSecs : undefined,
+          variants,
+        },
         disabled: inFlight,
+        inFlight,
+        busyLabel: 'Generating\u2026 (video takes 1-5 min)',
         onClick: () => onGenerate(),
-      },
-      inFlight ? 'Generating\u2026 (video takes 1-5 min)' : 'Generate',
-    ),
+      });
+    })(),
     url
       ? createElement(
           'div',
@@ -1307,22 +1589,307 @@ const PromptConcatInspector: NodeKindDef['Inspector'] = ({ node, onChangeData })
   );
 };
 
-const CustomFalInspector: NodeKindDef['Inspector'] = () =>
-  createElement(
+// Curated presets so the user can one-click a working config for common
+// models. `slug` is the fal.ai endpoint, `imageKey` is where an upstream
+// image goes (undefined = no image input), `starterJson` is a template.
+const CUSTOM_FAL_PRESETS: Array<{
+  label: string;
+  slug: string;
+  imageKey?: string;
+  starterJson: string;
+  note?: string;
+}> = [
+  {
+    label: 'FLUX Pro 1.1 (text→image)',
+    slug: 'fal-ai/flux-pro/v1.1',
+    starterJson: '{\n  "image_size": "landscape_16_9",\n  "num_inference_steps": 28,\n  "guidance_scale": 3.5\n}',
+  },
+  {
+    label: 'FLUX Kontext (edit)',
+    slug: 'fal-ai/flux-kontext',
+    imageKey: 'image_url',
+    starterJson: '{\n  "guidance_scale": 3.5\n}',
+    note: 'Wire an image to the image port.',
+  },
+  {
+    label: 'Ideogram v3 (text→image)',
+    slug: 'fal-ai/ideogram/v3',
+    starterJson: '{\n  "aspect_ratio": "16:9",\n  "rendering_speed": "BALANCED"\n}',
+  },
+  {
+    label: 'Recraft V3 (text→image)',
+    slug: 'fal-ai/recraft-v3',
+    starterJson: '{\n  "image_size": "landscape_16_9",\n  "style": "realistic_image"\n}',
+  },
+  {
+    label: 'Kling 2.1 img→video',
+    slug: 'fal-ai/kling-video/v2.1/master/image-to-video',
+    imageKey: 'image_url',
+    starterJson: '{\n  "duration": "5",\n  "aspect_ratio": "16:9"\n}',
+    note: 'Wire an image to the image port.',
+  },
+  {
+    label: 'Seedance Pro img→video',
+    slug: 'fal-ai/bytedance/seedance/v1/pro/image-to-video',
+    imageKey: 'image_url',
+    starterJson: '{\n  "duration": 5,\n  "resolution": "720p"\n}',
+    note: 'Wire an image to the image port.',
+  },
+  {
+    label: 'Topaz Video Upscale',
+    slug: 'fal-ai/topaz/upscale/video',
+    imageKey: 'video_url',
+    starterJson: '{\n  "upscale_factor": 2\n}',
+    note: 'Wire a video to the image port.',
+  },
+];
+
+const CustomFalInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
+  const endpoint = String(node.data.endpoint ?? '');
+  const inputJson = String(node.data.inputJson ?? '{}');
+  const imageKey = String(node.data.imageKey ?? 'image_url');
+  const out = node.output;
+  const url = out?.dataUrl;
+
+  // Validate JSON live so the user sees the error before they hit Generate.
+  let jsonError: string | null = null;
+  if (inputJson.trim() !== '') {
+    try {
+      const parsed = JSON.parse(inputJson);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        jsonError = 'Must be a JSON object (e.g. { "guidance_scale": 7.5 }).';
+      }
+    } catch (err) {
+      jsonError = (err as Error).message;
+    }
+  }
+
+  return createElement(
     'div',
     { className: 'ne-inspect-body' },
+
+    // What this node is / how it works
     createElement(
       'div',
-      { className: 'ne-inspect-note' },
-      'Custom FAL endpoint \u2014 coming in Phase B/2. You will be able to paste a fal.ai model slug and wire it into any graph.',
+      {
+        className: 'ne-inspect-note',
+        style: {
+          padding: '8px 10px',
+          background: '#1a1a1f',
+          border: '1px solid #2a2a30',
+          borderRadius: '4px',
+          fontSize: '11px',
+          lineHeight: '1.5',
+          color: '#c0c0c8',
+          marginBottom: '10px',
+        },
+      },
+      createElement('div', { style: { fontWeight: 600, marginBottom: '4px', color: '#e6e6ea' } }, '🧪 Custom FAL'),
+      'Run any model on fal.ai from a graph. Pick a preset below or paste any slug from ',
+      createElement(
+        'a',
+        { href: 'https://fal.ai/models', target: '_blank', rel: 'noreferrer', style: { color: '#7aa2f7' } },
+        'fal.ai/models',
+      ),
+      '. Wire a Text Prompt into ',
+      createElement('code', null, 'prompt'),
+      ' and (optionally) an image/video into ',
+      createElement('code', null, 'image'),
+      '.',
     ),
+
+    // Preset picker — one-click config for common models
+    createElement('label', { className: 'ne-inspect-label' }, 'Preset'),
+    createElement(
+      'select',
+      {
+        className: 'ne-inspect-select',
+        value: '',
+        onChange: (e: React.ChangeEvent<HTMLSelectElement>) => {
+          const preset = CUSTOM_FAL_PRESETS.find((p) => p.slug === e.target.value);
+          if (!preset) return;
+          onChangeData({
+            endpoint: preset.slug,
+            inputJson: preset.starterJson,
+            imageKey: preset.imageKey ?? 'image_url',
+          });
+        },
+      },
+      createElement('option', { value: '' }, '— pick a preset —'),
+      ...CUSTOM_FAL_PRESETS.map((p) =>
+        createElement('option', { key: p.slug, value: p.slug }, p.label),
+      ),
+    ),
+
+    createElement('label', { className: 'ne-inspect-label' }, 'FAL endpoint'),
+    createElement('input', {
+      className: 'ne-inspect-input',
+      type: 'text',
+      value: endpoint,
+      spellCheck: false,
+      placeholder: 'fal-ai/flux-pro/v1.1',
+      onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
+        onChangeData({ endpoint: e.target.value }),
+    }),
+    createElement(
+      'div',
+      { className: 'ne-inspect-note', style: { fontSize: '11px', marginTop: '4px' } },
+      'The model’s slug on fal.ai. Example: on the fal.ai page for FLUX Pro 1.1 the URL is ',
+      createElement('code', null, 'fal.ai/models/fal-ai/flux-pro/v1.1'),
+      ' — you paste ',
+      createElement('code', null, 'fal-ai/flux-pro/v1.1'),
+      '.',
+    ),
+
+    createElement('label', { className: 'ne-inspect-label' }, 'Upstream image → key'),
+    createElement('input', {
+      className: 'ne-inspect-input',
+      type: 'text',
+      value: imageKey,
+      spellCheck: false,
+      placeholder: 'image_url',
+      onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
+        onChangeData({ imageKey: e.target.value }),
+    }),
+    createElement(
+      'div',
+      { className: 'ne-inspect-note', style: { fontSize: '11px', marginTop: '4px' } },
+      'If you wire an image into the ',
+      createElement('code', null, 'image'),
+      ' port, that image is sent to FAL under this key. Leave as ',
+      createElement('code', null, 'image_url'),
+      ' for most models. Some need ',
+      createElement('code', null, 'image_urls'),
+      ' (array), ',
+      createElement('code', null, 'first_frame_image'),
+      ', or ',
+      createElement('code', null, 'video_url'),
+      '. Keys ending in “s” are sent as an array.',
+    ),
+
+    createElement('label', { className: 'ne-inspect-label' }, 'Extra input (JSON)'),
+    createElement('textarea', {
+      className: 'ne-inspect-textarea',
+      value: inputJson,
+      spellCheck: false,
+      rows: 8,
+      placeholder: '{\n  "guidance_scale": 7.5,\n  "num_inference_steps": 28\n}',
+      style: {
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+        fontSize: '11px',
+        lineHeight: '1.4',
+      },
+      onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) =>
+        onChangeData({ inputJson: e.target.value }),
+    }),
+    jsonError
+      ? createElement(
+          'div',
+          {
+            className: 'ne-inspect-note',
+            style: { color: '#f7768e', fontSize: '11px', marginTop: '4px' },
+          },
+          '⚠ ' + jsonError,
+        )
+      : createElement(
+          'div',
+          { className: 'ne-inspect-note', style: { fontSize: '11px', marginTop: '4px' } },
+          'Every model on fal.ai has its own input schema (see the “API” tab on the model’s page). Anything you type here is merged into the payload; upstream ',
+          createElement('code', null, 'prompt'),
+          ' and image are added automatically unless overridden here.',
+        ),
+
+    createElement(GenerateButtonWithCost, {
+      endpointId: endpoint.trim() || null,
+      quantity: {},
+      disabled: inFlight || !endpoint.trim() || Boolean(jsonError),
+      inFlight,
+      busyLabel: 'Running…',
+      onClick: () => onGenerate(),
+    }),
+
+    url && out?.kind === 'image'
+      ? createElement(
+          'div',
+          { className: 'ne-inspect-thumb' },
+          createElement('img', { src: url, alt: '', draggable: false }),
+        )
+      : url && out?.kind === 'video'
+      ? createElement(
+          'div',
+          { className: 'ne-inspect-thumb' },
+          createElement('video', { src: url, controls: true, style: { width: '100%' } }),
+        )
+      : out?.text
+      ? createElement(
+          'pre',
+          {
+            style: {
+              margin: '8px 0 0 0',
+              padding: '8px',
+              fontSize: '11px',
+              lineHeight: '1.4',
+              color: '#c0c0c8',
+              background: '#1a1a1f',
+              border: '1px solid #2a2a30',
+              borderRadius: '4px',
+              maxHeight: '240px',
+              overflow: 'auto',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+            },
+          },
+          out.text,
+        )
+      : null,
   );
+};
 
 const PanelRefInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) => {
   const { panels } = useContext(PanelRefContext);
   const panelId = String(node.data.panelId ?? '');
   const panelLabel = String(node.data.panelLabel ?? '');
   const imageDataUrl = String(node.data.imageDataUrl ?? '');
+
+  // Group panels by storyboard, preserving the order they arrive in
+  // (which matches Outliner order).
+  const storyboards = useMemo(() => {
+    const map = new Map<string, { id: string; label: string; panels: PanelRefOption[] }>();
+    for (const p of panels) {
+      let sb = map.get(p.storyboardId);
+      if (!sb) {
+        sb = { id: p.storyboardId, label: p.storyboardLabel, panels: [] };
+        map.set(p.storyboardId, sb);
+      }
+      sb.panels.push(p);
+    }
+    return Array.from(map.values());
+  }, [panels]);
+
+  // Which storyboard tab is active. Default: the storyboard that owns the
+  // currently-picked panel, else the first storyboard.
+  const selectedPanel = panels.find((p) => p.id === panelId);
+  const [activeSbId, setActiveSbId] = useState<string>(
+    selectedPanel?.storyboardId ?? storyboards[0]?.id ?? '',
+  );
+  // If the graph is reopened with a picked panel, snap the tab to its storyboard.
+  useEffect(() => {
+    if (selectedPanel && selectedPanel.storyboardId !== activeSbId) {
+      setActiveSbId(selectedPanel.storyboardId);
+    }
+    // Only follow selection changes, not tab clicks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPanel?.id]);
+  // If storyboards list changes and current tab vanishes, jump to first.
+  useEffect(() => {
+    if (storyboards.length === 0) return;
+    if (!storyboards.some((s) => s.id === activeSbId)) {
+      setActiveSbId(storyboards[0].id);
+    }
+  }, [storyboards, activeSbId]);
+
+  const activeSb = storyboards.find((s) => s.id === activeSbId) ?? storyboards[0];
+
   return createElement(
     'div',
     { className: 'ne-inspect-body' },
@@ -1334,41 +1901,95 @@ const PanelRefInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) => 
           'No panels in this project yet. Create some storyboard panels first, then come back.',
         )
       : createElement(
-          'select',
-          {
-            className: 'ne-inspect-select',
-            value: panelId,
-            onChange: (e: React.ChangeEvent<HTMLSelectElement>) => {
-              const nextId = e.target.value;
-              const opt = panels.find((p) => p.id === nextId);
-              onChangeData({
-                panelId: nextId,
-                panelLabel: opt?.label ?? '',
-                imageDataUrl: opt?.imageDataUrl ?? '',
-              });
-            },
-          },
-          createElement('option', { key: '__none', value: '' }, '\u2014 pick a panel \u2014'),
-          ...panels.map((p) =>
-            createElement(
-              'option',
-              { key: p.id, value: p.id },
-              p.label + (p.imageDataUrl ? '' : ' (no image)'),
-            ),
-          ),
+          'div',
+          { className: 'ne-panelref-picker' },
+          // Storyboard tabs
+          storyboards.length > 1
+            ? createElement(
+                'div',
+                { className: 'ne-panelref-tabs' },
+                ...storyboards.map((sb) =>
+                  createElement(
+                    'button',
+                    {
+                      key: sb.id,
+                      type: 'button',
+                      className:
+                        'ne-panelref-tab' + (sb.id === activeSb?.id ? ' is-active' : ''),
+                      onClick: () => setActiveSbId(sb.id),
+                      title: sb.label,
+                    },
+                    sb.label,
+                  ),
+                ),
+              )
+            : null,
+          // Grid — tiles adopt the storyboard's panel aspect ratio so
+          // portrait panels don't get their heads cropped by square thumbs.
+          activeSb
+            ? (() => {
+                const ar = activeSb.panels[0]?.aspectRatio ?? 1;
+                // Portrait storyboards need narrower columns so tiles don't
+                // become huge vertically; landscape can use wider columns.
+                const minColPx = ar >= 1 ? 96 : Math.max(64, Math.round(96 * ar));
+                return createElement(
+                  'div',
+                  {
+                    className: 'ne-panelref-grid',
+                    style: {
+                      gridTemplateColumns: `repeat(auto-fill, minmax(${minColPx}px, 1fr))`,
+                    },
+                  },
+                  ...activeSb.panels.map((p) => {
+                    const isSel = p.id === panelId;
+                    const hasImg = Boolean(p.imageDataUrl);
+                    return createElement(
+                      'button',
+                      {
+                        key: p.id,
+                        type: 'button',
+                        className:
+                          'ne-panelref-tile' +
+                          (isSel ? ' is-selected' : '') +
+                          (hasImg ? '' : ' is-empty'),
+                        style: { aspectRatio: `${p.aspectRatio}` },
+                        onClick: () => {
+                          onChangeData({
+                            panelId: p.id,
+                            panelLabel: p.label,
+                            imageDataUrl: p.imageDataUrl ?? '',
+                          });
+                        },
+                        title: p.label,
+                      },
+                      hasImg
+                        ? createElement('img', {
+                            src: p.imageDataUrl,
+                            alt: '',
+                            draggable: false,
+                            className: 'ne-panelref-tile-img',
+                          })
+                        : createElement(
+                            'div',
+                            { className: 'ne-panelref-tile-empty' },
+                            'no image',
+                          ),
+                      createElement(
+                        'div',
+                        { className: 'ne-panelref-tile-num' },
+                        String(p.panelIndex),
+                      ),
+                    );
+                  }),
+                );
+              })()
+            : null,
         ),
     panelId && !imageDataUrl
       ? createElement(
           'div',
           { className: 'ne-inspect-note' },
           'This panel has no rendered image yet. Generate its image first, or pick a different panel.',
-        )
-      : null,
-    imageDataUrl
-      ? createElement(
-          'div',
-          { className: 'ne-inspect-thumb' },
-          createElement('img', { src: imageDataUrl, alt: '', draggable: false }),
         )
       : null,
     panelLabel
@@ -1482,8 +2103,8 @@ export const NODE_KINDS: Record<NodeKind, NodeKindDef> = {
     kind: 'custom-fal',
     label: 'Custom FAL',
     category: 'gen',
-    defaultWidth: 220,
-    defaultHeight: 140,
+    defaultWidth: 260,
+    defaultHeight: 220,
     defaultData: () => defaultDataFor('custom-fal'),
     ports: (data) => defaultPortsFor('custom-fal', data),
     Preview: CustomFalPreview,

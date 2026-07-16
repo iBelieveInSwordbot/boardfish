@@ -142,7 +142,7 @@ input, textarea, select {
 }
 .outliner-row {
   display: grid;
-  grid-template-columns: 26px 22px 1fr 24px;
+  grid-template-columns: 26px 22px 1fr 22px 24px;
   align-items: center;
   gap: 6px;
   padding: 8px 10px;
@@ -188,6 +188,31 @@ input, textarea, select {
 }
 .outliner-row:hover .outliner-row-remove { opacity: 1; }
 .outliner-row-remove:hover { color: #ff6b6b; background: rgba(255,107,107,0.1); }
+.outliner-row-rename {
+  background: transparent;
+  border: none;
+  color: #666;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 80ms ease;
+}
+.outliner-row:hover .outliner-row-rename { opacity: 1; }
+.outliner-row-rename:hover { color: #4a9eff; background: rgba(74, 158, 255, 0.1); }
+.outliner-row-input {
+  font-size: 12px;
+  font-family: inherit;
+  color: #eaeaea;
+  background: #0f0f12;
+  border: 1px solid #4a9eff;
+  border-radius: 4px;
+  padding: 3px 6px;
+  outline: none;
+  min-width: 0;
+  width: 100%;
+}
 .outliner-footer {
   padding: 8px;
   border-top: 1px solid #262629;
@@ -224,6 +249,31 @@ input, textarea, select {
 .slide-body-freeform {
   /* absolute-positioned children use percent coords relative to this box */
   cursor: default;
+}
+
+/* "+ Text" pill in the top-right corner of the slide body. Adds a new text box
+   at the standard 30/30 5%/5% spot when clicked. */
+.slide-body-add-textbox {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 15;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #f0f0f0;
+  background: rgba(30, 30, 30, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  cursor: pointer;
+  opacity: 0.35;
+  transition: opacity 120ms ease, background-color 120ms ease, border-color 120ms ease;
+  user-select: none;
+}
+.slide-body-freeform:hover .slide-body-add-textbox { opacity: 1; }
+.slide-body-add-textbox:hover {
+  background: rgba(74, 158, 255, 0.85);
+  border-color: #4a9eff;
 }
 
 .slide-textbox {
@@ -663,6 +713,48 @@ input, textarea, select {
   border-color: rgba(255,255,255,0.25);
 }
 
+/* Panel spinner overlay — shown while a node-editor gen (visible or
+   detached) is running for this panel. Semi-transparent scrim so the
+   existing image stays visible underneath. */
+.panel-generating-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: rgba(6, 6, 8, 0.55);
+  color: #f0ecdf;
+  pointer-events: none;
+  animation: panel-generating-fade-in 0.2s ease-out;
+}
+@keyframes panel-generating-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.panel-generating-spinner {
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  border: 3px solid rgba(255, 255, 255, 0.15);
+  border-top-color: #d33858;
+  animation: panel-generating-spin 0.85s linear infinite;
+}
+@keyframes panel-generating-spin {
+  to { transform: rotate(360deg); }
+}
+.panel-generating-label {
+  font-family: 'Menlo', 'Courier New', monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(240, 236, 223, 0.85);
+  background: rgba(0, 0, 0, 0.35);
+  padding: 3px 10px;
+  border-radius: 999px;
+}
+
 /* --- Toolbar --- */
 .toolbar {
   display: grid;
@@ -902,6 +994,7 @@ input, textarea, select {
   background: #000;
   overflow: hidden;
   flex: 0 0 auto;
+  position: relative; /* anchor for spinner overlay + video badge */
 }
 .panel-image img {
   width: 100%;

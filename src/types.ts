@@ -157,17 +157,20 @@ export type SlideTextBox = {
   color: string;
 };
 
-/** Freeform "slide" (Keynote-style): two floating, individually styled text boxes.
+/** Freeform "slide" (Keynote-style): a collection of floating, individually
+ *  styled text boxes.
  *
- *  v3 slides had `title`/`subtitle` strings and an `imageDataUrl`. v4 replaces
- *  those with two `SlideTextBox` entries (titleBox, subtitleBox). The old image
- *  fields are kept on the type as optional for backward compat during load but
- *  are no longer rendered.
+ *  v3 slides had `title`/`subtitle` strings and an `imageDataUrl`. v4 replaced
+ *  those with `titleBox` + `subtitleBox`. v5 collapses the two boxes into an
+ *  arbitrary array of `textBoxes` so users can add, duplicate, cut/copy/paste,
+ *  and alt-drag boxes on a slide like a real Keynote surface.
+ *
+ *  The old image / title / subtitle fields are kept as optional legacy holders
+ *  for backwards-compatible load only.
  */
 export type Slide = {
   id: string;
-  titleBox: SlideTextBox;
-  subtitleBox: SlideTextBox;
+  textBoxes: SlideTextBox[];
   showFooter: boolean;
   /** @deprecated retained only so old v3 saves round-trip; never rendered in v4+. */
   imageDataUrl?: string | null;
@@ -201,7 +204,12 @@ export const SLIDE_FONT_WEIGHTS: { label: string; value: SlideFontWeight }[] = [
   { label: 'Black', value: 900 },
 ];
 
-export function newTitleTextBox(text = 'Section Title'): SlideTextBox {
+/**
+ * Default freeform text box seeded on a fresh slide (and used when the user
+ * hits the "+ Text" button). Placed roughly in the vertical center with a
+ * reasonable default width; the user can move/resize/duplicate it freely.
+ */
+export function newDefaultTextBox(text = 'Text'): SlideTextBox {
   return {
     id: cryptoRandomId(),
     text,
@@ -219,6 +227,10 @@ export function newTitleTextBox(text = 'Section Title'): SlideTextBox {
   };
 }
 
+/**
+ * Kept for backwards-compat with any lingering call sites. Not used by the
+ * slide UI anymore — v5 slides only have a single kind of text box.
+ */
 export function newSubtitleTextBox(text = ''): SlideTextBox {
   return {
     id: cryptoRandomId(),
@@ -264,8 +276,7 @@ export type DocItem =
 export function newSlide(): Slide {
   return {
     id: cryptoRandomId(),
-    titleBox: newTitleTextBox('Section Title'),
-    subtitleBox: newSubtitleTextBox(''),
+    textBoxes: [newDefaultTextBox('Text')],
     showFooter: true,
   };
 }
@@ -283,10 +294,11 @@ export function migrateSlideFromV3(raw: {
   imageDataUrl?: string | null;
   imageName?: string | null;
 }): Slide {
+  // v3 → v5 direct: only the title becomes a real text box. The old subtitle
+  // text is intentionally dropped per Matt's v5 spec.
   return {
     id: raw.id ?? cryptoRandomId(),
-    titleBox: newTitleTextBox(raw.title ?? 'Section Title'),
-    subtitleBox: newSubtitleTextBox(raw.subtitle ?? ''),
+    textBoxes: [newDefaultTextBox(raw.title ?? 'Text')],
     showFooter: raw.showFooter ?? true,
     imageDataUrl: raw.imageDataUrl ?? null,
     imageName: raw.imageName ?? null,

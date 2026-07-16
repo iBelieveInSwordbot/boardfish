@@ -195,7 +195,8 @@ export function defaultPortsFor(kind: NodeKind, data?: Record<string, unknown>):
       ];
     case 'custom-fal':
       return [
-        { id: 'in', side: 'in', dataType: 'any', label: 'in' },
+        { id: 'prompt', side: 'in', dataType: 'text', label: 'prompt' },
+        { id: 'image', side: 'in', dataType: 'image', label: 'image' },
         { id: 'out', side: 'out', dataType: 'any', label: 'out' },
       ];
   }
@@ -247,7 +248,18 @@ export function defaultDataFor(kind: NodeKind): Record<string, unknown> {
         imageDataUrl: '',
       };
     case 'custom-fal':
-      return { endpoint: '' };
+      return {
+        // fal.ai endpoint slug, e.g. "fal-ai/flux-pro/v1.1" or
+        // "fal-ai/kling-video/v2.1/master/image-to-video".
+        endpoint: '',
+        // Free-form JSON payload merged into the FAL job input. Upstream
+        // text (prompt port) becomes `prompt` and upstream image (image
+        // port) becomes `image_url` unless overridden here.
+        inputJson: '{}',
+        // Optional: override which key upstream image maps to. Some models
+        // want `image_urls` (array) or `first_frame_image`, etc.
+        imageKey: 'image_url',
+      };
   }
 }
 

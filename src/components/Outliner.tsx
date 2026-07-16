@@ -11,9 +11,10 @@ import {
 } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Action, BoardfishState } from '../store';
 import type { DocItem } from '../types';
+import { newDefaultTextBox as newDefaultTextBoxFromTypes } from '../types';
 
 type Props = {
   state: BoardfishState;
@@ -124,13 +125,77 @@ function OutlinerRow({ item, index, selected, dispatch, canDelete }: RowProps) {
     opacity: isDragging ? 0.45 : 1,
   };
 
+  const firstSlideBoxText = item.kind === 'slide' ? (item.slide.textBoxes[0]?.text ?? '') : '';
   const label =
     item.kind === 'slide'
-      ? item.slide.titleBox.text.trim() || 'Untitled Slide'
+      ? firstSlideBoxText.trim() || 'Untitled Slide'
       : (item.overrides?.name?.trim() ||
           `Storyboard · ${item.panels.length} panel${item.panels.length === 1 ? '' : 's'}`);
 
   const icon = item.kind === 'slide' ? '▭' : '▦';
+
+  // Inline rename state — double-click the label to edit.
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(label);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (editing) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [editing]);
+
+  const startEdit = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setDraft(
+      item.kind === 'slide'
+        ? firstSlideBoxText
+        : (item.overrides?.name ?? ''),
+    );
+    setEditing(true);
+  };
+
+  const commit = () => {
+    const next = draft.trim();
+    if (item.kind === 'slide') {
+      // Only write if it actually changed; keep box otherwise untouched.
+      // Edits from the outliner target the first (primary) text box on the slide,
+      // creating one implicitly if the slide has been emptied.
+      const firstBox = item.slide.textBoxes[0];
+      if (firstBox) {
+        if (next !== firstBox.text) {
+          dispatch({
+            type: 'UPDATE_SLIDE_TEXTBOX',
+            slideId: item.slide.id,
+            textBoxId: firstBox.id,
+            patch: { text: next },
+          });
+        }
+      } else if (next.length > 0) {
+        dispatch({
+          type: 'ADD_SLIDE_TEXTBOX',
+          slideId: item.slide.id,
+          textBox: { ...newDefaultTextBoxFromTypes(next) },
+        });
+      }
+    } else {
+      const prev = item.overrides?.name ?? '';
+      if (next !== prev) {
+        dispatch({
+          type: 'UPDATE_STORYBOARD_OVERRIDES',
+          id: item.id,
+          patch: { name: next },
+          merge: true,
+        });
+      }
+    }
+    setEditing(false);
+  };
+
+  const cancel = () => {
+    setEditing(false);
+  };
 
   return (
     <div
@@ -138,14 +203,56 @@ function OutlinerRow({ item, index, selected, dispatch, canDelete }: RowProps) {
       style={style}
       data-outliner-item={item.id}
       className={`outliner-row ${selected ? 'is-selected' : ''} ${item.kind === 'slide' ? 'row-slide' : 'row-storyboard'}`}
-      onClick={() => dispatch({ type: 'SELECT_ITEM', id: item.id })}
-      {...attributes}
-      {...listeners}
+      onClick={() => {
+        if (!editing) dispatch({ type: 'SELECT_ITEM', id: item.id });
+      }}
+      {...(editing ? {} : attributes)}
+      {...(editing ? {} : listeners)}
     >
       <div className="outliner-row-index">{String(index).padStart(2, '0')}</div>
       <div className="outliner-row-icon" aria-hidden>{icon}</div>
-      <div className="outliner-row-label" title={label}>{label}</div>
-      {canDelete && (
+      {editing ? (
+        <input
+          ref={inputRef}
+          className="outliner-row-input"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              commit();
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              cancel();
+            }
+            e.stopPropagation();
+          }}
+          onBlur={commit}
+          placeholder={item.kind === 'slide' ? 'Slide title' : 'Storyboard name'}
+          spellCheck={false}
+        />
+      ) : (
+        <div
+          className="outliner-row-label"
+          title={`${label} — double-click to rename`}
+          onDoubleClick={startEdit}
+        >
+          {label}
+        </div>
+      )}
+      {!editing && (
+        <button
+          className="outliner-row-rename"
+          title="Rename"
+          onClick={startEdit}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          ✎
+        </button>
+      )}
+      {canDelete && !editing && (
         <button
           className="outliner-row-remove"
           title={`Remove ${item.kind}`}
@@ -155,6 +262,7 @@ function OutlinerRow({ item, index, selected, dispatch, canDelete }: RowProps) {
               dispatch({ type: 'REMOVE_ITEM', id: item.id });
             }
           }}
+          onPointerDown={(e) => e.stopPropagation()}
         >
           ×
         </button>

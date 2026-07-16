@@ -5,10 +5,9 @@ import {
   cryptoRandomId,
   defaultSettings,
   migrateSlideFromV3,
+  newDefaultTextBox,
   newSlideItem,
   newStoryboardItem,
-  newSubtitleTextBox,
-  newTitleTextBox,
   themeColors,
 } from './types';
 
@@ -63,15 +62,47 @@ function normalizeTextBox(raw: Partial<SlideTextBox> | undefined, fallback: Slid
   };
 }
 
-function normalizeSlide(s: Partial<Slide> & { title?: string; subtitle?: string }): Slide {
-  // v4 shape: has titleBox + subtitleBox already.
-  if (s.titleBox && s.subtitleBox) {
-    const defaultTitle = newTitleTextBox();
-    const defaultSubtitle = newSubtitleTextBox();
+type RawSlide = Partial<Slide> & {
+  title?: string;
+  subtitle?: string;
+  titleBox?: Partial<SlideTextBox>;
+  subtitleBox?: Partial<SlideTextBox>;
+  textBoxes?: Partial<SlideTextBox>[];
+};
+
+function ensureUniqueBoxIds(boxes: SlideTextBox[]): SlideTextBox[] {
+  const seen = new Set<string>();
+  return boxes.map((b) => {
+    if (!b.id || seen.has(b.id)) {
+      const id = cryptoRandomId();
+      seen.add(id);
+      return { ...b, id };
+    }
+    seen.add(b.id);
+    return b;
+  });
+}
+
+function normalizeSlide(s: RawSlide): Slide {
+  // v5 shape: already has textBoxes[]. Normalize each box.
+  if (Array.isArray(s.textBoxes)) {
+    const fallback = newDefaultTextBox();
+    const boxes = s.textBoxes.map((b) => normalizeTextBox(b, fallback));
     return {
       id: s.id ?? cryptoRandomId(),
-      titleBox: normalizeTextBox(s.titleBox as Partial<SlideTextBox>, defaultTitle),
-      subtitleBox: normalizeTextBox(s.subtitleBox as Partial<SlideTextBox>, defaultSubtitle),
+      textBoxes: ensureUniqueBoxIds(boxes),
+      showFooter: s.showFooter ?? true,
+      imageDataUrl: s.imageDataUrl ?? null,
+      imageName: s.imageName ?? null,
+    };
+  }
+  // v4 shape: titleBox + subtitleBox. Migrate to textBoxes = [titleBox] (drop subtitle per v5 spec).
+  if (s.titleBox) {
+    const fallback = newDefaultTextBox();
+    const titleBox = normalizeTextBox(s.titleBox, fallback);
+    return {
+      id: s.id ?? cryptoRandomId(),
+      textBoxes: ensureUniqueBoxIds([titleBox]),
       showFooter: s.showFooter ?? true,
       imageDataUrl: s.imageDataUrl ?? null,
       imageName: s.imageName ?? null,
@@ -80,8 +111,8 @@ function normalizeSlide(s: Partial<Slide> & { title?: string; subtitle?: string 
   // v3 shape (title/subtitle strings) — migrate.
   return migrateSlideFromV3({
     id: s.id,
-    title: (s as { title?: string }).title,
-    subtitle: (s as { subtitle?: string }).subtitle,
+    title: s.title,
+    subtitle: s.subtitle,
     showFooter: s.showFooter,
     imageDataUrl: s.imageDataUrl ?? null,
     imageName: s.imageName ?? null,
@@ -153,7 +184,9 @@ export type Action =
   | { type: 'REMOVE_ITEM'; id: string }
   | { type: 'REORDER_ITEMS'; ids: string[] }
   | { type: 'UPDATE_SLIDE'; id: string; patch: Partial<Slide> }
-  | { type: 'UPDATE_SLIDE_TEXTBOX'; slideId: string; which: 'title' | 'subtitle'; patch: Partial<SlideTextBox> }
+  | { type: 'UPDATE_SLIDE_TEXTBOX'; slideId: string; textBoxId: string; patch: Partial<SlideTextBox> }
+  | { type: 'ADD_SLIDE_TEXTBOX'; slideId: string; textBox: SlideTextBox }
+  | { type: 'REMOVE_SLIDE_TEXTBOX'; slideId: string; textBoxId: string }
   | { type: 'UPDATE_STORYBOARD_OVERRIDES'; id: string; patch: StoryboardOverrides; merge?: boolean }
   | { type: 'CLEAR_STORYBOARD_OVERRIDE'; id: string; section: 'grid' | 'panelAspect' | 'fields' | 'name' }
   | { type: 'SET_LAST_STORYBOARD_PANELS'; panels: Panel[]; name?: string }
@@ -785,9 +818,30 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
     case 'UPDATE_SLIDE_TEXTBOX': {
       const items = state.items.map((it) => {
         if (it.kind !== 'slide' || it.slide.id !== action.slideId) return it;
-        const key = action.which === 'title' ? 'titleBox' : 'subtitleBox';
-        const current = it.slide[key];
-        return { ...it, slide: { ...it.slide, [key]: { ...current, ...action.patch } } };
+        const nextBoxes = it.slide.textBoxes.map((b) =>
+          b.id === action.textBoxId ? { ...b, ...action.patch } : b,
+        );
+        return { ...it, slide: { ...it.slide, textBoxes: nextBoxes } };
+      });
+      return { ...state, items };
+    }
+    case 'ADD_SLIDE_TEXTBOX': {
+      const items = state.items.map((it) => {
+        if (it.kind !== 'slide' || it.slide.id !== action.slideId) return it;
+        // If the incoming box's id collides with an existing one on this slide, assign a fresh id.
+        const existingIds = new Set(it.slide.textBoxes.map((b) => b.id));
+        const boxToAdd: SlideTextBox = existingIds.has(action.textBox.id)
+          ? { ...action.textBox, id: cryptoRandomId() }
+          : action.textBox;
+        return { ...it, slide: { ...it.slide, textBoxes: [...it.slide.textBoxes, boxToAdd] } };
+      });
+      return { ...state, items };
+    }
+    case 'REMOVE_SLIDE_TEXTBOX': {
+      const items = state.items.map((it) => {
+        if (it.kind !== 'slide' || it.slide.id !== action.slideId) return it;
+        const nextBoxes = it.slide.textBoxes.filter((b) => b.id !== action.textBoxId);
+        return { ...it, slide: { ...it.slide, textBoxes: nextBoxes } };
       });
       return { ...state, items };
     }

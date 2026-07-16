@@ -7,7 +7,7 @@ import {
   type DragEndEvent,
 } from '@dnd-kit/core';
 import { SortableContext, rectSortingStrategy } from '@dnd-kit/sortable';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { Action, BoardfishState, LaidOutPage } from '../store';
 import { fileToPanelImage, itemsToPages, panelNumberMap, resolveStoryboardSettings } from '../store';
 import { newPanel, type Panel, type Slide } from '../types';
@@ -35,9 +35,16 @@ type Props = {
   state: BoardfishState;
   dispatch: React.Dispatch<Action>;
   onOpenNodeEditor?: (panelId: string) => void;
+  /** Panel ids currently running gens in a (possibly detached) node editor.
+   *  Panels in this set render a spinner overlay on their tile. */
+  generatingPanelIds?: Set<string>;
 };
 
-export function Canvas({ state, dispatch, onOpenNodeEditor }: Props) {
+// Context so descendant Panel views can read the busy set without
+// threading it through every wrapper prop.
+export const GeneratingPanelsContext = React.createContext<Set<string>>(new Set());
+
+export function Canvas({ state, dispatch, onOpenNodeEditor, generatingPanelIds }: Props) {
   const { settings, items, selectedPanelIds } = state;
   const selectedSet = new Set(selectedPanelIds);
   const pages = itemsToPages(items, settings);
@@ -68,6 +75,41 @@ export function Canvas({ state, dispatch, onOpenNodeEditor }: Props) {
     ro.observe(el);
     return () => ro.disconnect();
   }, [settings.pageSize.widthPx, settings.pageSize.heightPx]);
+
+  // Scroll the canvas so the selected outliner item's first page is
+  // visible. Fires whenever selectedItemId changes (Outliner click, slide
+  // click, ADD_ITEM). Uses the first .page-frame carrying data-canvas-item
+  // for that id — storyboards that span multiple pages jump to page 1.
+  useEffect(() => {
+    const id = state.selectedItemId;
+    if (!id) return;
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    // Wait one frame so any newly-added item is in the DOM.
+    const raf = requestAnimationFrame(() => {
+      const s = scrollRef.current;
+      if (!s) return;
+      const target = s.querySelector<HTMLElement>(`[data-canvas-item="${id}"]`);
+      if (!target) return;
+      const scrollRect = s.getBoundingClientRect();
+      const tRect = target.getBoundingClientRect();
+      // If the top of the target is already within the top ~40% of the
+      // viewport, don't jump — avoids fighting canvas clicks.
+      const relTop = tRect.top - scrollRect.top;
+      const inViewComfortably =
+        relTop >= 0 && relTop <= scrollRect.height * 0.4;
+      if (inViewComfortably) return;
+      // Compute a scroll target that positions the item near the top with
+      // a small margin, keeping the horizontal center where it is.
+      const targetTop = s.scrollTop + relTop - 40;
+      s.scrollTo({
+        top: Math.max(0, Math.min(targetTop, s.scrollHeight - s.clientHeight)),
+        left: s.scrollLeft,
+        behavior: 'smooth',
+      });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [state.selectedItemId]);
 
   const pageScale = fitScale * zoom;
 
@@ -265,6 +307,7 @@ export function Canvas({ state, dispatch, onOpenNodeEditor }: Props) {
   const allPanelIds = state.items.flatMap((it) => (it.kind === 'storyboard' ? it.panels.map((p) => p.id) : []));
 
   return (
+    <GeneratingPanelsContext.Provider value={generatingPanelIds ?? new Set()}>
     <div
       ref={areaRef}
       className={`canvas-area ${isDropTarget ? 'canvas-drop' : ''}`}
@@ -325,6 +368,7 @@ export function Canvas({ state, dispatch, onOpenNodeEditor }: Props) {
         <button title="Zoom in (⌘+)" onClick={() => adjustZoom((z) => Math.min(4, z * 1.15))}>+</button>
       </div>
     </div>
+    </GeneratingPanelsContext.Provider>
   );
 }
 
@@ -369,6 +413,7 @@ function PageWrapper({
     item && item.kind === 'storyboard' ? resolveStoryboardSettings(settings, item) : null;
   return (
     <StoryboardPageView
+      itemId={page.itemId}
       panels={page.panels}
       pageIndex={pageIndex}
       totalPages={totalPages}
@@ -383,6 +428,7 @@ function PageWrapper({
 }
 
 type StoryboardPageProps = {
+  itemId: string;
   panels: Panel[];
   pageIndex: number;
   totalPages: number;
@@ -395,6 +441,7 @@ type StoryboardPageProps = {
 };
 
 function StoryboardPageView({
+  itemId,
   panels,
   pageIndex,
   totalPages,
@@ -447,7 +494,7 @@ function StoryboardPageView({
   };
 
   return (
-    <div className="page-frame">
+    <div className="page-frame" data-canvas-item={itemId}>
       <div className="page-wrapper">
         <div className="page" data-page-index={pageIndex} style={pageStyle}>
           <div style={gridStyle}>
@@ -495,7 +542,7 @@ function SlidePageView({ slide, itemId, pageIndex, totalPages, settings, dispatc
   };
 
   return (
-    <div className="page-frame">
+    <div className="page-frame" data-canvas-item={itemId}>
       <div
         className="page-wrapper slide-page-wrapper"
         onClick={(e) => {

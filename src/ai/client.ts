@@ -95,6 +95,53 @@ export async function runFalJob(
   return postJson<FalRunResponse>('/api/fal/run', { endpoint, input });
 }
 
+// ---------- FAL Platform APIs (billing + pricing) ----------
+//
+// Both go through the local ai-proxy which caches responses and holds
+// the admin-scope FAL_ADMIN_KEY server-side. Browser never sees the key.
+
+export type FalBillingInfo = {
+  ok: true;
+  balance: number | null;
+  currency: string;
+  pricePerCredit: number;
+  fetchedAt: number;
+  fresh: boolean;
+};
+
+export type FalPriceInfo = {
+  ok: true;
+  endpointId: string;
+  unit: string;         // "images", "seconds", "1m tokens", "compute seconds"
+  unitPrice: number;    // USD per unit
+  currency: string;
+  fetchedAt: number;
+  fresh: boolean;
+};
+
+/** Fetch current fal credit balance for the node view top bar. */
+export async function fetchFalBilling(): Promise<FalBillingInfo | null> {
+  try {
+    const res = await fetch('/api/fal/billing');
+    if (!res.ok) return null;
+    return (await res.json()) as FalBillingInfo;
+  } catch {
+    return null;
+  }
+}
+
+/** Fetch per-endpoint pricing for the Generate button cost hint. */
+export async function fetchFalPrice(endpointId: string): Promise<FalPriceInfo | null> {
+  if (!endpointId) return null;
+  try {
+    const res = await fetch(`/api/fal/price?endpoint=${encodeURIComponent(endpointId)}`);
+    if (!res.ok) return null;
+    return (await res.json()) as FalPriceInfo;
+  } catch {
+    return null;
+  }
+}
+
 // Given a FAL result blob, best-effort extract the primary image URL.
 // Handles common shapes across SDXL / Flux / Nano Banana / OpenAI-via-FAL.
 export function extractImageUrl(result: Record<string, unknown>): string | null {

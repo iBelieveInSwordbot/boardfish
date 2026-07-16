@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
+import { GeneratingPanelsContext } from './Canvas';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Panel, PanelImageVersion, ProjectSettings } from '../types';
@@ -17,6 +18,10 @@ type Props = {
 
 export function PanelView({ panel, index, selected, settings, dispatch, onOpenNodeEditor }: Props) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: panel.id });
+  // Show a spinner overlay when this panel has a node-editor gen running
+  // (either the editor is visible or it's detached in the background).
+  const generatingSet = useContext(GeneratingPanelsContext);
+  const isNodeGenerating = generatingSet.has(panel.id);
   const [aiOpen, setAiOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [aiPrompt, setAiPrompt] = useState(panel.aiPrompt ?? '');
@@ -193,6 +198,14 @@ export function PanelView({ panel, index, selected, settings, dispatch, onOpenNo
           <img src={panel.imageDataUrl} alt={panel.imageName ?? ''} style={{ objectFit }} draggable={false} />
         ) : (
           <div className="panel-image-placeholder">no image</div>
+        )}
+        {(isNodeGenerating || inFlight > 0) && (
+          <div className="panel-generating-overlay" title="Generating…">
+            <div className="panel-generating-spinner" />
+            <div className="panel-generating-label">
+              {isNodeGenerating ? 'Node gen…' : `Gen × ${inFlight}`}
+            </div>
+          </div>
         )}
         {panel.videoDataUrl && (
           <div className="panel-video-badge" title="This panel has a video — press Space to play">

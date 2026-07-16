@@ -46,7 +46,6 @@ import {
   duplicateNode,
   edgesOnPort,
   findOutNode,
-  graphToXml,
   insertNodeOnEdge,
   moveNode,
   moveNodesTo,
@@ -65,6 +64,7 @@ import { NODE_KINDS } from '../nodes/registry';
 import { PanelRefContext, type PanelRefOption } from '../nodes/registry';
 import { NodeView, ContextMenu, type ContextMenuState } from './NodeCanvas';
 import { InspectorPane } from './NodeInspector';
+import { FalCreditsPill } from './FalCreditsPill';
 import './NodeEditor.css';
 
 // ---------------------------------------------------------------------------
@@ -108,6 +108,10 @@ export type NodeEditorProps = {
    *  Return true to let the editor also flip to hidden internally; return
    *  false to keep the current visibility. */
   onCloseWhileBusy?: () => boolean;
+  /** Fires whenever this editor's in-flight count transitions between
+   *  zero and non-zero, so the App can show/hide a spinner on the panel
+   *  tile in the storyboard while background gens are cooking. */
+  onBusyChange?: (isBusy: boolean) => void;
 };
 
 // ---------------------------------------------------------------------------
@@ -206,7 +210,7 @@ const DROP_ON_WIRE_RADIUS = 40;
 // ---------------------------------------------------------------------------
 
 export function NodeEditor(props: NodeEditorProps) {
-  const { initialGraph, panelPrompt, panelAspect, availablePanels, onSave, onClose, hidden, onDetachedFinish, onCloseWhileBusy } = props;
+  const { initialGraph, panelPrompt, panelAspect, availablePanels, onSave, onClose, hidden, onDetachedFinish, onCloseWhileBusy, onBusyChange } = props;
 
   // Seed default 3-node chain if the incoming graph is empty. Applied once.
   const seeded = useMemo<NodeGraph>(() => {
@@ -509,7 +513,12 @@ export function NodeEditor(props: NodeEditorProps) {
   // upstream has produced media yet, and while any node is in-flight.
   // -------------------------------------------------------------------------
   const inFlightRef = useRef<Set<NodeId>>(new Set());
-  useEffect(() => { inFlightRef.current = inFlight; }, [inFlight]);
+  useEffect(() => {
+    const prevBusy = inFlightRef.current.size > 0;
+    inFlightRef.current = inFlight;
+    const nowBusy = inFlight.size > 0;
+    if (prevBusy !== nowBusy && onBusyChange) onBusyChange(nowBusy);
+  }, [inFlight, onBusyChange]);
   const lastOutSigRef = useRef<string>('');
   const outRefreshTimerRef = useRef<number | null>(null);
 
@@ -541,20 +550,16 @@ export function NodeEditor(props: NodeEditorProps) {
       .sort()
       .join('|');
     // Upstream media signature: which upstream nodes have output and what.
-    // Includes __pinnedGeneratedAt so hearting a different history frame
-    // upstream triggers an Out refresh (dag-executor resolves pinned).
+    // With PROMOTE_FRAME-based heart, the current output changes when a user
+    // hearts a variant, so the dataUrl fingerprint captures the change.
     const media = graph.nodes
       .filter((n) => upstream.has(n.id))
       .map((n) => {
         const o = n.output;
-        const pinnedRaw = (n.data as Record<string, unknown>).__pinnedGeneratedAt;
-        const pinnedFp = typeof pinnedRaw === 'number' ? `@${pinnedRaw}` : '';
-        if (!o) return `${n.id}:_${pinnedFp}`;
+        if (!o) return `${n.id}:_`;
         const url = (o as { dataUrl?: string }).dataUrl ?? '';
-        // First+last 24 chars of the data-URL are plenty to fingerprint changes
-        // without holding tons of prefix in memory.
         const fp = url ? `${url.slice(0, 24)}…${url.slice(-24)}` : '_';
-        return `${n.id}:${o.kind}:${fp}${pinnedFp}`;
+        return `${n.id}:${o.kind}:${fp}`;
       })
       .sort()
       .join('|');
@@ -818,70 +823,9 @@ export function NodeEditor(props: NodeEditorProps) {
     }
   }, [onClose, onCloseWhileBusy]);
 
-  // -------------------------------------------------------------------------
-  // Export helpers (Save Image / XML)
-  // -------------------------------------------------------------------------
-
-  /** Trigger a browser download for a data URL. */
-  function downloadDataUrl(dataUrl: string, filename: string) {
-    const a = document.createElement('a');
-    a.href = dataUrl;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  }
-
-  /** Trigger a browser download for text content. */
-  function downloadText(text: string, filename: string, mime = 'text/plain') {
-    const blob = new Blob([text], { type: mime });
-    const url = URL.createObjectURL(blob);
-    downloadDataUrl(url, filename);
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
-
-  /** Find every image-bearing node output. Prefers the OutNode, then any other image outputs. */
-  const savableImages = useMemo(() => {
-    const results: { nodeId: string; label: string; dataUrl: string; mime: string }[] = [];
-    const outNode = graph.nodes.find((n) => n.kind === 'out');
-    if (outNode && outNode.output && outNode.output.kind === 'image' && outNode.output.dataUrl) {
-      results.push({
-        nodeId: outNode.id,
-        label: 'storyboard-out',
-        dataUrl: outNode.output.dataUrl,
-        mime: outNode.output.mime ?? 'image/png',
-      });
-    }
-    for (const n of graph.nodes) {
-      if (n === outNode) continue;
-      if (n.output && n.output.kind === 'image' && n.output.dataUrl) {
-        results.push({
-          nodeId: n.id,
-          label: n.kind,
-          dataUrl: n.output.dataUrl,
-          mime: n.output.mime ?? 'image/png',
-        });
-      }
-    }
-    return results;
-  }, [graph.nodes]);
-
-  const triggerSaveImage = useCallback(() => {
-    if (savableImages.length === 0) return;
-    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    for (const [i, img] of savableImages.entries()) {
-      const ext = img.mime === 'image/jpeg' ? 'jpg' : img.mime === 'image/webp' ? 'webp' : 'png';
-      const safe = img.label.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '') || 'node';
-      const filename = `boardfish-${ts}-${i + 1}-${safe}.${ext}`;
-      downloadDataUrl(img.dataUrl, filename);
-    }
-  }, [savableImages]);
-
-  const triggerExportXml = useCallback(() => {
-    const xml = graphToXml(graphRef.current);
-    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    downloadText(xml, `boardfish-graph-${ts}.xml`, 'application/xml');
-  }, []);
+  // Save-Image and Export-XML top-bar buttons were removed 2026-07-15 per
+  // Matt's spec. Per-node media download (⬇ icon in the media toolbar) covers
+  // one-off saves; project-wide save goes through the storyboard export flow.
 
   // -------------------------------------------------------------------------
   // Clipboard actions (⌘X / ⌘C / ⌘V)
@@ -1777,30 +1721,12 @@ export function NodeEditor(props: NodeEditorProps) {
           )}
         </div>
         <div className="ne-topbar-spacer" />
-        <button
-          className="ne-topbar-btn ghost"
-          onClick={triggerSaveImage}
-          disabled={savableImages.length === 0}
-          title={
-            savableImages.length === 0
-              ? 'No generated images to save yet'
-              : `Download ${savableImages.length} image${savableImages.length === 1 ? '' : 's'} (PNG)`
-          }
-        >
-          Save Image{savableImages.length > 1 ? `s (${savableImages.length})` : ''}
-        </button>
-        <button
-          className="ne-topbar-btn ghost"
-          onClick={triggerExportXml}
-          title="Export node graph as XML"
-        >
-          Export XML
-        </button>
+        <FalCreditsPill />
+        {/* 2026-07-15: Per Matt, blue Save button and Export XML removed from
+            the top bar. Per-node media download (⬇ icon in the media toolbar)
+            and cmd-S auto-save on close cover the save-image cases. */}
         <button className="ne-topbar-btn ghost" onClick={triggerClose} title="Close (Esc)">
           Close<span className="ne-topbar-kbd">Esc</span>
-        </button>
-        <button className="ne-topbar-btn primary" onClick={triggerSave} title="Save (⌘S)">
-          Save<span className="ne-topbar-kbd">⌘S</span>
         </button>
       </div>
 
@@ -2061,15 +1987,11 @@ Drag empty canvas to select · Shift-click to add · ⌘X/⌘C/⌘V · Opt-drag 
             <FullscreenBody
               frames={frames}
               idx={idx}
-              pinnedIdx={(() => {
-                // Convert __pinnedGeneratedAt → display index by matching against
-                // the current frames list (index 0 = live output).
-                const raw = (n.data as Record<string, unknown>).__pinnedGeneratedAt;
-                const pinnedAt = typeof raw === 'number' && Number.isFinite(raw) ? Math.floor(raw) : null;
-                if (pinnedAt == null) return 0;
-                const found = frames.findIndex((f) => f.when === pinnedAt);
-                return found >= 0 ? found : 0;
-              })()}
+              // With the in-place-swap PROMOTE_FRAME approach, the current
+              // frame is always at display slot 0. The heart on slot 0 is
+              // rendered filled to signal "this is what downstream sees";
+              // all others are outline / clickable.
+              pinnedIdx={0}
               mode={fullscreenMode}
               gridSize={fullscreenGridSize}
               picks={fullscreenPicks}
@@ -2084,40 +2006,30 @@ Drag empty canvas to select · Shift-click to add · ⌘X/⌘C/⌘V · Opt-drag 
               onSetPicks={setFullscreenPicks}
               onClose={closeFullscreen}
               onFavorite={(frameIdx: number) => {
-                // Heart marks a version as "selected/pinned" for the node's
-                // effective downstream output. It does NOT reorder history
-                // (Matt's explicit rule 2026-07-12): the frame stays where
-                // it was in the display list, the counter position stays,
-                // the node thumb shows the hearted image on next open.
+                // Heart = "make this the current output for the node".
+                // Semantics match Matt's mental model (2026-07-12):
+                //  - The hearted frame becomes node.output, so downstream
+                //    consumers immediately see it (same as double-click on
+                //    a variant with the arrow-scroll workflow).
+                //  - The OLD current takes the hearted frame's slot in
+                //    history (in-place swap). All other frames keep their
+                //    original slots — no reorder.
+                //  - Fullscreen cursor snaps to slot 0 (the new current)
+                //    since that's where the hearted frame now lives.
                 //
-                // Pin is stored as __pinnedGeneratedAt (the timestamp of the
-                // pinned frame) so it survives new gens that shift indices.
-                // __viewIdx is synced so the node thumb opens on the hearted
-                // frame after fullscreen close. dag-executor's collectInputs
-                // reads __pinnedGeneratedAt to pick the effective producer
-                // output for downstream nodes.
+                // frames[0] = current, frames[k>=1] = history[hist.length-k].
+                // No-op when hearting the already-current frame.
+                if (frameIdx <= 0) return;
                 const nn = graphRef.current.nodes.find((x) => x.id === fullscreenNodeId);
                 if (!nn) return;
-                const frames = getFullscreenFrames(nn);
-                const targetFrame = frames[frameIdx];
-                if (!targetFrame) return;
-                dispatch({
-                  type: 'UPDATE_NODE_DATA',
-                  id: nn.id,
-                  patch: {
-                    __pinnedGeneratedAt: targetFrame.when ?? 0,
-                    __viewIdx: frameIdx,
-                  },
-                });
-                // Keep the fullscreen cursor on the hearted frame so the
-                // counter reads its position (e.g. still "4/5" for that pick).
-                setFullscreenIndex(frameIdx);
-                // Also directly re-run every Out node so downstream picks
-                // up the pinned frame immediately (don't wait for the debounced
-                // auto-refresh signature loop — it can miss when the pin
-                // update is followed by a fullscreen state change on the same
-                // render). We patch the working graph in-place with the fresh
-                // __pinnedGeneratedAt before running so collectInputs sees it.
+                const hist = readNodeHistory(nn);
+                const historyIndex = hist.length - frameIdx;
+                if (historyIndex < 0 || historyIndex >= hist.length) return;
+                dispatch({ type: 'PROMOTE_FRAME', id: nn.id, historyIndex });
+                setFullscreenIndex(0);
+                // Kick a fresh Out execution so downstream picks up the
+                // new current on the next tick (the auto-refresh signature
+                // debounces 200ms; be explicit for immediacy).
                 setTimeout(() => {
                   const outNodeNow = graphRef.current.nodes.find((x) => x.kind === 'out');
                   if (!outNodeNow) return;

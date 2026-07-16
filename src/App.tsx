@@ -9,7 +9,7 @@ import { NodeEditor } from './components/NodeEditor';
 import { seedDefaultGraph } from './nodes/types';
 import type { NodeGraph } from './nodes/types';
 import { ratioToLabel } from './ai/client';
-import { allStoryboardPanels, primarySelectedPanelId, useBoardfish } from './store';
+import { allStoryboardPanels, primarySelectedPanelId, resolveStoryboardSettings, useBoardfish } from './store';
 import { styleSuffix } from './types';
 import './App.css';
 import './components/NodeEditor.css';
@@ -43,6 +43,11 @@ function App() {
   // onDetachedFinish auto-saves and removes it from the stack.
   type NodeEditorEntry = { panelId: string; detached: boolean };
   const [nodeEditorStack, setNodeEditorStack] = useState<NodeEditorEntry[]>([]);
+  // Which panel ids currently have background gens running in their node
+  // editor. Passed to Canvas so it can overlay a spinner on those panels
+  // (both when the editor is detached AND when it's visible — the tile
+  // spinner is always accurate).
+  const [generatingPanelIds, setGeneratingPanelIds] = useState<Set<string>>(new Set());
   const visibleEditorPanelId = (() => {
     // Walk from the end; the last non-detached entry is visible.
     for (let i = nodeEditorStack.length - 1; i >= 0; i--) {
@@ -219,6 +224,7 @@ function App() {
         <Canvas
           state={state}
           dispatch={dispatch}
+          generatingPanelIds={generatingPanelIds}
           onOpenNodeEditor={(panelId) => {
             setNodeEditorStack((prev) => {
               // If this panel is already mounted (visible or detached), bring
@@ -374,14 +380,42 @@ function App() {
             initialGraph={savedGraph}
             panelPrompt={seedPrompt}
             panelAspect={ratioToLabel(state.settings.panelAspectRatio)}
-            availablePanels={flatPanels
-              .filter((p) => p.id !== editing.id)
-              .map((p, i) => ({
-                id: p.id,
-                label: `Panel ${i + 1}` + (p.fields[0]?.value ? ` — ${p.fields[0].value.slice(0, 40)}` : ''),
-                imageDataUrl: p.imageDataUrl ?? undefined,
-                thumbUrl: p.imageDataUrl ?? undefined,
-              }))}
+            availablePanels={(() => {
+              // Group panels by their parent storyboard so the Panel Ref
+              // picker can render one grid per storyboard (matching the
+              // Outliner). Panel index is 1-based within its storyboard.
+              // Each panel carries its storyboard's effective aspect ratio
+              // so the picker can render non-square tiles that don't crop.
+              const opts: import('./nodes/registry').PanelRefOption[] = [];
+              let sbCount = 0;
+              for (const it of state.items) {
+                if (it.kind !== 'storyboard') continue;
+                sbCount += 1;
+                const sbLabel =
+                  it.overrides?.name?.trim() || `Storyboard ${sbCount}`;
+                const sbSettings = resolveStoryboardSettings(state.settings, it);
+                const ar = sbSettings.panelAspectRatio > 0
+                  ? sbSettings.panelAspectRatio
+                  : 1;
+                it.panels.forEach((p, i) => {
+                  if (p.id === editing!.id) return;
+                  const promptSnippet = p.fields[0]?.value
+                    ? ` — ${p.fields[0].value.slice(0, 40)}`
+                    : '';
+                  opts.push({
+                    id: p.id,
+                    label: `${sbLabel} · Panel ${i + 1}${promptSnippet}`,
+                    imageDataUrl: p.imageDataUrl ?? undefined,
+                    thumbUrl: p.imageDataUrl ?? undefined,
+                    storyboardId: it.id,
+                    storyboardLabel: sbLabel,
+                    panelIndex: i + 1,
+                    aspectRatio: ar,
+                  });
+                });
+              }
+              return opts;
+            })()}
             onSave={(nextGraph, outMedia) => {
               // Persist only; unmounting is owned by onClose /
               // onDetachedFinish so keep-alive detach can survive an
@@ -391,6 +425,12 @@ function App() {
             onClose={() => {
               // Idle close: unmount this editor.
               setNodeEditorStack((prev) => prev.filter((e) => e.panelId !== panelId));
+              setGeneratingPanelIds((prev) => {
+                if (!prev.has(panelId)) return prev;
+                const next = new Set(prev);
+                next.delete(panelId);
+                return next;
+              });
             }}
             onCloseWhileBusy={() => {
               // In-flight close: flip this entry to detached so it stays
@@ -403,6 +443,29 @@ function App() {
             onDetachedFinish={(nextGraph, outMedia) => {
               applyNodeEditorSave(nextGraph, outMedia);
               setNodeEditorStack((prev) => prev.filter((e) => e.panelId !== panelId));
+              // Clear the spinner for this panel when its editor unmounts.
+              setGeneratingPanelIds((prev) => {
+                if (!prev.has(panelId)) return prev;
+                const next = new Set(prev);
+                next.delete(panelId);
+                return next;
+              });
+            }}
+            onBusyChange={(isBusy) => {
+              setGeneratingPanelIds((prev) => {
+                const has = prev.has(panelId);
+                if (isBusy && !has) {
+                  const next = new Set(prev);
+                  next.add(panelId);
+                  return next;
+                }
+                if (!isBusy && has) {
+                  const next = new Set(prev);
+                  next.delete(panelId);
+                  return next;
+                }
+                return prev;
+              });
             }}
           />
         );

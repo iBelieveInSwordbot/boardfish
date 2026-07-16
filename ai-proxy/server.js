@@ -226,15 +226,129 @@ app.get('/api/styles', (_req, res) => {
 // ---------- FAL passthrough (Boardfish 5 node editor) ----------
 
 const FAL_KEY = process.env.FAL_KEY || '';
+// Admin-scope key for Platform APIs (billing, usage, pricing). Separate
+// from FAL_KEY because Platform APIs require an admin-scope key while
+// FAL_KEY may be a lower-privilege inference key.
+const FAL_ADMIN_KEY = process.env.FAL_ADMIN_KEY || FAL_KEY || '';
 const FAL_BASE = 'https://queue.fal.run';
+const FAL_PLATFORM_BASE = 'https://api.fal.ai/v1';
 // Cap how long we'll poll a single FAL job. Video jobs can genuinely take a
 // few minutes; images are seconds. 5 min is a safe ceiling; the client can
 // still cancel by disconnecting.
 const FAL_POLL_MAX_MS = 5 * 60 * 1000;
 const FAL_POLL_INTERVAL_MS = 1500;
 
+// ---------- Platform API caches ----------
+// Billing: short TTL so the node view balance stays fresh but we don't
+// hammer fal every second when multiple tabs are open.
+const BILLING_CACHE_TTL_MS = 60 * 1000; // 1 min
+// Pricing: long TTL. Model prices don't change day-to-day.
+const PRICING_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+let billingCache = { value: null, at: 0, error: null };
+const pricingCache = new Map(); // endpoint_id -> { value, at, error }
+
+async function fetchFalBilling() {
+  const now = Date.now();
+  if (billingCache.value && now - billingCache.at < BILLING_CACHE_TTL_MS) {
+    return { fresh: false, ...billingCache.value };
+  }
+  const res = await fetch(`${FAL_PLATFORM_BASE}/account/billing?expand=credits`, {
+    headers: { Authorization: `Key ${FAL_ADMIN_KEY}` },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    const err = new Error(`fal /account/billing ${res.status}: ${body.slice(0, 200)}`);
+    err.status = res.status;
+    throw err;
+  }
+  const json = await res.json();
+  const value = {
+    balance: json?.credits?.current_balance ?? null,
+    currency: json?.credits?.currency ?? 'USD',
+    // fal credits are prepaid USD (1 credit = $1). Documented
+    // in Matt's notes; matches invoice behavior. Sent to the client
+    // so the pill can render "1 credit = $1 USD" without hard-coding.
+    pricePerCredit: 1.0,
+    fetchedAt: now,
+  };
+  billingCache = { value, at: now, error: null };
+  return { fresh: true, ...value };
+}
+
+async function fetchFalPrice(endpointId) {
+  const now = Date.now();
+  const cached = pricingCache.get(endpointId);
+  if (cached && cached.value && now - cached.at < PRICING_CACHE_TTL_MS) {
+    return { fresh: false, ...cached.value };
+  }
+  const url = `${FAL_PLATFORM_BASE}/models/pricing?endpoint_id=${encodeURIComponent(endpointId)}`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Key ${FAL_ADMIN_KEY}` },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    const err = new Error(`fal /models/pricing ${res.status}: ${body.slice(0, 200)}`);
+    err.status = res.status;
+    throw err;
+  }
+  const json = await res.json();
+  const price = Array.isArray(json?.prices) ? json.prices[0] : null;
+  if (!price) {
+    const err = new Error(`no pricing found for endpoint "${endpointId}"`);
+    err.status = 404;
+    throw err;
+  }
+  const value = {
+    endpointId,
+    unit: price.unit,
+    unitPrice: price.unit_price,
+    currency: price.currency || 'USD',
+    fetchedAt: now,
+  };
+  pricingCache.set(endpointId, { value, at: now, error: null });
+  return { fresh: true, ...value };
+}
+
 app.get('/api/fal/health', (_req, res) => {
-  res.json({ ok: true, configured: Boolean(FAL_KEY) });
+  res.json({
+    ok: true,
+    configured: Boolean(FAL_KEY),
+    // Whether Platform APIs (billing, pricing) will work.
+    platformConfigured: Boolean(FAL_ADMIN_KEY),
+  });
+});
+
+// Current credit balance for the node view top bar.
+app.get('/api/fal/billing', async (_req, res) => {
+  if (!FAL_ADMIN_KEY) {
+    return res.status(503).json({ error: 'FAL_ADMIN_KEY not configured on server' });
+  }
+  try {
+    const info = await fetchFalBilling();
+    res.json({ ok: true, ...info });
+  } catch (err) {
+    console.error('[fal billing]', err.message);
+    res.status(err.status || 502).json({ error: String(err.message || err) });
+  }
+});
+
+// Per-endpoint pricing lookup for the Generate button cost hint.
+// Query: ?endpoint=fal-ai/nano-banana-pro (URL-encoded)
+app.get('/api/fal/price', async (req, res) => {
+  if (!FAL_ADMIN_KEY) {
+    return res.status(503).json({ error: 'FAL_ADMIN_KEY not configured on server' });
+  }
+  const endpointId = String(req.query.endpoint || '').trim();
+  if (!endpointId || !endpointId.startsWith('fal-ai/')) {
+    return res.status(400).json({ error: 'endpoint (fal-ai/...) query param required' });
+  }
+  try {
+    const info = await fetchFalPrice(endpointId);
+    res.json({ ok: true, ...info });
+  } catch (err) {
+    console.error('[fal price]', endpointId, err.message);
+    res.status(err.status || 502).json({ error: String(err.message || err), endpointId });
+  }
 });
 
 // Submit + wait. Body: { endpoint: "fal-ai/nano-banana/edit" | "fal-ai/veo3" | ...,
