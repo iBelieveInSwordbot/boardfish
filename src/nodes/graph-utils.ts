@@ -615,7 +615,17 @@ export function edgesOnPort(
   );
 }
 
-/** Duplicate a node with a small offset; no edges copied. */
+/**
+ * Duplicate a node with a small offset. Preserves *incoming* wires: for
+ * every edge whose destination is the source node, we add an edge from the
+ * same upstream port to the matching input port on the copy. Outgoing
+ * wires are not copied — the copy hasn't been generated yet and its
+ * downstreams would double-fire off the same upstream.
+ *
+ * Matches the semantics of Option-drag duplication in NodeEditor.tsx so
+ * both entry points (context-menu Duplicate + Option-drag) behave the
+ * same way.
+ */
 export function duplicateNode(g: NodeGraph, id: NodeId): NodeGraph {
   const src = g.nodes.find((n) => n.id === id);
   if (!src) return g;
@@ -630,7 +640,27 @@ export function duplicateNode(g: NodeGraph, id: NodeId): NodeGraph {
     // Don't carry over the output — the copy hasn't been executed.
     output: undefined,
   };
-  return { ...g, nodes: [...g.nodes, copy] };
+  // Preserve incoming wires: for each edge into the source, add a
+  // parallel edge into the copy on the same input port. One edge per
+  // input port (matches the addEdge invariant).
+  const occupiedInputs = new Set<string>();
+  const clonedEdges: Edge[] = [];
+  for (const e of g.edges) {
+    if (e.to.nodeId !== src.id) continue;
+    const key = `${copy.id}:${e.to.portId}`;
+    if (occupiedInputs.has(key)) continue;
+    clonedEdges.push({
+      id: newId('e'),
+      from: { nodeId: e.from.nodeId, portId: e.from.portId },
+      to: { nodeId: copy.id, portId: e.to.portId },
+    });
+    occupiedInputs.add(key);
+  }
+  return {
+    ...g,
+    nodes: [...g.nodes, copy],
+    edges: clonedEdges.length > 0 ? [...g.edges, ...clonedEdges] : g.edges,
+  };
 }
 
 /** Is a specific port already used by any edge? */
