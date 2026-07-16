@@ -476,12 +476,8 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
       await runWithConcurrency(shotJobs, CONCURRENCY, async ({ shot, panel }) => {
         try {
           const refs = pickRefsForShot(shot, assetIndex);
-          const graph = seedFinalStoryboardGraph({
-            prompt: panel.aiPrompt!,
-            aspectRatio: effectiveAspect,
-            refs: refs.map((r) => ({ panelId: r.panelId, imageDataUrl: r.dataUrl, label: r.name })),
-          });
           let dataUrl: string;
+          let mime: string | undefined;
           if (refs.length > 0) {
             // Reference edit endpoint — Nano Banana Pro /edit.
             const result = await runFalJob('fal-ai/nano-banana-pro/edit', {
@@ -493,11 +489,13 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
             });
             const url = extractImageUrl(result.result);
             if (!url) throw new Error('no image url in fal result');
-            const { dataUrl: du } = await urlToDataUrl(url);
-            dataUrl = du;
+            const conv = await urlToDataUrl(url);
+            dataUrl = conv.dataUrl;
+            mime = conv.mime;
           } else {
             const img = await generatePanelImage({ prompt: panel.aiPrompt!, aspectRatio: effectiveAspect });
             dataUrl = img.dataUrl;
+            mime = img.mime;
           }
           dispatch({
             type: 'APPLY_AI_IMAGE',
@@ -507,8 +505,17 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
             prompt: panel.aiPrompt!,
             generatedAt: Date.now(),
           });
-          // Also stash the seeded node graph so opening the node editor
-          // shows the PanelRef → ImageGen wiring already in place.
+          // Seed the node graph AFTER generation so we can bake the produced
+          // image into the ImageGen + Out node outputs. Double-clicking the
+          // panel then shows the wiring AND the rendered image, matching
+          // the ad-hoc panel-gen behavior.
+          const graph = seedFinalStoryboardGraph({
+            prompt: panel.aiPrompt!,
+            aspectRatio: effectiveAspect,
+            refs: refs.map((r) => ({ panelId: r.panelId, imageDataUrl: r.dataUrl, label: r.name })),
+            generatedImageDataUrl: dataUrl,
+            generatedMime: mime,
+          });
           dispatch({ type: 'SET_PANEL_NODE_GRAPH', panelId: panel.id, graph });
         } catch (err) {
           console.warn('[ai] storyboard image gen failed', panel.id, err);

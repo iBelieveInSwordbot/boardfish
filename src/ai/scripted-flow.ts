@@ -22,13 +22,21 @@ export type SeededRef = {
 /**
  * Build the seeded graph. `refs` may be empty, in which case we produce the
  * plain 3-node chain (TextPrompt → ImageGen → Out).
+ *
+ * When `generatedImageDataUrl` is provided, we also attach it as the
+ * `output` snapshot on both the ImageGen and Out nodes so double-clicking
+ * into the node editor immediately shows the generated result in the
+ * ImageGen preview — not just the wiring. Without this the ImageGen node
+ * looks empty even after the storyboard panel has an image.
  */
 export function seedFinalStoryboardGraph(opts: {
   prompt: string;
   aspectRatio: string;
   refs: SeededRef[];
+  generatedImageDataUrl?: string;
+  generatedMime?: string;
 }): NodeGraph {
-  const { prompt, aspectRatio, refs } = opts;
+  const { prompt, aspectRatio, refs, generatedImageDataUrl, generatedMime } = opts;
   const cappedRefs = refs.slice(0, 6);
 
   const nodes: BaseNode[] = [];
@@ -82,6 +90,22 @@ export function seedFinalStoryboardGraph(opts: {
   if (cappedRefs.length > 0) {
     genData.refCount = cappedRefs.length;
   }
+  // If we already generated the panel's image via the scripted flow, stash
+  // the dataUrl on the ImageGen node's __history and output snapshots so it
+  // renders in-preview the moment the node editor opens.
+  const genOutput = generatedImageDataUrl
+    ? {
+        kind: 'image' as const,
+        dataUrl: generatedImageDataUrl,
+        mime: generatedMime || 'image/png',
+        generatedAt: Date.now(),
+      }
+    : undefined;
+  if (genOutput) {
+    // Also seed __history so the node's version stepper starts at 1/1 for
+    // the scripted gen. Empty otherwise — first user re-gen will append.
+    (genData as Record<string, unknown>).__history = [genOutput];
+  }
   const genNode: BaseNode = {
     id: newId('n'),
     kind: 'image-gen',
@@ -89,6 +113,7 @@ export function seedFinalStoryboardGraph(opts: {
     y: 200,
     ports: defaultPortsFor('image-gen', genData),
     data: genData,
+    output: genOutput,
   };
   nodes.push(genNode);
 
@@ -99,6 +124,10 @@ export function seedFinalStoryboardGraph(opts: {
     y: 200,
     ports: defaultPortsFor('out'),
     data: defaultDataFor('out'),
+    // Mirror the ImageGen output onto Out so the Out node preview also
+    // shows the panel image (matches how the seedDefaultGraph flow works
+    // when a panel already had an imageDataUrl).
+    output: genOutput,
   };
   nodes.push(outNode);
 
