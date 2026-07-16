@@ -32,6 +32,13 @@ type SavedPanelV1 = {
   // Broadened in Boardfish 5 to match the extended PanelStyleMode set.
   // Older files (v3 with only 'pencil-sketch' | 'none') still validate.
   styleMode?: 'pencil-sketch' | 'ink-wash' | 'photoreal' | 'noir' | 'anime' | 'watercolor' | 'comic-ink' | 'none';
+  // v6 (2026-07-15): node editor graph — every node, every wire, every
+  // in-node output + __history entry. Persisted so open/close/edit cycles
+  // in the node editor survive save/load. Path points at a JSON blob under
+  // `node-graphs/<panelId>.json` inside the zip; the graph itself is stored
+  // out-of-band (not inlined into project.json) because it can be 10s of MB
+  // per panel once all the base64 image/video data URLs are in there.
+  nodeGraphPath?: string;
 };
 type SavedProjectV1 = {
   version: 1;
@@ -80,7 +87,9 @@ type SavedItemV2 =
       overrides?: import('./types').StoryboardOverrides;
     };
 type SavedProjectV2 = {
-  version: 2 | 3 | 4 | 5;
+  // v6 (2026-07-15): panels now carry an optional nodeGraphPath that points
+  // at the panel's persisted node-editor graph (JSON blob in the zip).
+  version: 2 | 3 | 4 | 5 | 6;
   savedAt: string;
   settings: ProjectSettings;
   items: SavedItemV2[];
@@ -255,6 +264,21 @@ export async function saveProject(
           });
         }
       }
+      // Node editor graph. Saved as a separate JSON file inside the zip so
+      // project.json stays lean and the (potentially 10s of MB) base64 data
+      // URLs in per-node outputs don't have to be re-parsed during manifest
+      // load. If saving fails for any reason we swallow the error and drop
+      // the graph rather than nuke the whole save.
+      let nodeGraphPath: string | undefined;
+      if (p.nodeGraph && typeof p.nodeGraph === 'object') {
+        try {
+          nodeGraphPath = `node-graphs/panel-${panelSerial.toString().padStart(4, '0')}-${p.id}.json`;
+          zip.file(nodeGraphPath, JSON.stringify(p.nodeGraph));
+        } catch (err) {
+          console.warn('[boardfish] failed to persist node graph for panel', p.id, err);
+          nodeGraphPath = undefined;
+        }
+      }
       panelSerial += 1;
       savedPanels.push({
         id: p.id,
@@ -266,6 +290,7 @@ export async function saveProject(
         aiPrompt: p.aiPrompt,
         imageHistory: savedHistory,
         styleMode: p.styleMode,
+        nodeGraphPath,
       });
     }
     savedItems.push({ id: it.id, kind: 'storyboard', panels: savedPanels, overrides: it.overrides });
@@ -286,7 +311,7 @@ export async function saveProject(
   };
 
   const manifest: SavedProjectV2 = {
-    version: 5, // v5 = v4 + slide holds `textBoxes: SlideTextBox[]` (subtitle box removed)
+    version: 6, // v6 = v5 + panels can persist their node editor graph via nodeGraphPath
     savedAt: new Date().toISOString(),
     settings: settingsForSave,
     items: savedItems,
@@ -327,13 +352,26 @@ export async function loadProject(
     return blobToDataUrl(blob);
   };
 
+  const loadJson = async (jsonPath: string | null | undefined): Promise<unknown | undefined> => {
+    if (!jsonPath) return undefined;
+    const entry = zip.file(jsonPath);
+    if (!entry) return undefined;
+    try {
+      return JSON.parse(await entry.async('string'));
+    } catch (err) {
+      console.warn('[boardfish] failed to parse node graph at', jsonPath, err);
+      return undefined;
+    }
+  };
+
   let items: DocItem[];
 
   if (
     manifestRaw.version === 2 ||
     manifestRaw.version === 3 ||
     manifestRaw.version === 4 ||
-    manifestRaw.version === 5
+    manifestRaw.version === 5 ||
+    manifestRaw.version === 6
   ) {
     items = await Promise.all(
       manifestRaw.items.map(async (it): Promise<DocItem> => {
@@ -407,6 +445,7 @@ export async function loadProject(
                 )).filter((x): x is import('./types').PanelImageVersion => x !== null)
               : undefined,
             styleMode: mp.styleMode,
+            nodeGraph: await loadJson(mp.nodeGraphPath),
           })),
         );
         return { id: it.id, kind: 'storyboard', panels, overrides: it.overrides ?? {} };

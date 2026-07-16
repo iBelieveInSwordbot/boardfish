@@ -293,6 +293,12 @@ export function NodeEditor(props: NodeEditorProps) {
 
   // Fullscreen preview of the currently-selected node's output.
   const [fullscreenNodeId, setFullscreenNodeId] = useState<NodeId | null>(null);
+  // 2026-07-15: multi-node fullscreen. When a lasso group triggers Space,
+  // `fullscreenNodeIds` holds every node in the group and `fullscreenNodeId`
+  // is set to the first one (so all the existing single-node code paths
+  // still work, they just see the primary). Getters aggregate frames when
+  // this array has >1 entries.
+  const [fullscreenNodeIds, setFullscreenNodeIds] = useState<NodeId[]>([]);
   // Index within the [current, ...history] frames array shown in fullscreen.
   // 0 = current live output, 1+ = older frames (most recent first).
   const [fullscreenIndex, setFullscreenIndex] = useState(0);
@@ -340,6 +346,7 @@ export function NodeEditor(props: NodeEditorProps) {
       }
     }
     setFullscreenNodeId(null);
+    setFullscreenNodeIds([]);
     setFullscreenIndex(0);
     setFullscreenMode('single');
     setFullscreenPicks(new Set());
@@ -1015,9 +1022,26 @@ export function NodeEditor(props: NodeEditorProps) {
               setPromptEditorNodeId(pid);
             } else if (n) {
               setFullscreenIndex(0);
-              setFullscreenMode('single');
               setFullscreenPicks(new Set());
-              setFullscreenNodeId(pid);
+              // If the lasso currently has >1 nodes, open in Grid mode over
+              // that group. Otherwise plain single-node fullscreen.
+              const sel = selectedIdsRef.current;
+              const mediaNodes = Array.from(sel).filter((id) => {
+                const nn = graphRef.current.nodes.find((x) => x.id === id);
+                const k = nn?.output?.kind;
+                return nn && (k === 'image' || k === 'video');
+              });
+              if (mediaNodes.length > 1) {
+                // Put the primary first if it's in the set; otherwise take the first media node.
+                const ordered = mediaNodes.includes(pid) ? [pid, ...mediaNodes.filter((x) => x !== pid)] : mediaNodes;
+                setFullscreenNodeIds(ordered);
+                setFullscreenNodeId(ordered[0]);
+                setFullscreenMode('grid');
+              } else {
+                setFullscreenNodeIds([]);
+                setFullscreenMode('single');
+                setFullscreenNodeId(pid);
+              }
             }
           }
         }
@@ -1613,6 +1637,24 @@ export function NodeEditor(props: NodeEditorProps) {
 
   const [execError, setExecError] = useState<string | null>(null);
 
+  // 2026-07-15: bulk generate. Fire onGenerate on every image-gen/movie-gen
+  // node in the current selection in parallel. Each gen still runs through
+  // the same executor path (which walks upstream), so downstream Out will
+  // refresh naturally once each root completes.
+  const onBulkGenerate = useCallback(async (ids: NodeId[]) => {
+    const runnable = ids
+      .map((id) => graphRef.current.nodes.find((n) => n.id === id))
+      .filter((n): n is BaseNode => !!n && (n.kind === 'image-gen' || n.kind === 'movie-gen' || n.kind === 'custom-fal'));
+    if (runnable.length === 0) return;
+    // Kick each in parallel; onGenerate is defined below in the same closure
+    // scope but is used through the ref pattern via a lazy lookup.
+    await Promise.all(runnable.map((n) => onGenerateRef.current(n)));
+  }, []);
+
+  // Ref so onBulkGenerate can call the freshest onGenerate without adding it
+  // as a dep (avoids the initialization-order snarl).
+  const onGenerateRef = useRef<(node: BaseNode) => Promise<void>>(async () => {});
+
   const onGenerate = useCallback(async (node: BaseNode) => {
     setExecError(null);
     setInFlight((prev) => {
@@ -1674,6 +1716,9 @@ export function NodeEditor(props: NodeEditorProps) {
     }
   }, []);
 
+  // Keep the ref pointing at the freshest onGenerate closure.
+  useEffect(() => { onGenerateRef.current = onGenerate; }, [onGenerate]);
+
   // -------------------------------------------------------------------------
   // Derived
   // -------------------------------------------------------------------------
@@ -1722,6 +1767,27 @@ export function NodeEditor(props: NodeEditorProps) {
         </div>
         <div className="ne-topbar-spacer" />
         <FalCreditsPill />
+        {/* 2026-07-15: bulk generate. When the lasso has ≥2 gen-capable
+            nodes selected (Image Gen / Movie Gen / Custom FAL), show a
+            "Generate all (N)" button that fires them in parallel. */}
+        {(() => {
+          const runnable = Array.from(selectedIds).filter((id) => {
+            const n = graph.nodes.find((x) => x.id === id);
+            return n && (n.kind === 'image-gen' || n.kind === 'movie-gen' || n.kind === 'custom-fal');
+          });
+          if (runnable.length < 2) return null;
+          const anyRunning = runnable.some((id) => inFlight.has(id));
+          return (
+            <button
+              className="ne-topbar-btn primary"
+              onClick={() => onBulkGenerate(runnable)}
+              disabled={anyRunning}
+              title={anyRunning ? 'Some of the selected gens are already running' : `Fire generate on all ${runnable.length} selected nodes`}
+            >
+              {anyRunning ? 'Running…' : `Generate all (${runnable.length})`}
+            </button>
+          );
+        })()}
         {/* 2026-07-15: Per Matt, blue Save button and Export XML removed from
             the top bar. Per-node media download (⬇ icon in the media toolbar)
             and cmd-S auto-save on close cover the save-image cases. */}
@@ -1969,7 +2035,25 @@ Drag empty canvas to select · Shift-click to add · ⌘X/⌘C/⌘V · Opt-drag 
       {fullscreenNodeId && (() => {
         const n = graph.nodes.find((x) => x.id === fullscreenNodeId);
         if (!n) return null;
-        const frames = getFullscreenFrames(n);
+        // Multi-node mode: aggregate the CURRENT output frame of each
+        // lasso-selected media node. Grid/Compare over the group; Single
+        // mode falls back to the primary node's own history.
+        const isMulti = fullscreenNodeIds.length > 1;
+        const frames = isMulti
+          ? fullscreenNodeIds
+              .map((id) => graph.nodes.find((x) => x.id === id))
+              .filter((x): x is BaseNode => !!x)
+              .flatMap((nn) => {
+                const cur = nn.output;
+                if (!cur || !(cur.kind === 'image' || cur.kind === 'video') || !cur.dataUrl) return [];
+                return [{
+                  url: cur.dataUrl,
+                  kind: cur.kind,
+                  label: nn.kind === 'image-gen' ? 'image' : nn.kind === 'movie-gen' ? 'movie' : nn.kind,
+                  when: cur.generatedAt,
+                }];
+              })
+          : getFullscreenFrames(n);
         const idx = frames.length > 0 ? ((fullscreenIndex % frames.length) + frames.length) % frames.length : 0;
         const frame = frames[idx];
         const url = frame?.url;
