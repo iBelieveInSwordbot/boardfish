@@ -2196,3 +2196,107 @@ input, textarea, select {
   background: #1a2a3a !important;
   color: #7fc7ff !important;
 }
+
+/* ---------- LogoLoader (Ronan thinking animation) ---------- */
+.logo-loader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 24px 12px 8px;
+}
+.logo-loader-mark-wrap {
+  position: relative;
+  width: 140px;
+  height: 130px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 18px;
+}
+.logo-loader-glow {
+  position: absolute;
+  inset: 8px;
+  border-radius: 50%;
+  filter: blur(28px);
+  opacity: 0.35;
+  animation: logo-loader-breathe 2.8s ease-in-out infinite;
+  z-index: 0;
+}
+.logo-loader-mark {
+  position: relative;
+  z-index: 1;
+  filter: drop-shadow(0 0 12px rgba(134, 59, 255, 0.35));
+}
+.logo-loader-sweep-spin {
+  animation: logo-loader-spin 2.2s linear infinite;
+}
+.logo-loader-shimmer-slide {
+  animation: logo-loader-slide 1.8s ease-in-out infinite;
+}
+@keyframes logo-loader-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+@keyframes logo-loader-slide {
+  0%   { transform: translateY(-30px); opacity: 0; }
+  20%  { opacity: 1; }
+  80%  { opacity: 1; }
+  100% { transform: translateY(56px); opacity: 0; }
+}
+@keyframes logo-loader-breathe {
+  0%, 100% { opacity: 0.28; transform: scale(0.94); }
+  50%      { opacity: 0.55; transform: scale(1.08); }
+}
+.logo-loader-headline {
+  color: #eee;
+  font-size: 14px;
+  margin: 0 0 4px;
+  text-align: center;
+}
+.logo-loader-status {
+  color: #a89dc8;
+  font-size: 12px;
+  margin: 0 0 18px;
+  text-align: center;
+  min-height: 16px;
+  transition: opacity 0.2s ease;
+  animation: logo-loader-fade 4.5s ease-in-out infinite;
+}
+@keyframes logo-loader-fade {
+  0%, 100% { opacity: 0.75; }
+  10%, 90% { opacity: 1; }
+}
+.logo-loader-bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  max-width: 340px;
+}
+.logo-loader-bar-track {
+  flex: 1;
+  height: 4px;
+  background: #1c1c22;
+  border-radius: 2px;
+  overflow: hidden;
+  position: relative;
+}
+.logo-loader-bar-thumb {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 35%;
+  background: linear-gradient(90deg, transparent 0%, #863bff 30%, #47bfff 70%, transparent 100%);
+  animation: logo-loader-indeterminate 1.6s ease-in-out infinite;
+}
+@keyframes logo-loader-indeterminate {
+  0%   { left: -35%; }
+  100% { left: 100%; }
+}
+.logo-loader-elapsed {
+  color: #7a7a85;
+  font-family: 'SF Mono', Menlo, monospace;
+  font-size: 11px;
+  min-width: 32px;
+  text-align: right;
+}

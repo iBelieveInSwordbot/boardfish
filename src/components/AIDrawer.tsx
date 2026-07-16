@@ -37,6 +37,7 @@ import {
 import type { StylePreset } from '../ai/client';
 import type { AssetSpec, Shot, ShotList } from '../ai/types';
 import { seedFinalStoryboardGraph } from '../ai/scripted-flow';
+import { LogoLoader } from './LogoLoader';
 
 type Props = {
   state: BoardfishState;
@@ -599,7 +600,7 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
 
         {stage.kind === 'importing' && (
           <div className="ai-drawer-body">
-            <p className="ai-muted">Extracting text from your file…</p>
+            <LogoLoader headline="Extracting text from your file…" />
           </div>
         )}
 
@@ -726,9 +727,9 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
 
         {stage.kind === 'thinking' && (
           <div className="ai-drawer-body">
-            <p>🎬 Ronan is reading the script and thinking through the coverage…</p>
-            <p className="ai-muted small">
-              (10–40 seconds. He's identifying the cast, locations, key props, and picking camera language.)
+            <LogoLoader headline="Ronan is reading the script and thinking through the coverage…" />
+            <p className="ai-muted small" style={{ textAlign: 'center', margin: '4px 0 0' }}>
+              (Typically 30–120 seconds. Longer scripts, longer wait.)
             </p>
           </div>
         )}
