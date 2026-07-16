@@ -15,6 +15,12 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
     try {
       const err = await res.json();
       if (err?.error) msg = err.error;
+      // Surface any diagnostic 'raw' payload so 502s from Ronan aren't a
+      // black box. The AI drawer's error <p> shows this to the user.
+      if (typeof err?.raw === 'string' && err.raw.length > 0) {
+        const snippet = err.raw.length > 800 ? err.raw.slice(0, 800) + '…' : err.raw;
+        msg += `\n\nRaw response (first 800 chars):\n${snippet}`;
+      }
     } catch { /* ignore */ }
     throw new Error(msg);
   }

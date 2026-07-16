@@ -277,7 +277,7 @@ RESPOND WITH ONE JSON OBJECT AND NOTHING ELSE. No markdown fences, no commentary
   ]
 }
 
-Return between 4 and 40 shots depending on script length. Do NOT include the JSON in a code fence. Start your response with { and end with }.`;
+Return between 4 and 40 shots depending on script length. Keep asset descriptions terse (≤ 400 characters each) so the response fits in one turn. Do NOT include the JSON in a code fence. Do NOT prefix with any prose like "Here is" or "I'll board". Start your response with the { character and end with the } character. Do not use smart quotes (“ ”) inside strings; use straight quotes ONLY.`;
 }
 
 // ---------- Routes ----------
@@ -515,14 +515,19 @@ app.post('/api/ronan/shot-list', async (req, res) => {
     // Strip any accidental markdown fences or preambles.
     const cleaned = extractJson(text);
     if (!cleaned) {
-      return res.status(502).json({ error: 'Ronan did not return valid JSON', raw: text.slice(0, 2000) });
+      console.error('[shot-list] no JSON block found in Ronan reply. First 400 chars:', text.slice(0, 400));
+      console.error('[shot-list] last 400 chars:', text.slice(-400));
+      return res.status(502).json({ error: 'Ronan did not return valid JSON', raw: text.slice(0, 4000) });
     }
-    let parsed;
-    try { parsed = JSON.parse(cleaned); }
-    catch (e) {
-      return res.status(502).json({ error: `JSON parse failed: ${e.message}`, raw: cleaned.slice(0, 2000) });
+    const { value: parsed, repair } = tryParseJsonWithRepairs(cleaned);
+    if (!parsed) {
+      console.error('[shot-list] JSON parse failed even after repairs. Length:', cleaned.length);
+      console.error('[shot-list] first 400 chars:', cleaned.slice(0, 400));
+      console.error('[shot-list] last 400 chars:', cleaned.slice(-400));
+      return res.status(502).json({ error: 'Ronan did not return valid JSON', raw: cleaned.slice(0, 4000) });
     }
-    res.json({ ok: true, sessionId: nextSessionId, shotList: parsed });
+    if (repair) console.warn(`[shot-list] JSON repaired via: ${repair}`);
+    res.json({ ok: true, sessionId: nextSessionId, shotList: parsed, repair: repair || undefined });
   } catch (err) {
     console.error('[shot-list] error', err);
     res.status(500).json({ error: String(err.message || err) });
@@ -657,6 +662,87 @@ function extractJson(text) {
   const last = text.lastIndexOf('}');
   if (first < 0 || last < 0 || last < first) return null;
   return text.slice(first, last + 1);
+}
+
+// If JSON.parse fails, try common repairs. Handles the most frequent failure
+// modes when large-model output is either truncated or contains a few stray
+// unescaped characters.
+function tryParseJsonWithRepairs(cleaned) {
+  // Attempt 0: as-is.
+  try { return { value: JSON.parse(cleaned), repair: null }; } catch { /* try repairs */ }
+
+  // Repair 1: strip trailing commas (", }" or ", ]").
+  const noTrailing = cleaned
+    .replace(/,(\s*[}\]])/g, '$1');
+  try { return { value: JSON.parse(noTrailing), repair: 'trailing-comma-strip' }; } catch { /* keep trying */ }
+
+  // Repair 2: replace common smart quotes with ASCII equivalents. Ronan
+  // occasionally uses “”‘’ inside description strings.
+  const noSmart = noTrailing
+    .replace(/[\u201c\u201d]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'");
+  try { return { value: JSON.parse(noSmart), repair: 'smart-quote-normalize' }; } catch { /* keep trying */ }
+
+  // Repair 3: truncation — output ended mid-string. Walk back from the end to
+  // find the last COMPLETE shot / asset entry and close the JSON there. This
+  // preserves whatever Ronan produced before hitting max_tokens.
+  const truncated = closeTruncatedJson(noSmart);
+  if (truncated && truncated !== noSmart) {
+    try { return { value: JSON.parse(truncated), repair: 'truncation-close' }; } catch { /* fall through */ }
+  }
+
+  return { value: null, repair: null };
+}
+
+// Given a possibly-truncated JSON string that starts with '{', find the
+// deepest recoverable prefix and close whatever brackets are still open.
+// Strategy: walk the string forward, tracking bracket depth + string state.
+// For every position where we finish a value cleanly (i.e. just closed a }
+// or ] at depth >= 1), remember the position and the current stack. When we
+// reach the truncated end, rewind to the last remembered "safe" position
+// that's INSIDE the same containing array (so we drop the partial trailing
+// item), then append the closes still owed.
+function closeTruncatedJson(s) {
+  if (!s || s[0] !== '{') return null;
+  let inString = false;
+  let escape = false;
+  const stack = [];
+  // Remember the last position where we cleanly closed a value AND the stack
+  // state at that moment (deep-copied so later mutations don't overwrite it).
+  let safeEnd = -1;
+  let safeStack = null;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (escape) { escape = false; continue; }
+    if (inString) {
+      if (c === '\\') { escape = true; continue; }
+      if (c === '"') { inString = false; }
+      continue;
+    }
+    if (c === '"') { inString = true; continue; }
+    if (c === '{' || c === '[') { stack.push(c); }
+    else if (c === '}' || c === ']') {
+      stack.pop();
+      // Snapshot after a clean close. safeStack captures what's still open.
+      safeEnd = i;
+      safeStack = stack.slice();
+    }
+  }
+  // Cleanly balanced end → nothing to repair.
+  if (stack.length === 0 && !inString) return s;
+  // No clean close ever happened → unrecoverable.
+  if (safeEnd < 0 || !safeStack) return null;
+  // Drop the trailing partial item AND any comma that separated it.
+  let head = s.slice(0, safeEnd + 1);
+  // Note: we do NOT need to worry about a trailing ',' between the last
+  // safe close and the truncation point — the slice up to safeEnd+1 ends
+  // exactly on the closing char, so ', {partial' is already gone.
+  const closes = safeStack.map((b) => (b === '{' ? '}' : ']')).reverse().join('');
+  return head + closes;
+}
+
+export function _testJsonRepair(s) {
+  return tryParseJsonWithRepairs(s);
 }
 
 // Nano Banana accepts ratios from the supported set. Coerce numeric ratios to

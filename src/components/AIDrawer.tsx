@@ -709,7 +709,18 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
                 Auto-generate final storyboard panels using assets as references
               </label>
             </div>
-            {error && <p className="ai-error">{error}</p>}
+            {error && (
+              <pre
+                className="ai-error"
+                style={{
+                  whiteSpace: 'pre-wrap',
+                  maxHeight: 240,
+                  overflow: 'auto',
+                  fontSize: 11,
+                  lineHeight: 1.4,
+                }}
+              >{error}</pre>
+            )}
             <div className="ai-actions">
               <button className="ai-btn-secondary" onClick={onClose}>
                 Cancel
