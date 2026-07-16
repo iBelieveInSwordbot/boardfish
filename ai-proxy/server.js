@@ -13,9 +13,7 @@
 
 import express from 'express';
 import { spawn } from 'node:child_process';
-import { readFile, unlink, mkdtemp } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
@@ -77,30 +75,78 @@ async function callRonan({ message, sessionId }) {
   return { text, sessionId: nextSessionId, raw: parsed };
 }
 
+// Storyboard / scripted-flow image generation.
+//
+// Historically shelled to `openclaw infer image generate --model
+// google/gemini-3-pro-image-preview`, which routes to Google AI Studio and
+// requires a separate prepay account. As of 2026-07-16 that account ran
+// out and Matt asked to route this through fal Nano Banana Pro so all of
+// Boardfish is billed to one provider (fal). Same endpoint the node
+// editor's Image Gen node uses, so pricing/creds are already wired.
+//
+// Returns the same shape the client expects: { dataUrl, width, height, mime }.
 async function generateImage({ prompt, aspectRatio }) {
-  const dir = await mkdtemp(path.join(tmpdir(), 'boardfish-ai-'));
-  const outPath = path.join(dir, 'panel.png');
-  const args = [
-    'infer', 'image', 'generate',
-    '--prompt', prompt,
-    '--model', 'google/gemini-3-pro-image-preview',
-    '--output', outPath,
-    '--json',
-  ];
-  if (aspectRatio) args.push('--aspect-ratio', aspectRatio);
-  const { stdout } = await runOpenclaw(args);
-  // openclaw prints preamble lines (warnings, migrations) before the JSON envelope.
-  // Scan for the first top-level object that parses cleanly.
-  const envelope = parseTopLevelJson(stdout);
-  if (!envelope) throw new Error(`no JSON envelope in openclaw output: ${stdout.slice(0, 500)}`);
-  const output = envelope?.outputs?.[0];
-  if (!output?.path) throw new Error(`no output image: ${JSON.stringify(envelope).slice(0, 500)}`);
-  const bytes = await readFile(output.path);
-  const mime = output.mimeType || 'image/png';
-  const dataUrl = `data:${mime};base64,${bytes.toString('base64')}`;
-  // Best-effort cleanup — don't await, don't crash.
-  unlink(output.path).catch(() => {});
-  return { dataUrl, width: output.width, height: output.height, mime };
+  if (!FAL_KEY) throw new Error('FAL_KEY not configured on server');
+  const endpoint = 'fal-ai/nano-banana-pro';
+  const input = {
+    prompt,
+    aspect_ratio: aspectRatio || '16:9',
+    num_images: 1,
+    output_format: 'png',
+  };
+  const submitUrl = `${FAL_BASE}/${endpoint}`;
+  const submit = await fetch(submitUrl, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Key ${FAL_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(input),
+  });
+  if (!submit.ok) {
+    const body = await submit.text().catch(() => '');
+    throw new Error(`FAL submit ${submit.status}: ${body.slice(0, 300)}`);
+  }
+  const submitJson = await submit.json();
+  const requestId = submitJson.request_id;
+  if (!requestId) throw new Error(`FAL did not return a request_id: ${JSON.stringify(submitJson).slice(0, 300)}`);
+  const statusUrl = submitJson.status_url || `${FAL_BASE}/${endpoint}/requests/${requestId}/status`;
+  const resultUrl = submitJson.response_url || `${FAL_BASE}/${endpoint}/requests/${requestId}`;
+  const started = Date.now();
+  let result = null;
+  while (Date.now() - started < FAL_POLL_MAX_MS) {
+    await new Promise((r) => setTimeout(r, FAL_POLL_INTERVAL_MS));
+    const s = await fetch(statusUrl, { headers: { 'Authorization': `Key ${FAL_KEY}` } });
+    if (!s.ok) continue;
+    const sj = await s.json();
+    if (sj.status === 'COMPLETED') {
+      const r = await fetch(resultUrl, { headers: { 'Authorization': `Key ${FAL_KEY}` } });
+      result = await r.json();
+      break;
+    }
+    if (sj.status === 'FAILED' || sj.status === 'ERROR') {
+      throw new Error(`FAL job failed: ${JSON.stringify(sj).slice(0, 300)}`);
+    }
+  }
+  if (!result) throw new Error('FAL job timed out');
+  // Nano Banana returns { images: [{ url, width, height, content_type }], ... }
+  const image = Array.isArray(result?.images) ? result.images[0] : null;
+  const imgUrl = image?.url;
+  if (!imgUrl) throw new Error(`no image URL in FAL result: ${JSON.stringify(result).slice(0, 300)}`);
+  // Download the image and convert to a data URL to match the previous
+  // (openclaw-infer) return shape. Storyboard consumers embed this
+  // directly in <img src>, so keeping data URLs avoids CORS surprises.
+  const imgRes = await fetch(imgUrl);
+  if (!imgRes.ok) throw new Error(`FAL image download failed: ${imgRes.status}`);
+  const buf = Buffer.from(await imgRes.arrayBuffer());
+  const mime = image?.content_type || 'image/png';
+  const dataUrl = `data:${mime};base64,${buf.toString('base64')}`;
+  return {
+    dataUrl,
+    width: image?.width,
+    height: image?.height,
+    mime,
+  };
 }
 
 // ---------- Ronan director prompts ----------
@@ -513,30 +559,6 @@ app.post('/api/image/generate', async (req, res) => {
 });
 
 // ---------- helpers ----------
-
-// Scan a multi-line stdout for the first top-level {...} block that parses.
-// Handles openclaw's `[state-migrations] ...` preamble and nested braces.
-function parseTopLevelJson(stdout) {
-  const lines = stdout.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].trim() !== '{') continue;
-    // Try to walk forward until braces balance.
-    let depth = 0;
-    let buf = '';
-    for (let j = i; j < lines.length; j++) {
-      buf += lines[j] + '\n';
-      for (const ch of lines[j]) {
-        if (ch === '{') depth++;
-        else if (ch === '}') depth--;
-      }
-      if (depth === 0) {
-        try { return JSON.parse(buf); } catch { break; }
-      }
-    }
-  }
-  // Fallback: last resort — try parsing the full stdout.
-  try { return JSON.parse(stdout); } catch { return null; }
-}
 
 // Best-effort JSON extraction from a Ronan reply. Ronan is instructed to return
 // raw JSON but may wrap it in ```json ... ``` or add a stray sentence. We find
