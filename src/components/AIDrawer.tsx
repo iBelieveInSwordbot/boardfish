@@ -370,20 +370,26 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
       slide: titleSlide('Storyboards'),
     };
     const shotPanels: Panel[] = draft.shots.map(shotToPanel);
+    // Section name is 'Boards' — the storyboard sequence readers care about.
+    // Ronan's inferred title is preserved as directorNotes context but does
+    // not name the section (clients see "Boards" not "Cover Story").
     const finalSb: DocItem = {
       id: cryptoRandomId(),
       kind: 'storyboard',
       panels: shotPanels,
-      overrides: { name: draft.title || 'Storyboards' },
+      overrides: { name: 'Boards' },
     };
 
-    // Skip empty sections so we don't clutter the doc with lonely title slides
-    // if the script has no props (e.g. dialogue-only scenes).
+    // Storyboards come FIRST in the exported document. Assets follow after
+    // so clients see the final boards on the first pages of the PDF and the
+    // supporting cast / locations / props reference material at the back.
+    // Skip empty asset sections so we don't clutter with lonely title slides
+    // when a script has no props (e.g. dialogue-only scenes).
     const items: DocItem[] = [];
+    items.push(storyboardSlide, finalSb);
     if (actorPanels.length > 0) items.push(actorSlide, actorSb);
     if (locPanels.length > 0) items.push(locSlide, locSb);
     if (propPanels.length > 0) items.push(propSlide, propSb);
-    items.push(storyboardSlide, finalSb);
 
     dispatch({ type: 'APPEND_ITEMS', items, selectItemId: finalSb.id });
 

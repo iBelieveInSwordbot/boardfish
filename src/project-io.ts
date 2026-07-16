@@ -499,8 +499,22 @@ export async function loadProject(
  *   - File size larger than native print (each page ~300 KB–1 MB). Fine for typical boards.
  *   - Total control over multi-page, dark theme, footer, logo. WYSIWYG guaranteed.
  */
-export async function exportPdf(settings: ProjectSettings): Promise<void> {
-  const pageEls = Array.from(document.querySelectorAll<HTMLElement>('.page'));
+export async function exportPdf(
+  settings: ProjectSettings,
+  opts?: { boardsOnly?: boolean },
+): Promise<void> {
+  let pageEls = Array.from(document.querySelectorAll<HTMLElement>('.page'));
+  if (opts?.boardsOnly) {
+    // Walk each .page's ancestor .page-frame to read its data-section-kind
+    // tag. Keep pages that are NOT tagged as an asset section (actors /
+    // locations / props). Untagged pages (freeform, or the final boards
+    // section) stay in.
+    pageEls = pageEls.filter((el) => {
+      const frame = el.closest('.page-frame') as HTMLElement | null;
+      const kind = frame?.getAttribute('data-section-kind') || '';
+      return kind !== 'actors' && kind !== 'locations' && kind !== 'props';
+    });
+  }
   if (pageEls.length === 0) {
     alert('Nothing to export — add some panels first.');
     return;
@@ -632,7 +646,8 @@ export async function exportPdf(settings: ProjectSettings): Promise<void> {
       pdf.addImage(imgData, 'JPEG', 0, 0, W, H, undefined, 'FAST');
     }
 
-    const filename = `${sanitize(settings.projectName || 'boardfish')}.pdf`;
+    const suffix = opts?.boardsOnly ? '-boards' : '';
+    const filename = `${sanitize(settings.projectName || 'boardfish')}${suffix}.pdf`;
     pdf.save(filename);
   } finally {
     // Restore on-screen scale transforms

@@ -395,11 +395,17 @@ function PageWrapper({
   dispatch,
   onOpenNodeEditor,
 }: PageWrapperProps) {
+  // Compute a section tag so the PDF exporter can filter out asset pages
+  // when Matt wants a "boards only" export. The AI Director wizard tags
+  // asset storyboards with overrides.name = 'Actors' | 'Locations' | 'Props'
+  // and title slides with a single text box whose only content matches.
+  const sectionKind = computeSectionKind(page, items);
   if (page.kind === 'slide') {
     return (
       <SlidePageView
         slide={page.slide}
         itemId={page.itemId}
+        sectionKind={sectionKind}
         pageIndex={pageIndex}
         totalPages={totalPages}
         settings={settings}
@@ -414,6 +420,7 @@ function PageWrapper({
   return (
     <StoryboardPageView
       itemId={page.itemId}
+      sectionKind={sectionKind}
       panels={page.panels}
       pageIndex={pageIndex}
       totalPages={totalPages}
@@ -427,8 +434,40 @@ function PageWrapper({
   );
 }
 
+/**
+ * Classify a page into one of the AI Director sections so the PDF
+ * exporter can filter. Returns 'actors' | 'locations' | 'props' when the
+ * page is part of an asset section (either the title slide or the
+ * asset storyboard immediately following it). Returns 'boards' when the
+ * page is the final storyboard or its title slide. Undefined otherwise
+ * (freeform user-added pages).
+ */
+function computeSectionKind(
+  page: { kind: 'slide' | 'storyboard'; itemId: string; slide?: Slide; panels?: Panel[] },
+  items: BoardfishState['items'],
+): 'actors' | 'locations' | 'props' | 'boards' | undefined {
+  const item = items.find((it) => it.id === page.itemId);
+  if (!item) return undefined;
+  if (item.kind === 'storyboard') {
+    const name = (item.overrides?.name || '').trim().toLowerCase();
+    if (name === 'actors') return 'actors';
+    if (name === 'locations') return 'locations';
+    if (name === 'props') return 'props';
+    if (name === 'boards' || name === 'storyboards') return 'boards';
+    return undefined;
+  }
+  // Slide — look at first text box.
+  const text = (item.slide.textBoxes?.[0]?.text || '').trim().toLowerCase();
+  if (text === 'actors') return 'actors';
+  if (text === 'locations') return 'locations';
+  if (text === 'props') return 'props';
+  if (text === 'boards' || text === 'storyboards') return 'boards';
+  return undefined;
+}
+
 type StoryboardPageProps = {
   itemId: string;
+  sectionKind?: 'actors' | 'locations' | 'props' | 'boards';
   panels: Panel[];
   pageIndex: number;
   totalPages: number;
@@ -442,6 +481,7 @@ type StoryboardPageProps = {
 
 function StoryboardPageView({
   itemId,
+  sectionKind,
   panels,
   pageIndex,
   totalPages,
@@ -494,7 +534,7 @@ function StoryboardPageView({
   };
 
   return (
-    <div className="page-frame" data-canvas-item={itemId}>
+    <div className="page-frame" data-canvas-item={itemId} data-section-kind={sectionKind}>
       <div className="page-wrapper">
         <div className="page" data-page-index={pageIndex} style={pageStyle}>
           <div style={gridStyle}>
@@ -523,13 +563,14 @@ function StoryboardPageView({
 type SlidePageProps = {
   slide: Slide;
   itemId: string;
+  sectionKind?: 'actors' | 'locations' | 'props' | 'boards';
   pageIndex: number;
   totalPages: number;
   settings: BoardfishState['settings'];
   dispatch: React.Dispatch<Action>;
 };
 
-function SlidePageView({ slide, itemId, pageIndex, totalPages, settings, dispatch }: SlidePageProps) {
+function SlidePageView({ slide, itemId, sectionKind, pageIndex, totalPages, settings, dispatch }: SlidePageProps) {
   const pageStyle: React.CSSProperties = {
     width: settings.pageSize.widthPx,
     height: settings.pageSize.heightPx,
@@ -542,7 +583,7 @@ function SlidePageView({ slide, itemId, pageIndex, totalPages, settings, dispatc
   };
 
   return (
-    <div className="page-frame" data-canvas-item={itemId}>
+    <div className="page-frame" data-canvas-item={itemId} data-section-kind={sectionKind}>
       <div
         className="page-wrapper slide-page-wrapper"
         onClick={(e) => {
