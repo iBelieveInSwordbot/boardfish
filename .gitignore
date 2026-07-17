@@ -8,3 +8,8 @@ tls/*.crt
 tls/*.key
 tls/openssl.cnf
 
+# Runtime storage: server-side content-addressed media cache, ai-proxy
+# temp scratch dirs. All regenerable.
+data/
+ai-proxy/tmp-llm/
+
