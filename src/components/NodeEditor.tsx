@@ -2795,10 +2795,38 @@ function BulkGenerateButton({
   const costLabel = cost.amount != null
     ? ` (${cost.isPartial ? '~' : ''}${cost.amount < 0.01 ? `$${cost.amount.toFixed(3)}` : `$${cost.amount.toFixed(2)}`}${cost.isPartial ? '+' : ''})`
     : '';
+  // Bulk cost sanity: video gens can rack up $24+ per click when variants
+  // are bumped. Confirm when the batch includes any movie-gen node OR the
+  // estimated total is over $2. Skip the dialog for cheap image-only
+  // batches to avoid nagging on every click.
+  const hasMovieGen = runnableNodes.some((n) => n.kind === 'movie-gen');
+  const totalVariants = runnableNodes.reduce((acc, n) => {
+    if (n.kind === 'movie-gen') {
+      const v = Math.max(1, Math.floor(Number((n.data as { num_videos?: unknown }).num_videos ?? 1)));
+      return acc + v;
+    }
+    return acc + 1;
+  }, 0);
+  const shouldConfirm = hasMovieGen || (cost.amount != null && cost.amount >= 2);
+  const handleBulkClick = () => {
+    if (shouldConfirm) {
+      const costLine = cost.amount != null
+        ? `\n\nEstimated total: ${cost.isPartial ? 'at least ' : ''}$${cost.amount.toFixed(2)}`
+        : '';
+      const movieLine = hasMovieGen
+        ? `\n\nThis batch includes video generation${totalVariants > runnableIds.length ? ` (${totalVariants} videos across ${runnableIds.length} nodes)` : ''}. Each video is billed separately.`
+        : '';
+      const ok = window.confirm(
+        `You're about to fire generate on ${runnableIds.length} nodes in parallel.${movieLine}${costLine}\n\nContinue?`,
+      );
+      if (!ok) return;
+    }
+    onBulkGenerate(runnableIds);
+  };
   return (
     <button
       className="ne-topbar-btn primary"
-      onClick={() => onBulkGenerate(runnableIds)}
+      onClick={handleBulkClick}
       disabled={anyRunning}
       title={
         anyRunning

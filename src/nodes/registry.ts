@@ -1524,6 +1524,11 @@ const MovieGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
         inFlight,
         busyLabel: 'Generating\u2026 (video takes 1-5 min)',
         onClick: () => onGenerate(),
+        // Video is expensive. Confirm when variants > 1 so a single click
+        // doesn't fire N parallel jobs and rack up N× cost (e.g. Veo 3
+        // @ $0.75/s × 8s × 4 variants = $24).
+        confirmVariants: true,
+        itemLabel: 'video',
       });
     })(),
     url

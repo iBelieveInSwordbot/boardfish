@@ -29,6 +29,14 @@ export type GenerateButtonWithCostProps = {
   /** Whether inFlight state should be used for busy label. */
   inFlight: boolean;
   onClick: () => void;
+  /** When true, show a confirmation dialog before firing onClick if
+   *  `quantity.variants` is > 1. Prevents accidentally spending N× the
+   *  usual cost by clicking Generate on a Movie Gen with variants
+   *  bumped up. The dialog quotes the estimated total when available. */
+  confirmVariants?: boolean;
+  /** Optional label for the thing being generated ("video", "image") —
+   *  used in the confirmation dialog wording. Defaults to "item". */
+  itemLabel?: string;
 };
 
 function formatCost(n: number): string {
@@ -43,6 +51,8 @@ export function GenerateButtonWithCost({
   busyLabel,
   inFlight,
   onClick,
+  confirmVariants,
+  itemLabel,
 }: GenerateButtonWithCostProps) {
   const est = useFalCostEstimate(endpointId, quantity);
 
@@ -58,12 +68,34 @@ export function GenerateButtonWithCost({
     costHint = ' (…)';
   }
 
+  const handleClick = () => {
+    // Variants confirmation: firing N parallel jobs can rack up cost fast
+    // (Veo 3 at $0.75/s × 8s × 4 variants = $24 in one click). Prompt the
+    // user before proceeding when they've asked for >1 variant. Skip when
+    // the caller opts out (confirmVariants=false) or when only 1 variant
+    // is queued.
+    const variants = Math.max(1, Math.floor(Number(quantity?.variants ?? 1)));
+    if (confirmVariants && variants > 1) {
+      const label = itemLabel ?? 'item';
+      const totalHint = est.amount != null
+        ? `\n\nEstimated total: ${formatCost(est.amount)} for ${variants} ${label}s.`
+        : est.price
+          ? `\n\n(Unit price ${formatCost(est.price.unitPrice)} / ${est.price.unit}; total will be ~${variants}× the single-${label} cost.)`
+          : '';
+      const ok = window.confirm(
+        `You're about to generate ${variants} ${label}s in one go. Each ${label} is billed separately.${totalHint}\n\nContinue?`,
+      );
+      if (!ok) return;
+    }
+    onClick();
+  };
+
   return (
     <button
       type="button"
       className="ne-inspect-generate"
       disabled={disabled}
-      onClick={onClick}
+      onClick={handleClick}
       title={
         est.price
           ? `Estimated: ${est.isTotal ? '' : 'unit '}price ${formatCost(est.price.unitPrice)} / ${est.price.unit}`
