@@ -29,8 +29,8 @@ export const NODE_KINDS_META: Record<NodeKind, NodeKindMeta> = {
   'custom-fal':      { defaultWidth: 220, defaultHeight: 140 },
   'panel-ref':       { defaultWidth: 200, defaultHeight: 160 },
   // Editing tools — deterministic image/video transforms.
-  'crop':            { defaultWidth: 200, defaultHeight: 160 },
-  'resize':          { defaultWidth: 200, defaultHeight: 160 },
+  'crop':            { defaultWidth: 260, defaultHeight: 260 },
+  'resize':          { defaultWidth: 260, defaultHeight: 260 },
   'blur':            { defaultWidth: 200, defaultHeight: 140 },
   'invert':          { defaultWidth: 180, defaultHeight: 120 },
   'extract-frame':   { defaultWidth: 200, defaultHeight: 160 },

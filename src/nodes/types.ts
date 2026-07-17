@@ -400,14 +400,26 @@ export function defaultDataFor(kind: NodeKind): Record<string, unknown> {
         // Anchor point for the crop: 'center' | 'top' | 'bottom' | 'left'
         // | 'right' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
         anchor: 'center',
+        // Interactive-preview zoom — fraction (0.2–1.0) of the largest
+        // aspect-matched crop that fits inside the source. 1.0 = the full
+        // fit; 0.5 = half that size, centered by anchor.
+        zoom: 1,
         // Only used when aspect === 'custom'.
         width: 1024,
         height: 1024,
       };
     case 'resize':
       return {
+        // Interactive-preview scale — multiplier of the source dimensions.
+        // 1.0 = same size; 0.5 = half; 2.0 = double. Used by the slider.
+        scale: 1,
+        // Absolute dims (used when useCustomDims=true or when the source
+        // dims aren't known yet at Generate time).
         width: 1024,
         height: 1024,
+        // When true, honor width/height; when false, derive from scale ×
+        // upstream dims at Generate time.
+        useCustomDims: false,
         // 'stretch' distorts to fit; 'fit' letterboxes; 'fill' zooms + crops.
         fit: 'stretch',
       };

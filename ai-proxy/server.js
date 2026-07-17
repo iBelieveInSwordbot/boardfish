@@ -1338,6 +1338,7 @@ function buildFilter(tool, data, probe) {
     case 'crop': {
       const aspect = String(data.aspect ?? '16:9');
       const anchor = String(data.anchor ?? 'center');
+      const zoom = Math.max(0.2, Math.min(1, Number(data.zoom ?? 1)));
       let cropW, cropH;
       if (aspect === 'custom') {
         cropW = Math.max(1, Math.round(Number(data.width) || srcW));
@@ -1348,16 +1349,35 @@ function buildFilter(tool, data, probe) {
         const ar = parseAspect(aspect);
         if (!ar) throw new Error(`Invalid crop aspect "${aspect}"`);
         const fit = fitCrop(srcW, srcH, ar.w, ar.h);
-        cropW = fit.w; cropH = fit.h;
+        // Apply zoom (0.2–1.0) as a scale-down factor from the fitted crop.
+        // 1.0 = full fitted crop; 0.5 = half-size crop, centered by anchor.
+        cropW = Math.max(1, Math.round(fit.w * zoom));
+        cropH = Math.max(1, Math.round(fit.h * zoom));
       }
+      // Ffmpeg's crop filter refuses even/odd width/height mismatches on
+      // some codecs. Round to even values to be safe.
+      if (cropW % 2 !== 0) cropW -= 1;
+      if (cropH % 2 !== 0) cropH -= 1;
       const { x, y } = anchorOffset(srcW, srcH, cropW, cropH, anchor);
       return `crop=${cropW}:${cropH}:${x}:${y}`;
     }
     case 'resize': {
-      const w = Math.max(1, Math.round(Number(data.width) || srcW));
-      const h = Math.max(1, Math.round(Number(data.height) || srcH));
+      const useCustom = Boolean(data.useCustomDims);
+      const scale = Math.max(0.05, Math.min(4, Number(data.scale ?? 1)));
+      let w, h;
+      if (useCustom) {
+        w = Math.max(1, Math.round(Number(data.width) || srcW));
+        h = Math.max(1, Math.round(Number(data.height) || srcH));
+      } else {
+        // Scale mode preserves aspect ratio automatically.
+        w = Math.max(1, Math.round(srcW * scale));
+        h = Math.max(1, Math.round(srcH * scale));
+      }
+      // Round to even for codec compatibility.
+      if (w % 2 !== 0) w -= 1;
+      if (h % 2 !== 0) h -= 1;
       const fit = String(data.fit ?? 'stretch');
-      if (fit === 'stretch') return `scale=${w}:${h}`;
+      if (!useCustom || fit === 'stretch') return `scale=${w}:${h}`;
       if (fit === 'fit') {
         // Letterbox: scale-to-fit then pad to exact size.
         return `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:black`;

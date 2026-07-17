@@ -2469,6 +2469,268 @@ const VideoDescriberInspector: NodeKindDef['Inspector'] = ({ node, onChangeData,
 //     UX and keeps latency predictable.
 // ---------------------------------------------------------------------------
 
+// Helper: find the upstream media (image or video) wired into a node's 'in'
+// port. Prefers the node's own output (post-Generate), then walks the graph
+// to the source. Returns the raw data URL + kind, or null when nothing is
+// wired / nothing has generated yet.
+function findUpstreamMedia(
+  node: BaseNode,
+  graph: import('./types').NodeGraph | undefined,
+): { dataUrl: string; kind: 'image' | 'video' } | null {
+  if (!graph) return null;
+  const inEdge = graph.edges.find((e) => e.to.nodeId === node.id && e.to.portId === 'in');
+  if (!inEdge) return null;
+  const upstream = graph.nodes.find((n) => n.id === inEdge.from.nodeId);
+  if (!upstream) return null;
+  const out = upstream.output;
+  if (out && (out.kind === 'image' || out.kind === 'video') && out.dataUrl) {
+    return { dataUrl: out.dataUrl, kind: out.kind };
+  }
+  // Panel Ref stashes its image on data.imageDataUrl.
+  const dataUrl = (upstream.data as { imageDataUrl?: unknown }).imageDataUrl;
+  if (typeof dataUrl === 'string' && dataUrl) {
+    return { dataUrl, kind: 'image' };
+  }
+  return null;
+}
+
+// Compute the fitted crop rectangle (percent-of-source, 0–1 scale) for a
+// given aspect ratio + zoom. Used by CropPreview to overlay the crop box.
+function cropRectPct(
+  srcW: number,
+  srcH: number,
+  aspect: string,
+  zoom: number,
+  anchor: string,
+): { xPct: number; yPct: number; wPct: number; hPct: number } {
+  const clampedZoom = Math.max(0.2, Math.min(1, zoom));
+  let cropW: number; let cropH: number;
+  if (aspect === 'custom') {
+    // We can't visually preview custom dims meaningfully; show a centered
+    // clampedZoom-scaled box that matches source AR.
+    cropW = srcW * clampedZoom;
+    cropH = srcH * clampedZoom;
+  } else {
+    const m = String(aspect).match(/^(\d+):(\d+)$/);
+    if (!m) {
+      cropW = srcW * clampedZoom;
+      cropH = srcH * clampedZoom;
+    } else {
+      const aw = Number(m[1]); const ah = Number(m[2]);
+      const dstAR = aw / ah;
+      const srcAR = srcW / srcH;
+      // Largest-fitting box that matches dstAR (matches server-side fitCrop).
+      let fitW: number; let fitH: number;
+      if (srcAR > dstAR) {
+        fitH = srcH;
+        fitW = fitH * dstAR;
+      } else {
+        fitW = srcW;
+        fitH = fitW / dstAR;
+      }
+      cropW = fitW * clampedZoom;
+      cropH = fitH * clampedZoom;
+    }
+  }
+  // Anchor placement (matches server-side anchorOffset).
+  let x = (srcW - cropW) / 2;
+  let y = (srcH - cropH) / 2;
+  const a = String(anchor || 'center');
+  if (a.includes('left')) x = 0;
+  if (a.includes('right')) x = srcW - cropW;
+  if (a.includes('top')) y = 0;
+  if (a.includes('bottom')) y = srcH - cropH;
+  return {
+    xPct: Math.max(0, x) / srcW,
+    yPct: Math.max(0, y) / srcH,
+    wPct: cropW / srcW,
+    hPct: cropH / srcH,
+  };
+}
+
+// Interactive Crop preview — shows the upstream image (or last output when
+// no upstream) with a translucent overlay marking the crop rectangle,
+// controlled by a zoom slider. Hitting Generate on the Inspector bakes.
+const CropPreview: FC<PreviewProps> = ({ node, onChangeData, graph }) => {
+  const upstream = findUpstreamMedia(node, graph);
+  const sourceUrl = upstream?.dataUrl ?? node.output?.dataUrl;
+  const sourceKind = upstream?.kind ?? node.output?.kind ?? 'image';
+  const zoom = Math.max(0.2, Math.min(1, Number(node.data.zoom ?? 1)));
+  const aspect = String(node.data.aspect ?? '16:9');
+  const anchor = String(node.data.anchor ?? 'center');
+
+  if (!sourceUrl) {
+    return createElement(
+      'div',
+      { className: 'ne-node-preview-empty' },
+      'wire an image or video in',
+    );
+  }
+
+  // Rendered media element — image OR video (posterized). We render at
+  // native intrinsic size but visually contained via CSS object-fit.
+  const mediaEl =
+    sourceKind === 'video'
+      ? createElement('video', {
+          src: sourceUrl,
+          muted: true,
+          playsInline: true,
+          preload: 'metadata',
+          style: {
+            display: 'block',
+            width: '100%',
+            height: '100%',
+            objectFit: 'contain',
+            background: '#111',
+          },
+          onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+        })
+      : createElement('img', {
+          src: sourceUrl,
+          style: {
+            display: 'block',
+            width: '100%',
+            height: '100%',
+            objectFit: 'contain',
+            background: '#111',
+          },
+          onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+        });
+
+  // Since we don't know the actual source pixel dims here without loading,
+  // approximate the overlay using aspect ratio math relative to the
+  // container box. Server-side does exact ffprobe-based math at Generate.
+  // For visual purposes: use aspect × zoom to size the box relative to the
+  // container's rendered image dims. `object-fit: contain` means the image
+  // fills width OR height, so we use aspect as a stand-in — accurate for
+  // preview intent.
+  const rect = cropRectPct(1000, 1000 * (aspect === 'custom' ? 1 : (() => {
+    const m = String(aspect).match(/^(\d+):(\d+)$/);
+    if (!m) return 1;
+    return Number(m[2]) / Number(m[1]);
+  })()), aspect, zoom, anchor);
+
+  const overlayStyle: React.CSSProperties = {
+    position: 'absolute',
+    left: `${rect.xPct * 100}%`,
+    top: `${rect.yPct * 100}%`,
+    width: `${rect.wPct * 100}%`,
+    height: `${rect.hPct * 100}%`,
+    border: '2px solid #4ecdc4',
+    boxShadow: '0 0 0 9999px rgba(0,0,0,0.45)',
+    boxSizing: 'border-box',
+    pointerEvents: 'none',
+  };
+
+  const captionCrop = aspect === 'custom'
+    ? `custom · zoom ${Math.round(zoom * 100)}%`
+    : `${aspect} · ${anchor} · zoom ${Math.round(zoom * 100)}%`;
+
+  return createElement(
+    'div',
+    { className: 'ne-node-preview ne-node-preview--edit', style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+    createElement(
+      'div',
+      { style: { position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden', borderRadius: 4 } },
+      mediaEl,
+      createElement('div', { style: overlayStyle }),
+    ),
+    createElement('input', {
+      type: 'range',
+      min: 20, max: 100, step: 1,
+      value: String(Math.round(zoom * 100)),
+      onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+        const v = Number(e.target.value) / 100;
+        onChangeData?.({ zoom: v });
+      },
+      onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+      onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
+      style: { width: '100%' },
+      title: 'Crop zoom',
+    }),
+    createElement('div', { className: 'ne-node-preview-caption', style: { fontSize: 10 } }, captionCrop),
+  );
+};
+
+// Interactive Resize preview — shows the upstream image scaled inside the
+// node body per the scale slider, so the user can visually judge the
+// output size before hitting Generate.
+const ResizePreview: FC<PreviewProps> = ({ node, onChangeData, graph }) => {
+  const upstream = findUpstreamMedia(node, graph);
+  const sourceUrl = upstream?.dataUrl ?? node.output?.dataUrl;
+  const sourceKind = upstream?.kind ?? node.output?.kind ?? 'image';
+  const scale = Math.max(0.25, Math.min(2, Number(node.data.scale ?? 1)));
+
+  if (!sourceUrl) {
+    return createElement(
+      'div',
+      { className: 'ne-node-preview-empty' },
+      'wire an image or video in',
+    );
+  }
+
+  // For the visual, we simulate scale by clamping the media to `scale/2`
+  // of the container size (100% container = scale 2.0). Center it.
+  const displayPct = Math.round((scale / 2) * 100);
+  const mediaEl =
+    sourceKind === 'video'
+      ? createElement('video', {
+          src: sourceUrl,
+          muted: true,
+          playsInline: true,
+          preload: 'metadata',
+          style: {
+            display: 'block',
+            maxWidth: `${displayPct}%`,
+            maxHeight: `${displayPct}%`,
+            objectFit: 'contain',
+            outline: '1px dashed rgba(78, 205, 196, 0.7)',
+          },
+          onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+        })
+      : createElement('img', {
+          src: sourceUrl,
+          style: {
+            display: 'block',
+            maxWidth: `${displayPct}%`,
+            maxHeight: `${displayPct}%`,
+            objectFit: 'contain',
+            outline: '1px dashed rgba(78, 205, 196, 0.7)',
+          },
+          onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+        });
+
+  return createElement(
+    'div',
+    { className: 'ne-node-preview ne-node-preview--edit', style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+    createElement(
+      'div',
+      {
+        style: {
+          flex: 1, minHeight: 0, overflow: 'hidden', borderRadius: 4,
+          background: '#111', display: 'flex', alignItems: 'center',
+          justifyContent: 'center',
+        },
+      },
+      mediaEl,
+    ),
+    createElement('input', {
+      type: 'range',
+      min: 25, max: 200, step: 1,
+      value: String(Math.round(scale * 100)),
+      onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+        const v = Number(e.target.value) / 100;
+        onChangeData?.({ scale: v });
+      },
+      onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+      onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
+      style: { width: '100%' },
+      title: 'Resize scale',
+    }),
+    createElement('div', { className: 'ne-node-preview-caption', style: { fontSize: 10 } }, `scale ${Math.round(scale * 100)}%`),
+  );
+};
+
 const EditToolPreview: FC<PreviewProps> = ({ node, onChangeData, onPromoteFrame }) => {
   const out = node.output;
   const kind: 'image' | 'video' = out?.kind === 'video' ? 'video' : 'image';
@@ -2585,6 +2847,7 @@ const CROP_ANCHORS: { value: string; label: string }[] = [
 const CropInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
   const aspect = String(node.data.aspect ?? '16:9');
   const anchor = String(node.data.anchor ?? 'center');
+  const zoom = Math.max(0.2, Math.min(1, Number(node.data.zoom ?? 1)));
   const width = Number(node.data.width ?? 1024);
   const height = Number(node.data.height ?? 1024);
   return createElement(
@@ -2593,10 +2856,19 @@ const CropInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerat
     createElement(
       'div',
       { className: 'ne-inspect-note' },
-      'Crop the upstream image or video. Pick an aspect preset (largest centered crop that fits), or Custom to set exact dims.',
+      'Crop the upstream media. Use the zoom slider on the node body to size, pick an aspect ratio, and anchor to position. Click Apply to bake the result.',
     ),
     renderSelectField('Aspect ratio', aspect, CROP_ASPECTS, (v) => onChangeData({ aspect: v })),
     renderSelectField('Anchor', anchor, CROP_ANCHORS, (v) => onChangeData({ anchor: v })),
+    createElement('label', { className: 'ne-inspect-label' }, `Zoom (${Math.round(zoom * 100)}%)`),
+    createElement('input', {
+      className: 'ne-inspect-input',
+      type: 'range',
+      min: 20, max: 100, step: 1,
+      value: String(Math.round(zoom * 100)),
+      onChange: (e: React.ChangeEvent<HTMLInputElement>) => onChangeData({ zoom: Number(e.target.value) / 100 }),
+      style: { width: '100%' },
+    }),
     aspect === 'custom'
       ? createElement(
           Fragment,
@@ -2625,6 +2897,8 @@ const RESIZE_FITS: { value: string; label: string }[] = [
 ];
 
 const ResizeInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
+  const scale = Math.max(0.25, Math.min(2, Number(node.data.scale ?? 1)));
+  const useCustom = Boolean(node.data.useCustomDims ?? false);
   const width = Number(node.data.width ?? 1024);
   const height = Number(node.data.height ?? 1024);
   const fit = String(node.data.fit ?? 'stretch');
@@ -2634,11 +2908,37 @@ const ResizeInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGener
     createElement(
       'div',
       { className: 'ne-inspect-note' },
-      'Resize the upstream image or video to exact pixel dimensions. “Stretch” changes the aspect ratio; “fit” and “fill” preserve it differently.',
+      'Scale the upstream media using the slider on the node body. Aspect ratio is preserved automatically. Toggle Custom Dims for exact pixel dimensions.',
     ),
-    renderNumberField('Width (px)', width, (n) => onChangeData({ width: Math.max(1, Math.round(n)) }), { min: 1 }),
-    renderNumberField('Height (px)', height, (n) => onChangeData({ height: Math.max(1, Math.round(n)) }), { min: 1 }),
-    renderSelectField('Fit mode', fit, RESIZE_FITS, (v) => onChangeData({ fit: v })),
+    createElement('label', { className: 'ne-inspect-label' }, `Scale (${Math.round(scale * 100)}%)`),
+    createElement('input', {
+      className: 'ne-inspect-input',
+      type: 'range',
+      min: 25, max: 200, step: 1,
+      value: String(Math.round(scale * 100)),
+      disabled: useCustom,
+      onChange: (e: React.ChangeEvent<HTMLInputElement>) => onChangeData({ scale: Number(e.target.value) / 100 }),
+      style: { width: '100%' },
+    }),
+    createElement(
+      'label',
+      { className: 'ne-inspect-label', style: { display: 'flex', alignItems: 'center', gap: 8 } },
+      createElement('input', {
+        type: 'checkbox',
+        checked: useCustom,
+        onChange: (e: React.ChangeEvent<HTMLInputElement>) => onChangeData({ useCustomDims: e.target.checked }),
+      }),
+      'Use custom pixel dimensions',
+    ),
+    useCustom
+      ? createElement(
+          Fragment,
+          null,
+          renderNumberField('Width (px)', width, (n) => onChangeData({ width: Math.max(1, Math.round(n)) }), { min: 1 }),
+          renderNumberField('Height (px)', height, (n) => onChangeData({ height: Math.max(1, Math.round(n)) }), { min: 1 }),
+          renderSelectField('Fit mode', fit, RESIZE_FITS, (v) => onChangeData({ fit: v })),
+        )
+      : null,
     createElement(
       'button',
       {
@@ -2911,22 +3211,22 @@ export const NODE_KINDS: Record<NodeKind, NodeKindDef> = {
     kind: 'crop',
     label: 'Crop',
     category: 'edit',
-    defaultWidth: 220,
-    defaultHeight: 220,
+    defaultWidth: 260,
+    defaultHeight: 260,
     defaultData: () => defaultDataFor('crop'),
     ports: (data) => defaultPortsFor('crop', data),
-    Preview: EditToolPreview,
+    Preview: CropPreview,
     Inspector: CropInspector,
   },
   'resize': {
     kind: 'resize',
     label: 'Resize',
     category: 'edit',
-    defaultWidth: 220,
-    defaultHeight: 220,
+    defaultWidth: 260,
+    defaultHeight: 260,
     defaultData: () => defaultDataFor('resize'),
     ports: (data) => defaultPortsFor('resize', data),
-    Preview: EditToolPreview,
+    Preview: ResizePreview,
     Inspector: ResizeInspector,
   },
   'blur': {
