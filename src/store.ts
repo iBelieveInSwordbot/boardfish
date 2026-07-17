@@ -803,7 +803,23 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
         }
         return it;
       });
-      const nextItems = [...state.items, ...normalized];
+      // AI Director cleanup: new projects seed with a single empty starter
+      // storyboard (see `initial: items: [newStoryboardItem()]`). When the
+      // wizard appends its own set of items, that leftover empty storyboard
+      // would otherwise linger at the top of the Outline. Drop any
+      // completely-empty storyboards from the existing items list before
+      // appending. "Empty" = kind: 'storyboard', 0 panels, no user-set
+      // title in overrides. Preserves storyboards the user manually named
+      // (even if they haven't added panels yet) since those show intent.
+      const isEmptyStarterStoryboard = (it: DocItem): boolean => {
+        if (it.kind !== 'storyboard') return false;
+        if (it.panels.length > 0) return false;
+        const name = it.overrides?.name;
+        if (name && typeof name === 'string' && name.trim() !== '') return false;
+        return true;
+      };
+      const cleanedExisting = state.items.filter((it) => !isEmptyStarterStoryboard(it));
+      const nextItems = [...cleanedExisting, ...normalized];
       const selectId = action.selectItemId
         ?? normalized[normalized.length - 1]?.id
         ?? state.selectedItemId;
