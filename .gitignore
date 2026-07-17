@@ -12,4 +12,5 @@ tls/openssl.cnf
 # temp scratch dirs. All regenerable.
 data/
 ai-proxy/tmp-llm/
+ai-proxy/tmp-edit/
 

@@ -38,7 +38,15 @@ export type NodeKind =
   | 'image-describer'
   | 'video-describer'
   | 'panel-ref'
-  | 'custom-fal';
+  | 'custom-fal'
+  // Editing tools — deterministic image/video transforms, no API cost.
+  // Modeled on Weavy's Editing Tools palette. All server-side via ffmpeg
+  // (video) + Pillow / ffmpeg-image-filter (image).
+  | 'crop'
+  | 'resize'
+  | 'blur'
+  | 'invert'
+  | 'extract-frame';
 
 export type PortDataType = 'text' | 'image' | 'video' | 'any';
 
@@ -263,6 +271,23 @@ export function defaultPortsFor(kind: NodeKind, data?: Record<string, unknown>):
         { id: 'image', side: 'in', dataType: 'image', label: 'image' },
         { id: 'out', side: 'out', dataType: 'any', label: 'out' },
       ];
+    // ---- Editing tools ----
+    // Crop / Resize / Blur / Invert accept image OR video and pass through
+    // the same media kind. Extract Video Frame accepts video and emits an
+    // image. All five are deterministic transforms.
+    case 'crop':
+    case 'resize':
+    case 'blur':
+    case 'invert':
+      return [
+        { id: 'in', side: 'in', dataType: 'any', label: 'image / video' },
+        { id: 'out', side: 'out', dataType: 'any', label: 'image / video' },
+      ];
+    case 'extract-frame':
+      return [
+        { id: 'in', side: 'in', dataType: 'video', label: 'video' },
+        { id: 'out', side: 'out', dataType: 'image', label: 'image' },
+      ];
   }
 }
 
@@ -365,6 +390,47 @@ export function defaultDataFor(kind: NodeKind): Record<string, unknown> {
         // Optional: override which key upstream image maps to. Some models
         // want `image_urls` (array) or `first_frame_image`, etc.
         imageKey: 'image_url',
+      };
+    // ---- Editing tools ----
+    case 'crop':
+      return {
+        // Aspect preset drives width/height when != 'custom'.
+        // 'custom' honors the width/height fields directly.
+        aspect: '16:9', // '1:1' | '4:5' | '9:16' | '16:9' | '2:3' | '3:2' | '21:9' | 'custom'
+        // Anchor point for the crop: 'center' | 'top' | 'bottom' | 'left'
+        // | 'right' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
+        anchor: 'center',
+        // Only used when aspect === 'custom'.
+        width: 1024,
+        height: 1024,
+      };
+    case 'resize':
+      return {
+        width: 1024,
+        height: 1024,
+        // 'stretch' distorts to fit; 'fit' letterboxes; 'fill' zooms + crops.
+        fit: 'stretch',
+      };
+    case 'blur':
+      return {
+        // 'gaussian' | 'box'. Gaussian is smoother; box is faster.
+        kind: 'gaussian',
+        // Radius in pixels. Higher = more blur.
+        radius: 8,
+      };
+    case 'invert':
+      return {
+        // Invert only the alpha channel (useful for masks) vs. RGB.
+        alphaOnly: false,
+      };
+    case 'extract-frame':
+      return {
+        // Which frame to grab. `time` (seconds) wins over `frame` when both
+        // are set. Executor resolves against the actual video duration.
+        time: 0,
+        frame: 0,
+        // Which of the two fields is authoritative in the UI: 'time' | 'frame'.
+        pickBy: 'time',
       };
   }
 }

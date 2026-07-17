@@ -2724,6 +2724,7 @@ function NodePalette({ onAdd }: { onAdd: (kind: NodeKind) => void }) {
   const groups: { category: string; label: string }[] = [
     { category: 'input', label: 'Input' },
     { category: 'gen', label: 'Generate' },
+    { category: 'edit', label: 'Edit' },
     { category: 'utility', label: 'Utility' },
     { category: 'output', label: 'Output' },
   ];

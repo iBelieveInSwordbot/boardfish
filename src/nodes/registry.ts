@@ -111,7 +111,7 @@ export type PreviewProps = {
 export type NodeKindDef = {
   kind: NodeKind;
   label: string;
-  category: 'input' | 'gen' | 'utility' | 'output';
+  category: 'input' | 'gen' | 'edit' | 'utility' | 'output';
   /**
    * When true, this kind is hidden from the palette and the right-click
    * "Add node" menu. The reducer may still spawn one via seedDefaultGraph
@@ -2449,6 +2449,303 @@ const VideoDescriberInspector: NodeKindDef['Inspector'] = ({ node, onChangeData,
 };
 
 // ---------------------------------------------------------------------------
+// Editing Tools — Crop / Resize / Blur / Invert / Extract Video Frame
+// ---------------------------------------------------------------------------
+// All 5 are deterministic transforms server-side (ffmpeg + Pillow). They
+// live in the palette's new 'edit' category. None cost money, so they're
+// added to CHEAP_KINDS in dag-executor.ts — they always auto-run as
+// ancestors/descendants of a Generate click.
+//
+// Model:
+//   - Preview: shows the last output image/video thumb, or a placeholder.
+//   - Inspector: kind-specific parameter controls + a Generate button that
+//     kicks the transform. Cheap enough that we could re-run on every
+//     data change, but explicit Generate matches the rest of the editor
+//     UX and keeps latency predictable.
+// ---------------------------------------------------------------------------
+
+const EditToolPreview: FC<PreviewProps> = ({ node, onChangeData, onPromoteFrame }) => {
+  const out = node.output;
+  const kind: 'image' | 'video' = out?.kind === 'video' ? 'video' : 'image';
+  const currentUrl = out?.dataUrl;
+  const runtime = (node.data.__runtime ?? {}) as { error?: unknown };
+  const err = typeof runtime.error === 'string' ? runtime.error : '';
+  const rawHistory = (node.data as { __history?: unknown }).__history;
+  const history = Array.isArray(rawHistory) ? (rawHistory as NodeOutput[]) : [];
+  if (err) {
+    return createElement(
+      'div',
+      { className: 'ne-node-preview ne-node-preview--text is-readonly' },
+      createElement('textarea', {
+        className: 'ne-node-inline-textarea ne-node-inline-textarea--readonly',
+        value: err,
+        readOnly: true,
+        spellCheck: false,
+        style: { color: '#ff8f88' },
+        onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+        onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
+        onClick: (e: React.MouseEvent) => e.stopPropagation(),
+        onWheel: (e: React.WheelEvent) => e.stopPropagation(),
+      }),
+      createElement('div', { className: 'ne-node-preview-caption' }, `⚠️ ${node.kind}`),
+    );
+  }
+  return renderMediaThumb({
+    node,
+    kind,
+    currentUrl,
+    history,
+    onPromoteFrame,
+    onChangeData,
+    labelHint: node.kind,
+  });
+};
+
+// Small shared helper for a labeled number input in the Inspector.
+function renderNumberField(
+  label: string,
+  value: number,
+  onChange: (n: number) => void,
+  opts?: { min?: number; max?: number; step?: number; help?: string },
+) {
+  return createElement(
+    Fragment,
+    null,
+    createElement('label', { className: 'ne-inspect-label' }, label),
+    createElement('input', {
+      className: 'ne-inspect-input',
+      type: 'number',
+      value: String(value),
+      min: opts?.min,
+      max: opts?.max,
+      step: opts?.step ?? 1,
+      onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+        const n = Number(e.target.value);
+        if (Number.isFinite(n)) onChange(n);
+      },
+    }),
+    opts?.help
+      ? createElement('div', { className: 'ne-inspect-note', style: { fontSize: '11px' } }, opts.help)
+      : null,
+  );
+}
+
+function renderSelectField<T extends string>(
+  label: string,
+  value: T,
+  options: { value: T; label: string }[],
+  onChange: (v: T) => void,
+  help?: string,
+) {
+  return createElement(
+    Fragment,
+    null,
+    createElement('label', { className: 'ne-inspect-label' }, label),
+    createElement(
+      'select',
+      {
+        className: 'ne-inspect-select',
+        value,
+        onChange: (e: React.ChangeEvent<HTMLSelectElement>) => onChange(e.target.value as T),
+      },
+      ...options.map((o) => createElement('option', { key: o.value, value: o.value }, o.label)),
+    ),
+    help ? createElement('div', { className: 'ne-inspect-note', style: { fontSize: '11px' } }, help) : null,
+  );
+}
+
+const CROP_ASPECTS: { value: string; label: string }[] = [
+  { value: '1:1', label: '1:1 square' },
+  { value: '4:5', label: '4:5 portrait' },
+  { value: '9:16', label: '9:16 vertical' },
+  { value: '16:9', label: '16:9 widescreen' },
+  { value: '2:3', label: '2:3 portrait' },
+  { value: '3:2', label: '3:2 landscape' },
+  { value: '21:9', label: '21:9 cinematic' },
+  { value: 'custom', label: 'Custom dims' },
+];
+
+const CROP_ANCHORS: { value: string; label: string }[] = [
+  { value: 'center', label: 'Center' },
+  { value: 'top', label: 'Top' },
+  { value: 'bottom', label: 'Bottom' },
+  { value: 'left', label: 'Left' },
+  { value: 'right', label: 'Right' },
+  { value: 'top-left', label: 'Top-left' },
+  { value: 'top-right', label: 'Top-right' },
+  { value: 'bottom-left', label: 'Bottom-left' },
+  { value: 'bottom-right', label: 'Bottom-right' },
+];
+
+const CropInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
+  const aspect = String(node.data.aspect ?? '16:9');
+  const anchor = String(node.data.anchor ?? 'center');
+  const width = Number(node.data.width ?? 1024);
+  const height = Number(node.data.height ?? 1024);
+  return createElement(
+    'div',
+    { className: 'ne-inspect-body' },
+    createElement(
+      'div',
+      { className: 'ne-inspect-note' },
+      'Crop the upstream image or video. Pick an aspect preset (largest centered crop that fits), or Custom to set exact dims.',
+    ),
+    renderSelectField('Aspect ratio', aspect, CROP_ASPECTS, (v) => onChangeData({ aspect: v })),
+    renderSelectField('Anchor', anchor, CROP_ANCHORS, (v) => onChangeData({ anchor: v })),
+    aspect === 'custom'
+      ? createElement(
+          Fragment,
+          null,
+          renderNumberField('Width (px)', width, (n) => onChangeData({ width: Math.max(1, Math.round(n)) }), { min: 1 }),
+          renderNumberField('Height (px)', height, (n) => onChangeData({ height: Math.max(1, Math.round(n)) }), { min: 1 }),
+        )
+      : null,
+    createElement(
+      'button',
+      {
+        className: 'ne-inspect-generate' + (inFlight ? ' is-busy' : ''),
+        type: 'button',
+        disabled: inFlight,
+        onClick: () => onGenerate(),
+      },
+      inFlight ? 'Cropping…' : 'Apply Crop',
+    ),
+  );
+};
+
+const RESIZE_FITS: { value: string; label: string }[] = [
+  { value: 'stretch', label: 'Stretch (distort to fit)' },
+  { value: 'fit', label: 'Fit (letterbox, no crop)' },
+  { value: 'fill', label: 'Fill (zoom + crop)' },
+];
+
+const ResizeInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
+  const width = Number(node.data.width ?? 1024);
+  const height = Number(node.data.height ?? 1024);
+  const fit = String(node.data.fit ?? 'stretch');
+  return createElement(
+    'div',
+    { className: 'ne-inspect-body' },
+    createElement(
+      'div',
+      { className: 'ne-inspect-note' },
+      'Resize the upstream image or video to exact pixel dimensions. “Stretch” changes the aspect ratio; “fit” and “fill” preserve it differently.',
+    ),
+    renderNumberField('Width (px)', width, (n) => onChangeData({ width: Math.max(1, Math.round(n)) }), { min: 1 }),
+    renderNumberField('Height (px)', height, (n) => onChangeData({ height: Math.max(1, Math.round(n)) }), { min: 1 }),
+    renderSelectField('Fit mode', fit, RESIZE_FITS, (v) => onChangeData({ fit: v })),
+    createElement(
+      'button',
+      {
+        className: 'ne-inspect-generate' + (inFlight ? ' is-busy' : ''),
+        type: 'button',
+        disabled: inFlight,
+        onClick: () => onGenerate(),
+      },
+      inFlight ? 'Resizing…' : 'Apply Resize',
+    ),
+  );
+};
+
+const BLUR_KINDS: { value: string; label: string }[] = [
+  { value: 'gaussian', label: 'Gaussian (smoother)' },
+  { value: 'box', label: 'Fast Box (faster)' },
+];
+
+const BlurInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
+  const kind = String(node.data.kind ?? 'gaussian');
+  const radius = Number(node.data.radius ?? 8);
+  return createElement(
+    'div',
+    { className: 'ne-inspect-body' },
+    createElement(
+      'div',
+      { className: 'ne-inspect-note' },
+      'Blur the upstream image or video. Radius is in pixels; higher = more blur.',
+    ),
+    renderSelectField('Blur type', kind, BLUR_KINDS, (v) => onChangeData({ kind: v })),
+    renderNumberField('Radius (px)', radius, (n) => onChangeData({ radius: Math.max(0, n) }), { min: 0, max: 200, step: 1 }),
+    createElement(
+      'button',
+      {
+        className: 'ne-inspect-generate' + (inFlight ? ' is-busy' : ''),
+        type: 'button',
+        disabled: inFlight,
+        onClick: () => onGenerate(),
+      },
+      inFlight ? 'Blurring…' : 'Apply Blur',
+    ),
+  );
+};
+
+const InvertInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
+  const alphaOnly = Boolean(node.data.alphaOnly ?? false);
+  return createElement(
+    'div',
+    { className: 'ne-inspect-body' },
+    createElement(
+      'div',
+      { className: 'ne-inspect-note' },
+      'Invert the upstream media. Toggle “alpha only” if you’re inverting a mask.',
+    ),
+    createElement(
+      'label',
+      { className: 'ne-inspect-label', style: { display: 'flex', alignItems: 'center', gap: 8 } },
+      createElement('input', {
+        type: 'checkbox',
+        checked: alphaOnly,
+        onChange: (e: React.ChangeEvent<HTMLInputElement>) => onChangeData({ alphaOnly: e.target.checked }),
+      }),
+      'Invert alpha channel only',
+    ),
+    createElement(
+      'button',
+      {
+        className: 'ne-inspect-generate' + (inFlight ? ' is-busy' : ''),
+        type: 'button',
+        disabled: inFlight,
+        onClick: () => onGenerate(),
+      },
+      inFlight ? 'Inverting…' : 'Apply Invert',
+    ),
+  );
+};
+
+const EXTRACT_PICK_BY: { value: string; label: string }[] = [
+  { value: 'time', label: 'Time (seconds)' },
+  { value: 'frame', label: 'Frame number' },
+];
+
+const ExtractFrameInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
+  const pickBy = String(node.data.pickBy ?? 'time');
+  const time = Number(node.data.time ?? 0);
+  const frame = Number(node.data.frame ?? 0);
+  return createElement(
+    'div',
+    { className: 'ne-inspect-body' },
+    createElement(
+      'div',
+      { className: 'ne-inspect-note' },
+      'Extract a single frame from an upstream video as a PNG image.',
+    ),
+    renderSelectField('Pick by', pickBy, EXTRACT_PICK_BY, (v) => onChangeData({ pickBy: v })),
+    pickBy === 'time'
+      ? renderNumberField('Time (sec)', time, (n) => onChangeData({ time: Math.max(0, n) }), { min: 0, step: 0.1, help: 'Seconds from the start of the video.' })
+      : renderNumberField('Frame #', frame, (n) => onChangeData({ frame: Math.max(0, Math.round(n)) }), { min: 0, step: 1, help: 'Zero-indexed frame number.' }),
+    createElement(
+      'button',
+      {
+        className: 'ne-inspect-generate' + (inFlight ? ' is-busy' : ''),
+        type: 'button',
+        disabled: inFlight,
+        onClick: () => onGenerate(),
+      },
+      inFlight ? 'Extracting…' : 'Extract Frame',
+    ),
+  );
+};
+
+// ---------------------------------------------------------------------------
 // Registry table
 // ---------------------------------------------------------------------------
 
@@ -2603,6 +2900,62 @@ export const NODE_KINDS: Record<NodeKind, NodeKindDef> = {
     ports: (data) => defaultPortsFor('custom-fal', data),
     Preview: CustomFalPreview,
     Inspector: CustomFalInspector,
+  },
+  // ---- Editing tools ----
+  'crop': {
+    kind: 'crop',
+    label: 'Crop',
+    category: 'edit',
+    defaultWidth: 220,
+    defaultHeight: 220,
+    defaultData: () => defaultDataFor('crop'),
+    ports: (data) => defaultPortsFor('crop', data),
+    Preview: EditToolPreview,
+    Inspector: CropInspector,
+  },
+  'resize': {
+    kind: 'resize',
+    label: 'Resize',
+    category: 'edit',
+    defaultWidth: 220,
+    defaultHeight: 220,
+    defaultData: () => defaultDataFor('resize'),
+    ports: (data) => defaultPortsFor('resize', data),
+    Preview: EditToolPreview,
+    Inspector: ResizeInspector,
+  },
+  'blur': {
+    kind: 'blur',
+    label: 'Blur',
+    category: 'edit',
+    defaultWidth: 220,
+    defaultHeight: 200,
+    defaultData: () => defaultDataFor('blur'),
+    ports: (data) => defaultPortsFor('blur', data),
+    Preview: EditToolPreview,
+    Inspector: BlurInspector,
+  },
+  'invert': {
+    kind: 'invert',
+    label: 'Invert',
+    category: 'edit',
+    defaultWidth: 200,
+    defaultHeight: 180,
+    defaultData: () => defaultDataFor('invert'),
+    ports: (data) => defaultPortsFor('invert', data),
+    Preview: EditToolPreview,
+    Inspector: InvertInspector,
+  },
+  'extract-frame': {
+    kind: 'extract-frame',
+    label: 'Extract Video Frame',
+    category: 'edit',
+    defaultWidth: 220,
+    defaultHeight: 220,
+    defaultData: () => defaultDataFor('extract-frame'),
+    ports: (data) => defaultPortsFor('extract-frame', data),
+    Preview: EditToolPreview,
+    Inspector: ExtractFrameInspector,
   },
 };
 

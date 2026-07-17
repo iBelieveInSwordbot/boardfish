@@ -112,6 +112,12 @@ export async function executeGraph(
   // from their own data or just pass inputs through; they never hit an
   // API or spend money, so requiring the user to click Generate on them
   // would just be friction.
+  //
+  // NOTE: Editing tools (crop/resize/blur/invert/extract-frame) are
+  // deliberately NOT in this set. They're cheap CPU-wise but they still
+  // do server-side ffmpeg work that takes seconds for videos, so we want
+  // the user to click Generate explicitly rather than fire on every
+  // upstream change.
   const CHEAP_KINDS = new Set([
     'text-prompt',
     'panel-ref',
@@ -383,6 +389,11 @@ async function runNode(
     case 'llm-run':          return runLlmRun(node, inputs, ctx);
     case 'image-describer':  return runImageDescriber(node, inputs, ctx);
     case 'video-describer':  return runVideoDescriber(node, inputs, ctx);
+    case 'crop':             return runEditTool(node, inputs, ctx, 'crop');
+    case 'resize':           return runEditTool(node, inputs, ctx, 'resize');
+    case 'blur':              return runEditTool(node, inputs, ctx, 'blur');
+    case 'invert':           return runEditTool(node, inputs, ctx, 'invert');
+    case 'extract-frame':    return runEditTool(node, inputs, ctx, 'extract-frame');
     default: {
       // Exhaustiveness guard without using `never` (keeps things loose in case
       // the parallel subagent introduces new node kinds).
@@ -969,4 +980,79 @@ function buildFalInput(
   }
 
   return out;
+}
+
+// ---------- Editing tools ----------
+//
+// All 5 editing tools (crop / resize / blur / invert / extract-frame) share
+// the same runner shape: pull the upstream image or video data URL, POST it
+// to the ai-proxy along with the node's kind + data blob, and read back a
+// transformed data URL. The server does the ffmpeg / Pillow work — no
+// browser image manipulation, so behavior stays identical for image and
+// video inputs and we avoid Canvas 2D quirks / memory pressure in the
+// browser.
+//
+// Endpoint: POST /api/edit/apply
+//   { tool, data, mediaKind, dataUrl }
+//   → { ok, dataUrl, mediaKind }
+//
+// mediaKind on the way in tells the server whether to expect image or
+// video encoding. mediaKind on the way out tells us what NodeOutput kind
+// to emit (usually the same as input, except extract-frame which always
+// outputs image).
+
+type EditTool = 'crop' | 'resize' | 'blur' | 'invert' | 'extract-frame';
+
+async function runEditTool(
+  node: BaseNode,
+  inputs: ResolvedInputs,
+  ctx: RunCtx,
+  tool: EditTool,
+): Promise<NodeOutput> {
+  // Resolve the upstream media. Editing tools accept EITHER an image or a
+  // video on the 'in' port (except extract-frame which requires video).
+  const imgUrl = inputs.byPort['in']?.dataUrl ?? inputs.images[0];
+  const vidUrl = inputs.byPort['in']?.dataUrl ?? inputs.videos[0];
+  const upstreamKind: 'image' | 'video' | undefined =
+    inputs.byPort['in']?.kind === 'video' || inputs.videos.length > 0 ? 'video'
+    : inputs.byPort['in']?.kind === 'image' || inputs.images.length > 0 ? 'image'
+    : undefined;
+  const dataUrl = upstreamKind === 'video' ? vidUrl : imgUrl;
+
+  if (!dataUrl) {
+    throw new Error(
+      `${tool}: no upstream image or video. Wire one into the input port.`,
+    );
+  }
+  if (tool === 'extract-frame' && upstreamKind !== 'video') {
+    throw new Error('Extract Video Frame: upstream must be a video.');
+  }
+
+  ctx.onProgress(`Applying ${tool}\u2026`);
+  const body = {
+    tool,
+    data: node.data,
+    mediaKind: upstreamKind ?? 'image',
+    dataUrl,
+  };
+  const res = await fetch('/api/edit/apply', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: ctx.signal,
+  });
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try {
+      const err = await res.json();
+      if (err?.error) msg = err.error;
+    } catch { /* ignore */ }
+    throw new Error(`${tool}: ${msg}`);
+  }
+  const json = await res.json() as { ok: true; dataUrl: string; mediaKind: 'image' | 'video'; mime?: string };
+  ctx.onProgress(`${tool} complete.`);
+  if (json.mediaKind === 'video') {
+    return { kind: 'video', dataUrl: json.dataUrl, mime: json.mime ?? 'video/mp4' };
+  }
+  return { kind: 'image', dataUrl: json.dataUrl, mime: json.mime ?? 'image/png' };
 }

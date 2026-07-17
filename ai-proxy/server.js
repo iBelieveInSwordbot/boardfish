@@ -1217,6 +1217,282 @@ app.post('/api/llm/describe-video', async (req, res) => {
   }
 });
 
+// ---------- Editing tools endpoint ----------
+//
+// One endpoint handles all 5 editing tools (crop, resize, blur, invert,
+// extract-frame). Shells to ffmpeg for both images and videos so we get
+// consistent behavior across media kinds without pulling in a Python
+// image lib. All operations are deterministic (no API cost).
+//
+// POST /api/edit/apply { tool, data, mediaKind, dataUrl }
+//   → { ok, dataUrl, mediaKind, mime }
+
+const EDIT_TMP_DIR = path.join(__dirname, 'tmp-edit');
+try { mkdirSync(EDIT_TMP_DIR, { recursive: true }); } catch { /* ignore */ }
+
+// Sweep old files >1h at boot so tmp-edit doesn't grow forever.
+try {
+  const dirents = readdirSync(EDIT_TMP_DIR);
+  const cutoff = Date.now() - 60 * 60_000;
+  for (const name of dirents) {
+    const p = path.join(EDIT_TMP_DIR, name);
+    try { if (statSync(p).mtimeMs < cutoff) unlinkSync(p); } catch { /* ignore */ }
+  }
+} catch { /* ignore */ }
+
+// Run ffmpeg with the given args. Rejects if exit code != 0. Stderr is
+// preserved for error messages (ffmpeg puts real diagnostic info on stderr).
+function runFfmpeg(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('ffmpeg', args);
+    let stderr = '';
+    child.stderr.on('data', (b) => { stderr += b.toString(); });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve(stderr);
+      else reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-600)}`));
+    });
+  });
+}
+
+// ffprobe for video dimensions / duration. Returns { width, height, duration, nb_frames? }.
+function runFfprobe(inputPath) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      '-v', 'error',
+      '-select_streams', 'v:0',
+      '-show_entries', 'stream=width,height,nb_frames,r_frame_rate:format=duration',
+      '-of', 'json',
+      inputPath,
+    ];
+    const child = spawn('ffprobe', args);
+    let out = '';
+    let stderr = '';
+    child.stdout.on('data', (b) => { out += b.toString(); });
+    child.stderr.on('data', (b) => { stderr += b.toString(); });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code !== 0) return reject(new Error(`ffprobe exited ${code}: ${stderr}`));
+      try {
+        const parsed = JSON.parse(out);
+        const s = parsed.streams?.[0] || {};
+        const width = Number(s.width) || 0;
+        const height = Number(s.height) || 0;
+        const duration = Number(parsed.format?.duration) || 0;
+        const nbFrames = Number(s.nb_frames) || 0;
+        // r_frame_rate is e.g. "30000/1001" — evaluate.
+        let fps = 0;
+        if (typeof s.r_frame_rate === 'string' && s.r_frame_rate.includes('/')) {
+          const [num, den] = s.r_frame_rate.split('/').map(Number);
+          if (den > 0) fps = num / den;
+        }
+        resolve({ width, height, duration, nbFrames, fps });
+      } catch (e) { reject(e); }
+    });
+  });
+}
+
+// Aspect string "W:H" → { w, h }. Returns null for 'custom' or malformed.
+function parseAspect(aspect) {
+  if (!aspect || aspect === 'custom') return null;
+  const m = String(aspect).match(/^(\d+):(\d+)$/);
+  if (!m) return null;
+  const w = Number(m[1]); const h = Number(m[2]);
+  if (w <= 0 || h <= 0) return null;
+  return { w, h };
+}
+
+// Largest-fitting crop rectangle inside (srcW x srcH) matching aspect w:h.
+// Returns { w, h } of the crop — caller decides the (x, y) offset.
+function fitCrop(srcW, srcH, aspectW, aspectH) {
+  const srcAR = srcW / srcH;
+  const dstAR = aspectW / aspectH;
+  if (srcAR > dstAR) {
+    // Source is wider — crop horizontally.
+    const h = srcH;
+    const w = Math.round(h * dstAR);
+    return { w, h };
+  }
+  const w = srcW;
+  const h = Math.round(w / dstAR);
+  return { w, h };
+}
+
+// Compute crop x/y from anchor keyword.
+function anchorOffset(srcW, srcH, cropW, cropH, anchor) {
+  let x = Math.round((srcW - cropW) / 2);
+  let y = Math.round((srcH - cropH) / 2);
+  const a = String(anchor || 'center');
+  if (a.includes('left')) x = 0;
+  if (a.includes('right')) x = srcW - cropW;
+  if (a.includes('top')) y = 0;
+  if (a.includes('bottom')) y = srcH - cropH;
+  return { x: Math.max(0, x), y: Math.max(0, y) };
+}
+
+// Build the ffmpeg -vf filter chain for a given editing tool.
+function buildFilter(tool, data, probe) {
+  const srcW = probe.width || 0;
+  const srcH = probe.height || 0;
+  switch (tool) {
+    case 'crop': {
+      const aspect = String(data.aspect ?? '16:9');
+      const anchor = String(data.anchor ?? 'center');
+      let cropW, cropH;
+      if (aspect === 'custom') {
+        cropW = Math.max(1, Math.round(Number(data.width) || srcW));
+        cropH = Math.max(1, Math.round(Number(data.height) || srcH));
+        cropW = Math.min(cropW, srcW);
+        cropH = Math.min(cropH, srcH);
+      } else {
+        const ar = parseAspect(aspect);
+        if (!ar) throw new Error(`Invalid crop aspect "${aspect}"`);
+        const fit = fitCrop(srcW, srcH, ar.w, ar.h);
+        cropW = fit.w; cropH = fit.h;
+      }
+      const { x, y } = anchorOffset(srcW, srcH, cropW, cropH, anchor);
+      return `crop=${cropW}:${cropH}:${x}:${y}`;
+    }
+    case 'resize': {
+      const w = Math.max(1, Math.round(Number(data.width) || srcW));
+      const h = Math.max(1, Math.round(Number(data.height) || srcH));
+      const fit = String(data.fit ?? 'stretch');
+      if (fit === 'stretch') return `scale=${w}:${h}`;
+      if (fit === 'fit') {
+        // Letterbox: scale-to-fit then pad to exact size.
+        return `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:black`;
+      }
+      // fill: scale-to-cover then center-crop.
+      return `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h}`;
+    }
+    case 'blur': {
+      const radius = Math.max(0, Number(data.radius) || 0);
+      const kind = String(data.kind ?? 'gaussian');
+      if (kind === 'box') {
+        // boxblur: luma_radius:luma_power. Power 1 is a single pass.
+        const r = Math.round(radius);
+        return `boxblur=${r}:1`;
+      }
+      // gblur sigma is the effective radius parameter.
+      return `gblur=sigma=${radius.toFixed(2)}`;
+    }
+    case 'invert': {
+      const alphaOnly = Boolean(data.alphaOnly);
+      // For alpha-only inversion, split into alpha + rgb, invert alpha, then
+      // merge back. `negate=alpha=1` inverts alpha only when set to 1.
+      if (alphaOnly) return `negate=alpha=1`;
+      return `negate`;
+    }
+    case 'extract-frame': {
+      // Handled specially (single -ss + -frames:v 1).
+      return null;
+    }
+    default:
+      throw new Error(`Unknown edit tool: ${tool}`);
+  }
+}
+
+app.post('/api/edit/apply', async (req, res) => {
+  const { tool, data, mediaKind, dataUrl } = req.body || {};
+  if (!tool || typeof tool !== 'string') {
+    return res.status(400).json({ error: 'tool (string) required' });
+  }
+  if (!dataUrl || typeof dataUrl !== 'string') {
+    return res.status(400).json({ error: 'dataUrl (string) required' });
+  }
+  if (!['crop', 'resize', 'blur', 'invert', 'extract-frame'].includes(tool)) {
+    return res.status(400).json({ error: `unsupported tool: ${tool}` });
+  }
+  const kind = mediaKind === 'video' ? 'video' : 'image';
+  if (tool === 'extract-frame' && kind !== 'video') {
+    return res.status(400).json({ error: 'extract-frame requires a video input' });
+  }
+
+  let inFile = null; let outFile = null;
+  try {
+    // Decode incoming data URL to a temp file. dataUrlToBuffer / mimeToExt
+    // are the same helpers used by the LLM endpoints.
+    const { buf, ext } = dataUrlToBuffer(dataUrl);
+    const hash = createHash('sha1').update(buf).digest('hex').slice(0, 12);
+    inFile = path.join(EDIT_TMP_DIR, `edit-in-${hash}.${ext}`);
+    writeFileSync(inFile, buf);
+
+    // Probe the input for dimensions (needed for crop math + resize defaults).
+    const probe = await runFfprobe(inFile);
+    if (!probe.width || !probe.height) {
+      throw new Error('Could not read input dimensions.');
+    }
+
+    // Special case: extract-frame emits a single PNG.
+    if (tool === 'extract-frame') {
+      const pickBy = String(data?.pickBy ?? 'time');
+      let timeSec = 0;
+      if (pickBy === 'frame') {
+        const f = Math.max(0, Math.round(Number(data?.frame) || 0));
+        const fps = probe.fps || 30;
+        timeSec = f / fps;
+      } else {
+        timeSec = Math.max(0, Number(data?.time) || 0);
+      }
+      // Clamp to just under duration so we don't seek past the end.
+      if (probe.duration > 0) timeSec = Math.min(timeSec, Math.max(0, probe.duration - 0.05));
+      outFile = path.join(EDIT_TMP_DIR, `edit-out-${hash}.png`);
+      await runFfmpeg([
+        '-ss', String(timeSec),
+        '-i', inFile,
+        '-frames:v', '1',
+        '-y', outFile,
+      ]);
+      const outBuf = readFileSync(outFile);
+      const outUrl = `data:image/png;base64,${outBuf.toString('base64')}`;
+      return res.json({ ok: true, dataUrl: outUrl, mediaKind: 'image', mime: 'image/png' });
+    }
+
+    // Standard filter path: build -vf, encode result.
+    const filter = buildFilter(tool, data || {}, probe);
+    if (!filter) throw new Error(`No filter for ${tool}`);
+
+    if (kind === 'image') {
+      outFile = path.join(EDIT_TMP_DIR, `edit-out-${hash}.png`);
+      await runFfmpeg([
+        '-i', inFile,
+        '-vf', filter,
+        '-frames:v', '1',
+        '-y', outFile,
+      ]);
+      const outBuf = readFileSync(outFile);
+      const outUrl = `data:image/png;base64,${outBuf.toString('base64')}`;
+      return res.json({ ok: true, dataUrl: outUrl, mediaKind: 'image', mime: 'image/png' });
+    }
+
+    // Video path — re-encode to H.264 mp4. Copy audio through (some ffmpeg
+    // builds fail if we point -c:a copy at a stream that doesn't exist, so
+    // we conditionally check the probe... but for simplicity we just pass
+    // -c:a aac and let ffmpeg drop it when no audio is present).
+    outFile = path.join(EDIT_TMP_DIR, `edit-out-${hash}.mp4`);
+    await runFfmpeg([
+      '-i', inFile,
+      '-vf', filter,
+      '-c:v', 'libx264',
+      '-pix_fmt', 'yuv420p',
+      '-preset', 'veryfast',
+      '-crf', '20',
+      '-c:a', 'copy',
+      '-movflags', '+faststart',
+      '-y', outFile,
+    ]);
+    const outBuf = readFileSync(outFile);
+    const outUrl = `data:video/mp4;base64,${outBuf.toString('base64')}`;
+    return res.json({ ok: true, dataUrl: outUrl, mediaKind: 'video', mime: 'video/mp4' });
+  } catch (err) {
+    console.error(`[edit/${tool}] error`, err);
+    res.status(500).json({ error: String(err.message || err) });
+  } finally {
+    if (inFile) { try { unlinkSync(inFile); } catch { /* ignore */ } }
+    if (outFile) { try { unlinkSync(outFile); } catch { /* ignore */ } }
+  }
+});
+
 // ---------- helpers ----------
 
 // Best-effort JSON extraction from a Ronan reply. Ronan is instructed to return
@@ -1393,6 +1669,7 @@ server.listen(PORT, HOST, () => {
   console.log(`  POST /api/llm/run           { prompt, modelId?, instructions?, imageDataUrl? }`);
   console.log(`  POST /api/llm/describe-image { imageDataUrl, modelId?, instructions? }`);
   console.log(`  POST /api/llm/describe-video { videoDataUrl, modelId?, instructions? }`);
+  console.log(`  POST /api/edit/apply        { tool, data, mediaKind, dataUrl } — crop/resize/blur/invert/extract-frame`);
   console.log(`  GET  /api/health`);
 });
 
