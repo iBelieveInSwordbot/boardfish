@@ -397,13 +397,18 @@ export function defaultDataFor(kind: NodeKind): Record<string, unknown> {
         // Aspect preset drives width/height when != 'custom'.
         // 'custom' honors the width/height fields directly.
         aspect: '16:9', // '1:1' | '4:5' | '9:16' | '16:9' | '2:3' | '3:2' | '21:9' | 'custom'
-        // Anchor point for the crop: 'center' | 'top' | 'bottom' | 'left'
-        // | 'right' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
+        // Anchor point kept for backwards compat; the interactive drag
+        // sets offsetX/offsetY directly and overrides anchor snapping.
         anchor: 'center',
         // Interactive-preview zoom — fraction (0.2–1.0) of the largest
-        // aspect-matched crop that fits inside the source. 1.0 = the full
-        // fit; 0.5 = half that size, centered by anchor.
+        // aspect-matched crop that fits inside the source.
         zoom: 1,
+        // Manual offset within the source, as a fraction of the free
+        // travel range. 0 = at anchor-implied position (i.e. what
+        // anchorOffset gives); positive/negative shifts along axis.
+        // Value -1..1 clamped by executor to keep crop inside source.
+        offsetX: 0,
+        offsetY: 0,
         // Only used when aspect === 'custom'.
         width: 1024,
         height: 1024,
@@ -413,6 +418,13 @@ export function defaultDataFor(kind: NodeKind): Record<string, unknown> {
         // Interactive-preview scale — multiplier of the source dimensions.
         // 1.0 = same size; 0.5 = half; 2.0 = double. Used by the slider.
         scale: 1,
+        // Manual offset for the resized image within the node preview.
+        // 0 = centered; -1..1 along each axis. Baked as pad+scale so the
+        // final canvas is source-sized with the scaled image placed at
+        // (offsetX, offsetY). Only takes effect when scale < 1 (there's
+        // room to move the smaller image around).
+        offsetX: 0,
+        offsetY: 0,
         // Absolute dims (used when useCustomDims=true or when the source
         // dims aren't known yet at Generate time).
         width: 1024,

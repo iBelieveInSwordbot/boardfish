@@ -2495,19 +2495,19 @@ function findUpstreamMedia(
 }
 
 // Compute the fitted crop rectangle (percent-of-source, 0–1 scale) for a
-// given aspect ratio + zoom. Used by CropPreview to overlay the crop box.
+// given aspect ratio + zoom + manual offset. Used by CropPreview to overlay
+// the crop box AND by the server to compute the ffmpeg crop args.
 function cropRectPct(
   srcW: number,
   srcH: number,
   aspect: string,
   zoom: number,
-  anchor: string,
+  offsetX: number,
+  offsetY: number,
 ): { xPct: number; yPct: number; wPct: number; hPct: number } {
   const clampedZoom = Math.max(0.2, Math.min(1, zoom));
   let cropW: number; let cropH: number;
   if (aspect === 'custom') {
-    // We can't visually preview custom dims meaningfully; show a centered
-    // clampedZoom-scaled box that matches source AR.
     cropW = srcW * clampedZoom;
     cropH = srcH * clampedZoom;
   } else {
@@ -2519,7 +2519,6 @@ function cropRectPct(
       const aw = Number(m[1]); const ah = Number(m[2]);
       const dstAR = aw / ah;
       const srcAR = srcW / srcH;
-      // Largest-fitting box that matches dstAR (matches server-side fitCrop).
       let fitW: number; let fitH: number;
       if (srcAR > dstAR) {
         fitH = srcH;
@@ -2532,32 +2531,37 @@ function cropRectPct(
       cropH = fitH * clampedZoom;
     }
   }
-  // Anchor placement (matches server-side anchorOffset).
-  let x = (srcW - cropW) / 2;
-  let y = (srcH - cropH) / 2;
-  const a = String(anchor || 'center');
-  if (a.includes('left')) x = 0;
-  if (a.includes('right')) x = srcW - cropW;
-  if (a.includes('top')) y = 0;
-  if (a.includes('bottom')) y = srcH - cropH;
+  // Center-based positioning, then offset in units of the free travel
+  // range (srcW - cropW) / 2 on each axis. offsetX = -1 pins left,
+  // +1 pins right, 0 = centered.
+  const freeX = srcW - cropW;
+  const freeY = srcH - cropH;
+  const ox = Math.max(-1, Math.min(1, offsetX || 0));
+  const oy = Math.max(-1, Math.min(1, offsetY || 0));
+  let x = (freeX / 2) + (ox * freeX / 2);
+  let y = (freeY / 2) + (oy * freeY / 2);
+  // Clamp to stay inside source.
+  x = Math.max(0, Math.min(freeX, x));
+  y = Math.max(0, Math.min(freeY, y));
   return {
-    xPct: Math.max(0, x) / srcW,
-    yPct: Math.max(0, y) / srcH,
+    xPct: x / srcW,
+    yPct: y / srcH,
     wPct: cropW / srcW,
     hPct: cropH / srcH,
   };
 }
 
-// Interactive Crop preview — shows the upstream image (or last output when
-// no upstream) with a translucent overlay marking the crop rectangle,
-// controlled by a zoom slider. Hitting Generate on the Inspector bakes.
+// Interactive Crop preview — shows the upstream image with a translucent
+// overlay marking the crop rectangle. Drag the rectangle to reposition;
+// zoom slider controls size. Deferred generate: hitting Apply bakes.
 const CropPreview: FC<PreviewProps> = ({ node, onChangeData, graph }) => {
   const upstream = findUpstreamMedia(node, graph);
   const sourceUrl = upstream?.dataUrl ?? node.output?.dataUrl;
   const sourceKind = upstream?.kind ?? node.output?.kind ?? 'image';
   const zoom = Math.max(0.2, Math.min(1, Number(node.data.zoom ?? 1)));
   const aspect = String(node.data.aspect ?? '16:9');
-  const anchor = String(node.data.anchor ?? 'center');
+  const offsetX = Math.max(-1, Math.min(1, Number(node.data.offsetX ?? 0)));
+  const offsetY = Math.max(-1, Math.min(1, Number(node.data.offsetY ?? 0)));
 
   if (!sourceUrl) {
     return createElement(
@@ -2567,8 +2571,6 @@ const CropPreview: FC<PreviewProps> = ({ node, onChangeData, graph }) => {
     );
   }
 
-  // Rendered media element — image OR video (posterized). We render at
-  // native intrinsic size but visually contained via CSS object-fit.
   const mediaEl =
     sourceKind === 'video'
       ? createElement('video', {
@@ -2582,33 +2584,84 @@ const CropPreview: FC<PreviewProps> = ({ node, onChangeData, graph }) => {
             height: '100%',
             objectFit: 'contain',
             background: '#111',
+            pointerEvents: 'none',
           },
-          onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
         })
       : createElement('img', {
           src: sourceUrl,
+          draggable: false,
           style: {
             display: 'block',
             width: '100%',
             height: '100%',
             objectFit: 'contain',
             background: '#111',
+            pointerEvents: 'none',
           },
-          onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
         });
 
-  // Since we don't know the actual source pixel dims here without loading,
-  // approximate the overlay using aspect ratio math relative to the
-  // container box. Server-side does exact ffprobe-based math at Generate.
-  // For visual purposes: use aspect × zoom to size the box relative to the
-  // container's rendered image dims. `object-fit: contain` means the image
-  // fills width OR height, so we use aspect as a stand-in — accurate for
-  // preview intent.
+  // For the visual overlay, treat the container as the source rect. We
+  // don't know actual source pixel dims without loading, but for a
+  // preview the aspect math against a "unit" source works fine — the
+  // server does exact math at Generate time.
   const rect = cropRectPct(1000, 1000 * (aspect === 'custom' ? 1 : (() => {
     const m = String(aspect).match(/^(\d+):(\d+)$/);
     if (!m) return 1;
     return Number(m[2]) / Number(m[1]);
-  })()), aspect, zoom, anchor);
+  })()), aspect, zoom, offsetX, offsetY);
+
+  // Drag state persists across renders via useRef. Pointer capture keeps
+  // release events firing even if the pointer leaves the container.
+  const dragRef = useRef<{
+    el: HTMLDivElement | null;
+    startX: number; startY: number;
+    startOffsetX: number; startOffsetY: number;
+    wPct: number; hPct: number;
+    dragging: boolean;
+  }>({
+    el: null, startX: 0, startY: 0, startOffsetX: 0, startOffsetY: 0,
+    wPct: 1, hPct: 1, dragging: false,
+  });
+  const beginDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    const el = e.currentTarget;
+    dragRef.current = {
+      el,
+      startX: e.clientX,
+      startY: e.clientY,
+      startOffsetX: offsetX,
+      startOffsetY: offsetY,
+      wPct: rect.wPct,
+      hPct: rect.hPct,
+      dragging: true,
+    };
+    try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+  };
+  const dragMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const st = dragRef.current;
+    if (!st.dragging || !st.el) return;
+    e.stopPropagation();
+    const bbox = st.el.getBoundingClientRect();
+    // Full travel range on each axis = (1 - wPct) or (1 - hPct) of the
+    // container. Offset ranges -1..1 across that travel; 1 unit of offset
+    // corresponds to (travelPx / 2) pixels.
+    const travelPxX = Math.max(1, (1 - st.wPct) * bbox.width);
+    const travelPxY = Math.max(1, (1 - st.hPct) * bbox.height);
+    const dx = (e.clientX - st.startX) / (travelPxX / 2);
+    const dy = (e.clientY - st.startY) / (travelPxY / 2);
+    const nx = Math.max(-1, Math.min(1, st.startOffsetX + dx));
+    const ny = Math.max(-1, Math.min(1, st.startOffsetY + dy));
+    onChangeData?.({ offsetX: nx, offsetY: ny });
+  };
+  const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    const st = dragRef.current;
+    if (!st.dragging) return;
+    e.stopPropagation();
+    try {
+      if (st.el) st.el.releasePointerCapture(e.pointerId);
+    } catch { /* ignore */ }
+    dragRef.current = { ...st, el: null, dragging: false };
+  };
 
   const overlayStyle: React.CSSProperties = {
     position: 'absolute',
@@ -2619,19 +2672,32 @@ const CropPreview: FC<PreviewProps> = ({ node, onChangeData, graph }) => {
     border: '2px solid #4ecdc4',
     boxShadow: '0 0 0 9999px rgba(0,0,0,0.45)',
     boxSizing: 'border-box',
-    pointerEvents: 'none',
+    pointerEvents: 'none', // dragging is on the container, not this box
+    cursor: 'move',
   };
 
   const captionCrop = aspect === 'custom'
-    ? `custom · zoom ${Math.round(zoom * 100)}%`
-    : `${aspect} · ${anchor} · zoom ${Math.round(zoom * 100)}%`;
+    ? `custom · zoom ${Math.round(zoom * 100)}% · drag to move`
+    : `${aspect} · zoom ${Math.round(zoom * 100)}% · drag to move`;
 
   return createElement(
     'div',
     { className: 'ne-node-preview ne-node-preview--edit', style: { display: 'flex', flexDirection: 'column', gap: 4 } },
     createElement(
       'div',
-      { style: { position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden', borderRadius: 4 } },
+      {
+        style: {
+          position: 'relative',
+          flex: 1, minHeight: 0, overflow: 'hidden',
+          borderRadius: 4,
+          cursor: 'move',
+          touchAction: 'none',
+        },
+        onPointerDown: beginDrag,
+        onPointerMove: dragMove,
+        onPointerUp: endDrag,
+        onPointerCancel: endDrag,
+      },
       mediaEl,
       createElement('div', { style: overlayStyle }),
     ),
@@ -2653,13 +2719,16 @@ const CropPreview: FC<PreviewProps> = ({ node, onChangeData, graph }) => {
 };
 
 // Interactive Resize preview — shows the upstream image scaled inside the
-// node body per the scale slider, so the user can visually judge the
-// output size before hitting Generate.
+// node body per the scale slider. When scale < 1 the smaller image can be
+// dragged around within the node canvas; that position is baked into the
+// output at Generate time (server pads the canvas back to source size).
 const ResizePreview: FC<PreviewProps> = ({ node, onChangeData, graph }) => {
   const upstream = findUpstreamMedia(node, graph);
   const sourceUrl = upstream?.dataUrl ?? node.output?.dataUrl;
   const sourceKind = upstream?.kind ?? node.output?.kind ?? 'image';
   const scale = Math.max(0.25, Math.min(2, Number(node.data.scale ?? 1)));
+  const offsetX = Math.max(-1, Math.min(1, Number(node.data.offsetX ?? 0)));
+  const offsetY = Math.max(-1, Math.min(1, Number(node.data.offsetY ?? 0)));
 
   if (!sourceUrl) {
     return createElement(
@@ -2669,9 +2738,23 @@ const ResizePreview: FC<PreviewProps> = ({ node, onChangeData, graph }) => {
     );
   }
 
-  // For the visual, we simulate scale by clamping the media to `scale/2`
-  // of the container size (100% container = scale 2.0). Center it.
+  // Simulate scale by clamping the media to `scale/2` of container size
+  // (100% container = scale 2.0). Center + apply offset when scale < 1.
+  // Offset only matters when the image is smaller than the canvas.
   const displayPct = Math.round((scale / 2) * 100);
+  const canMove = scale < 1;
+  const translatePctX = canMove ? offsetX * 50 : 0; // ±50% travel each way
+  const translatePctY = canMove ? offsetY * 50 : 0;
+  const mediaStyle: React.CSSProperties = {
+    display: 'block',
+    maxWidth: `${displayPct}%`,
+    maxHeight: `${displayPct}%`,
+    objectFit: 'contain',
+    outline: '1px dashed rgba(78, 205, 196, 0.7)',
+    transform: `translate(${translatePctX}%, ${translatePctY}%)`,
+    cursor: canMove ? 'move' : 'default',
+    pointerEvents: 'none',
+  };
   const mediaEl =
     sourceKind === 'video'
       ? createElement('video', {
@@ -2679,26 +2762,68 @@ const ResizePreview: FC<PreviewProps> = ({ node, onChangeData, graph }) => {
           muted: true,
           playsInline: true,
           preload: 'metadata',
-          style: {
-            display: 'block',
-            maxWidth: `${displayPct}%`,
-            maxHeight: `${displayPct}%`,
-            objectFit: 'contain',
-            outline: '1px dashed rgba(78, 205, 196, 0.7)',
-          },
-          onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+          style: mediaStyle,
         })
       : createElement('img', {
           src: sourceUrl,
-          style: {
-            display: 'block',
-            maxWidth: `${displayPct}%`,
-            maxHeight: `${displayPct}%`,
-            objectFit: 'contain',
-            outline: '1px dashed rgba(78, 205, 196, 0.7)',
-          },
-          onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+          draggable: false,
+          style: mediaStyle,
         });
+
+  // Drag to reposition the scaled image (only meaningful when scale < 1).
+  const dragRef = useRef<{
+    el: HTMLDivElement | null;
+    startX: number; startY: number;
+    startOffsetX: number; startOffsetY: number;
+    scale: number;
+    dragging: boolean;
+  }>({
+    el: null, startX: 0, startY: 0, startOffsetX: 0, startOffsetY: 0,
+    scale: 1, dragging: false,
+  });
+  const beginDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!canMove) return;
+    e.stopPropagation();
+    const el = e.currentTarget;
+    dragRef.current = {
+      el,
+      startX: e.clientX,
+      startY: e.clientY,
+      startOffsetX: offsetX,
+      startOffsetY: offsetY,
+      scale,
+      dragging: true,
+    };
+    try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+  };
+  const dragMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const st = dragRef.current;
+    if (!st.dragging || !st.el) return;
+    e.stopPropagation();
+    const bbox = st.el.getBoundingClientRect();
+    // Free travel per axis is (1 - scale) * bbox on each side. Offset
+    // -1..1 = full travel each direction from center.
+    const travelPxX = Math.max(1, (1 - st.scale) * bbox.width);
+    const travelPxY = Math.max(1, (1 - st.scale) * bbox.height);
+    const dx = (e.clientX - st.startX) / (travelPxX / 2);
+    const dy = (e.clientY - st.startY) / (travelPxY / 2);
+    const nx = Math.max(-1, Math.min(1, st.startOffsetX + dx));
+    const ny = Math.max(-1, Math.min(1, st.startOffsetY + dy));
+    onChangeData?.({ offsetX: nx, offsetY: ny });
+  };
+  const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    const st = dragRef.current;
+    if (!st.dragging) return;
+    e.stopPropagation();
+    try {
+      if (st.el) st.el.releasePointerCapture(e.pointerId);
+    } catch { /* ignore */ }
+    dragRef.current = { ...st, el: null, dragging: false };
+  };
+
+  const captionResize = canMove
+    ? `scale ${Math.round(scale * 100)}% · drag to reposition`
+    : `scale ${Math.round(scale * 100)}%`;
 
   return createElement(
     'div',
@@ -2710,7 +2835,13 @@ const ResizePreview: FC<PreviewProps> = ({ node, onChangeData, graph }) => {
           flex: 1, minHeight: 0, overflow: 'hidden', borderRadius: 4,
           background: '#111', display: 'flex', alignItems: 'center',
           justifyContent: 'center',
+          cursor: canMove ? 'move' : 'default',
+          touchAction: 'none',
         },
+        onPointerDown: beginDrag,
+        onPointerMove: dragMove,
+        onPointerUp: endDrag,
+        onPointerCancel: endDrag,
       },
       mediaEl,
     ),
@@ -2720,14 +2851,16 @@ const ResizePreview: FC<PreviewProps> = ({ node, onChangeData, graph }) => {
       value: String(Math.round(scale * 100)),
       onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
         const v = Number(e.target.value) / 100;
-        onChangeData?.({ scale: v });
+        // Reset offset when scaling up past 1.0 (no room to move anymore).
+        if (v >= 1) onChangeData?.({ scale: v, offsetX: 0, offsetY: 0 });
+        else onChangeData?.({ scale: v });
       },
       onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
       onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
       style: { width: '100%' },
       title: 'Resize scale',
     }),
-    createElement('div', { className: 'ne-node-preview-caption', style: { fontSize: 10 } }, `scale ${Math.round(scale * 100)}%`),
+    createElement('div', { className: 'ne-node-preview-caption', style: { fontSize: 10 } }, captionResize),
   );
 };
 
@@ -2832,34 +2965,23 @@ const CROP_ASPECTS: { value: string; label: string }[] = [
   { value: 'custom', label: 'Custom dims' },
 ];
 
-const CROP_ANCHORS: { value: string; label: string }[] = [
-  { value: 'center', label: 'Center' },
-  { value: 'top', label: 'Top' },
-  { value: 'bottom', label: 'Bottom' },
-  { value: 'left', label: 'Left' },
-  { value: 'right', label: 'Right' },
-  { value: 'top-left', label: 'Top-left' },
-  { value: 'top-right', label: 'Top-right' },
-  { value: 'bottom-left', label: 'Bottom-left' },
-  { value: 'bottom-right', label: 'Bottom-right' },
-];
-
 const CropInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
   const aspect = String(node.data.aspect ?? '16:9');
-  const anchor = String(node.data.anchor ?? 'center');
   const zoom = Math.max(0.2, Math.min(1, Number(node.data.zoom ?? 1)));
+  const offsetX = Math.max(-1, Math.min(1, Number(node.data.offsetX ?? 0)));
+  const offsetY = Math.max(-1, Math.min(1, Number(node.data.offsetY ?? 0)));
   const width = Number(node.data.width ?? 1024);
   const height = Number(node.data.height ?? 1024);
+  const canReset = zoom !== 1 || offsetX !== 0 || offsetY !== 0;
   return createElement(
     'div',
     { className: 'ne-inspect-body' },
     createElement(
       'div',
       { className: 'ne-inspect-note' },
-      'Crop the upstream media. Use the zoom slider on the node body to size, pick an aspect ratio, and anchor to position. Click Apply to bake the result.',
+      'Crop the upstream media. Pick an aspect ratio, drag the teal box on the node body to reposition, and use the zoom slider to size. Click Apply to bake.',
     ),
     renderSelectField('Aspect ratio', aspect, CROP_ASPECTS, (v) => onChangeData({ aspect: v })),
-    renderSelectField('Anchor', anchor, CROP_ANCHORS, (v) => onChangeData({ anchor: v })),
     createElement('label', { className: 'ne-inspect-label' }, `Zoom (${Math.round(zoom * 100)}%)`),
     createElement('input', {
       className: 'ne-inspect-input',
@@ -2869,6 +2991,18 @@ const CropInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerat
       onChange: (e: React.ChangeEvent<HTMLInputElement>) => onChangeData({ zoom: Number(e.target.value) / 100 }),
       style: { width: '100%' },
     }),
+    canReset
+      ? createElement(
+          'button',
+          {
+            type: 'button',
+            className: 'ne-inspect-secondary',
+            style: { marginTop: 4, fontSize: 11 },
+            onClick: () => onChangeData({ zoom: 1, offsetX: 0, offsetY: 0 }),
+          },
+          'Reset position + zoom',
+        )
+      : null,
     aspect === 'custom'
       ? createElement(
           Fragment,

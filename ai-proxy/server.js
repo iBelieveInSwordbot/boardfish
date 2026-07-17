@@ -1337,8 +1337,12 @@ function buildFilter(tool, data, probe) {
   switch (tool) {
     case 'crop': {
       const aspect = String(data.aspect ?? '16:9');
-      const anchor = String(data.anchor ?? 'center');
       const zoom = Math.max(0.2, Math.min(1, Number(data.zoom ?? 1)));
+      // Client-side interactive drag sets offsetX / offsetY (-1..1). When
+      // they're non-zero, they take priority over the legacy anchor keyword.
+      const hasOffset = data.offsetX !== undefined || data.offsetY !== undefined;
+      const offsetX = Math.max(-1, Math.min(1, Number(data.offsetX ?? 0)));
+      const offsetY = Math.max(-1, Math.min(1, Number(data.offsetY ?? 0)));
       let cropW, cropH;
       if (aspect === 'custom') {
         cropW = Math.max(1, Math.round(Number(data.width) || srcW));
@@ -1349,21 +1353,34 @@ function buildFilter(tool, data, probe) {
         const ar = parseAspect(aspect);
         if (!ar) throw new Error(`Invalid crop aspect "${aspect}"`);
         const fit = fitCrop(srcW, srcH, ar.w, ar.h);
-        // Apply zoom (0.2–1.0) as a scale-down factor from the fitted crop.
-        // 1.0 = full fitted crop; 0.5 = half-size crop, centered by anchor.
         cropW = Math.max(1, Math.round(fit.w * zoom));
         cropH = Math.max(1, Math.round(fit.h * zoom));
       }
-      // Ffmpeg's crop filter refuses even/odd width/height mismatches on
-      // some codecs. Round to even values to be safe.
+      // Ffmpeg's crop filter needs even width/height on some codecs.
       if (cropW % 2 !== 0) cropW -= 1;
       if (cropH % 2 !== 0) cropH -= 1;
-      const { x, y } = anchorOffset(srcW, srcH, cropW, cropH, anchor);
+      let x, y;
+      if (hasOffset) {
+        // Center + offset in free-travel units. offsetX -1 = pinned left,
+        // 0 = centered, +1 = pinned right.
+        const freeX = srcW - cropW;
+        const freeY = srcH - cropH;
+        x = Math.round((freeX / 2) + (offsetX * freeX / 2));
+        y = Math.round((freeY / 2) + (offsetY * freeY / 2));
+        x = Math.max(0, Math.min(freeX, x));
+        y = Math.max(0, Math.min(freeY, y));
+      } else {
+        const anchor = String(data.anchor ?? 'center');
+        const pos = anchorOffset(srcW, srcH, cropW, cropH, anchor);
+        x = pos.x; y = pos.y;
+      }
       return `crop=${cropW}:${cropH}:${x}:${y}`;
     }
     case 'resize': {
       const useCustom = Boolean(data.useCustomDims);
       const scale = Math.max(0.05, Math.min(4, Number(data.scale ?? 1)));
+      const offsetX = Math.max(-1, Math.min(1, Number(data.offsetX ?? 0)));
+      const offsetY = Math.max(-1, Math.min(1, Number(data.offsetY ?? 0)));
       let w, h;
       if (useCustom) {
         w = Math.max(1, Math.round(Number(data.width) || srcW));
@@ -1373,17 +1390,34 @@ function buildFilter(tool, data, probe) {
         w = Math.max(1, Math.round(srcW * scale));
         h = Math.max(1, Math.round(srcH * scale));
       }
-      // Round to even for codec compatibility.
       if (w % 2 !== 0) w -= 1;
       if (h % 2 !== 0) h -= 1;
       const fit = String(data.fit ?? 'stretch');
-      if (!useCustom || fit === 'stretch') return `scale=${w}:${h}`;
-      if (fit === 'fit') {
-        // Letterbox: scale-to-fit then pad to exact size.
-        return `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:black`;
+      if (useCustom) {
+        // Custom dims path — unchanged, doesn't use offset.
+        if (fit === 'stretch') return `scale=${w}:${h}`;
+        if (fit === 'fit') {
+          return `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:black`;
+        }
+        return `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h}`;
       }
-      // fill: scale-to-cover then center-crop.
-      return `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h}`;
+      // Scale-mode: when scale >= 1, no offset room, just plain resize.
+      // When scale < 1, we scale down THEN pad back to source dims and
+      // place the scaled image at offsetX/offsetY within the canvas.
+      // This matches the interactive preview (scaled image sitting inside
+      // a source-sized transparent-bordered canvas).
+      if (scale >= 1 || (Math.abs(offsetX) < 0.001 && Math.abs(offsetY) < 0.001)) {
+        return `scale=${w}:${h}`;
+      }
+      // Pad back to source dims with the scaled image at (padX, padY).
+      // padX/padY = center + offset in free travel space.
+      const freeX = Math.max(0, srcW - w);
+      const freeY = Math.max(0, srcH - h);
+      let padX = Math.round((freeX / 2) + (offsetX * freeX / 2));
+      let padY = Math.round((freeY / 2) + (offsetY * freeY / 2));
+      padX = Math.max(0, Math.min(freeX, padX));
+      padY = Math.max(0, Math.min(freeY, padY));
+      return `scale=${w}:${h},pad=${srcW}:${srcH}:${padX}:${padY}:black`;
     }
     case 'blur': {
       const radius = Math.max(0, Number(data.radius) || 0);
