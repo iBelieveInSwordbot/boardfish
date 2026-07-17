@@ -109,6 +109,84 @@ export async function importScriptFile(file: File): Promise<ImportPdfResponse> {
   return res.json() as Promise<ImportPdfResponse>;
 }
 
+// ---------- LLM (text / image-describe / video-describe) — Boardfish 6 ----------
+//
+// Node editor's Prompt Enhancer / Run Any LLM / Image Describer / Video
+// Describer nodes all route through the local ai-proxy which shells out
+// to `openclaw capability model|image|video ...`. No credentials in the
+// browser — the proxy holds provider keys via the OpenClaw catalog.
+
+export type LlmModelInfo = {
+  id: string;
+  name: string;
+  provider: string;
+  contextWindow?: number;
+  input?: string[];        // ['text'] | ['text','image'] | ['text','image','video']
+  reasoning?: boolean;
+};
+
+export type LlmModelsResponse = {
+  ok: true;
+  models: LlmModelInfo[];
+  defaultModelId: string;
+};
+
+/**
+ * List LLM models the OpenClaw catalog knows about. Cached server-side.
+ * `filter` narrows the returned set to a picker-appropriate subset:
+ *   - 'text-only'   — Prompt Enhancer / Run Any LLM (Sonnet, GPT, agents)
+ *   - 'vision-only' — Image / Video Describer (Opus, GPT; no agents)
+ *   - omitted       — union of both allow-lists.
+ */
+export async function listLlmModels(filter?: 'text-only' | 'vision-only'): Promise<LlmModelsResponse | null> {
+  try {
+    const url = filter ? `/api/llm/models?filter=${filter}` : '/api/llm/models';
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return (await res.json()) as LlmModelsResponse;
+  } catch {
+    return null;
+  }
+}
+
+export type LlmRunResponse = {
+  ok: true;
+  text: string;
+  modelId: string;
+};
+
+/**
+ * Run a one-shot text model turn with optional image reference.
+ * `imageDataUrl` (if given) is written to a temp file server-side and
+ * passed via --file to enable vision models.
+ */
+export async function runLlmText(input: {
+  prompt: string;
+  modelId?: string;
+  imageDataUrl?: string;
+  instructions?: string;
+}): Promise<LlmRunResponse> {
+  return postJson<LlmRunResponse>('/api/llm/run', input);
+}
+
+/** Describe an image using a vision model. Returns a text prompt. */
+export async function describeImage(input: {
+  imageDataUrl: string;
+  modelId?: string;
+  instructions?: string;
+}): Promise<LlmRunResponse> {
+  return postJson<LlmRunResponse>('/api/llm/describe-image', input);
+}
+
+/** Describe a video using a vision model. Returns a text prompt. */
+export async function describeVideo(input: {
+  videoDataUrl: string;
+  modelId?: string;
+  instructions?: string;
+}): Promise<LlmRunResponse> {
+  return postJson<LlmRunResponse>('/api/llm/describe-video', input);
+}
+
 // ---------- FAL passthrough (Boardfish 5 node editor) ----------
 //
 // Every FAL call from the browser goes through the local ai-proxy at

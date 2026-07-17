@@ -15,13 +15,17 @@ export type NodeKindMeta = {
 };
 
 export const NODE_KINDS_META: Record<NodeKind, NodeKindMeta> = {
-  'text-prompt':   { defaultWidth: 220, defaultHeight: 140 },
-  'image-gen':     { defaultWidth: 220, defaultHeight: 180 },
-  'movie-gen':     { defaultWidth: 220, defaultHeight: 160 },
-  'out':           { defaultWidth: 200, defaultHeight: 160 },
-  'switch':        { defaultWidth: 200, defaultHeight: 140 },
-  'null-node':     { defaultWidth: 160, defaultHeight: 100 },
-  'prompt-concat': { defaultWidth: 200, defaultHeight: 140 },
-  'custom-fal':    { defaultWidth: 220, defaultHeight: 140 },
-  'panel-ref':     { defaultWidth: 200, defaultHeight: 160 },
+  'text-prompt':     { defaultWidth: 220, defaultHeight: 140 },
+  'image-gen':       { defaultWidth: 220, defaultHeight: 180 },
+  'movie-gen':       { defaultWidth: 220, defaultHeight: 160 },
+  'out':             { defaultWidth: 200, defaultHeight: 160 },
+  'switch':          { defaultWidth: 200, defaultHeight: 140 },
+  'null-node':       { defaultWidth: 160, defaultHeight: 100 },
+  'prompt-concat':   { defaultWidth: 200, defaultHeight: 140 },
+  'prompt-enhancer': { defaultWidth: 220, defaultHeight: 160 },
+  'llm-run':         { defaultWidth: 220, defaultHeight: 160 },
+  'image-describer': { defaultWidth: 220, defaultHeight: 180 },
+  'video-describer': { defaultWidth: 220, defaultHeight: 180 },
+  'custom-fal':      { defaultWidth: 220, defaultHeight: 140 },
+  'panel-ref':       { defaultWidth: 200, defaultHeight: 160 },
 };

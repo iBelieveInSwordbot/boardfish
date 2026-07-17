@@ -33,6 +33,10 @@ export type NodeKind =
   | 'switch'
   | 'null-node'
   | 'prompt-concat'
+  | 'prompt-enhancer'
+  | 'llm-run'
+  | 'image-describer'
+  | 'video-describer'
   | 'panel-ref'
   | 'custom-fal';
 
@@ -221,6 +225,34 @@ export function defaultPortsFor(kind: NodeKind, data?: Record<string, unknown>):
       ins.push({ id: 'out', side: 'out', dataType: 'text', label: 'text' });
       return ins;
     }
+    case 'prompt-enhancer':
+      // Takes one text prompt in, emits one (enhanced) text prompt out.
+      // Enhancement instructions + model live in `data`, not on the wire.
+      return [
+        { id: 'in', side: 'in', dataType: 'text', label: 'prompt' },
+        { id: 'out', side: 'out', dataType: 'text', label: 'enhanced' },
+      ];
+    case 'llm-run':
+      // General-purpose LLM call. Text-in, text-out with an optional image
+      // reference (vision). Systems/user prompt style is folded into a
+      // single request server-side.
+      return [
+        { id: 'prompt', side: 'in', dataType: 'text', label: 'prompt' },
+        { id: 'image', side: 'in', dataType: 'image', label: 'image (opt.)' },
+        { id: 'out', side: 'out', dataType: 'text', label: 'text' },
+      ];
+    case 'image-describer':
+      // Vision → prompt. One image in, one text prompt out.
+      return [
+        { id: 'image', side: 'in', dataType: 'image', label: 'image' },
+        { id: 'out', side: 'out', dataType: 'text', label: 'prompt' },
+      ];
+    case 'video-describer':
+      // Vision (video) → prompt. One video in, one text prompt out.
+      return [
+        { id: 'video', side: 'in', dataType: 'video', label: 'video' },
+        { id: 'out', side: 'out', dataType: 'text', label: 'prompt' },
+      ];
     case 'panel-ref':
       return [
         { id: 'out', side: 'out', dataType: 'image', label: 'panel image' },
@@ -281,6 +313,37 @@ export function defaultDataFor(kind: NodeKind): Record<string, unknown> {
       return {};
     case 'prompt-concat':
       return { count: 2, separator: ' ' };
+    case 'prompt-enhancer':
+      return {
+        // modelId is a canonical OpenClaw model catalog id (e.g.
+        // 'claude-opus-4-7', 'gpt-5.2'). Empty string means "server picks
+        // its default text model" (whatever the proxy's LLM_DEFAULT_MODEL
+        // env var / catalog default resolves to).
+        modelId: '',
+        // Sensible default instructions — user can override in the Inspector.
+        instructions:
+          'Rewrite the following prompt to be more vivid and specific for a text-to-image model. Preserve the original intent. Add concrete visual detail (subject, setting, lighting, camera, mood). Return ONLY the rewritten prompt — no preamble, no quotes, no explanation.',
+      };
+    case 'llm-run':
+      return {
+        modelId: '',
+        // Optional system-style guidance concatenated with the upstream
+        // prompt text on the server. Empty by default → the upstream
+        // prompt is sent verbatim.
+        instructions: '',
+      };
+    case 'image-describer':
+      return {
+        modelId: '',
+        instructions:
+          'Describe this image as a detailed text-to-image prompt. Cover subject, composition, lighting, palette, style, mood, and camera. Return ONLY the prompt — no preamble, no quotes.',
+      };
+    case 'video-describer':
+      return {
+        modelId: '',
+        instructions:
+          'Describe this video as a detailed text-to-video prompt. Cover subject, action/motion, camera movement, setting, lighting, palette, style, mood, and pacing. Return ONLY the prompt — no preamble, no quotes.',
+      };
     case 'panel-ref':
       return {
         // Which storyboard panel this node points at (looked up by id at

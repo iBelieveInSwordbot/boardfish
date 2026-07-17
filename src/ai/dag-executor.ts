@@ -23,6 +23,9 @@ import {
   extractImageUrls,
   extractVideoUrl,
   urlToDataUrl,
+  runLlmText,
+  describeImage,
+  describeVideo,
 } from './client';
 import { getFalModel, resolveFalModelId } from './fal-models';
 import type { FalModelDef } from './fal-models';
@@ -105,16 +108,44 @@ export async function executeGraph(
   // Track which nodes should actually be *executed* (vs. just used as cached
   // upstream inputs). If startAt is given, ancestors with a valid cached
   // output are not re-run; but startAt itself and everything downstream is.
+  // Cheap/pure node kinds — always safe to run automatically. These read
+  // from their own data or just pass inputs through; they never hit an
+  // API or spend money, so requiring the user to click Generate on them
+  // would just be friction.
+  const CHEAP_KINDS = new Set([
+    'text-prompt',
+    'panel-ref',
+    'prompt-concat',
+    'null-node',
+    'switch',
+    'out',
+  ]);
   const toExecute = new Set<NodeId>();
   if (startAt) {
+    // Matt's rule (2026-07-16): clicking Generate on a specific node
+    // must NOT trigger expensive generative work on unrelated ancestors
+    // OR downstream dependents. Only:
+    //   1. startAt itself (always, that's what the user clicked)
+    //   2. Ancestors that are cheap/pure kinds (so a wired-in Text Prompt
+    //      still delivers its text without needing manual Generate)
+    //   3. Downstream dependents that are cheap/pure kinds (so an Out
+    //      node auto-refreshes preview when its upstream produces new
+    //      output — but a Movie Gen or Image Gen sitting downstream is
+    //      NEVER auto-fired; the user has to click their Generate button).
+    // This prevents things like: click Enhance on a Prompt Enhancer
+    // wired into a Movie Gen → accidentally spends money re-genning the
+    // movie. Same for Image Gen, Custom FAL, and other LLM runs sitting
+    // downstream.
+    toExecute.add(startAt);
     const downstream = descendantsOf(startAt, outgoing);
-    downstream.add(startAt);
-    for (const id of downstream) toExecute.add(id);
-    // Ancestors: only execute if they have no cached output.
+    for (const id of downstream) {
+      const n = nodesById.get(id)!;
+      if (CHEAP_KINDS.has(n.kind)) toExecute.add(id);
+    }
     for (const id of participants) {
       if (toExecute.has(id)) continue;
       const n = nodesById.get(id)!;
-      if (!hasValidOutput(n)) toExecute.add(id);
+      if (CHEAP_KINDS.has(n.kind)) toExecute.add(id);
     }
   } else {
     for (const id of participants) toExecute.add(id);
@@ -280,15 +311,6 @@ function topoSort(
   return order;
 }
 
-function hasValidOutput(n: BaseNode): boolean {
-  const o = n.output;
-  if (!o) return false;
-  // Runtime error flag lives on data.__runtime (persisted output shape doesn't
-  // include error). If a previous run set an error, treat the output as stale.
-  const runtime = (n.data.__runtime ?? {}) as { error?: unknown };
-  if (runtime.error) return false;
-  return Boolean(o.text || o.dataUrl);
-}
 
 // ---------- Input resolution ----------
 
@@ -357,6 +379,10 @@ async function runNode(
     case 'out':              return runOut(inputs);
     case 'panel-ref':        return runPanelRef(node);
     case 'custom-fal':       return runCustomFal(node, inputs, ctx);
+    case 'prompt-enhancer':  return runPromptEnhancer(node, inputs, ctx);
+    case 'llm-run':          return runLlmRun(node, inputs, ctx);
+    case 'image-describer':  return runImageDescriber(node, inputs, ctx);
+    case 'video-describer':  return runVideoDescriber(node, inputs, ctx);
     default: {
       // Exhaustiveness guard without using `never` (keeps things loose in case
       // the parallel subagent introduces new node kinds).
@@ -376,6 +402,85 @@ function runPanelRef(node: BaseNode): NodeOutput {
     throw new Error('Panel Ref: no panel picked. Open the Inspector and pick a source panel.');
   }
   return { kind: 'image', dataUrl, mime: 'image/png' };
+}
+
+// ---------- LLM-backed runners (Boardfish 6) ----------
+//
+// All four shell out to the ai-proxy which shells out to `openclaw
+// capability ...` — no provider keys touch the browser. Each node's
+// `data.modelId` is either a canonical OpenClaw model id or '' to let the
+// server pick its default text model.
+
+async function runPromptEnhancer(
+  node: BaseNode,
+  inputs: ResolvedInputs,
+  ctx: RunCtx,
+): Promise<NodeOutput> {
+  const upstream = inputs.byPort['in']?.text ?? inputs.texts[0] ?? '';
+  const prompt = String(upstream).trim();
+  if (!prompt) {
+    throw new Error('Prompt Enhancer: no upstream prompt. Wire a Text Prompt (or any text-producing node) into its input.');
+  }
+  const modelId = String((node.data as { modelId?: unknown }).modelId ?? '') || undefined;
+  const instructions = String((node.data as { instructions?: unknown }).instructions ?? '') || undefined;
+  ctx.onProgress(`Enhancing prompt via ${modelId ?? 'default LLM'}\u2026`);
+  const res = await runLlmText({ prompt, modelId, instructions });
+  ctx.onProgress('Enhancement complete.');
+  return { kind: 'text', text: res.text };
+}
+
+async function runLlmRun(
+  node: BaseNode,
+  inputs: ResolvedInputs,
+  ctx: RunCtx,
+): Promise<NodeOutput> {
+  const prompt = String(inputs.byPort['prompt']?.text ?? inputs.texts[0] ?? '').trim();
+  if (!prompt) {
+    throw new Error('Run Any LLM: no upstream prompt. Wire text into the prompt input.');
+  }
+  const modelId = String((node.data as { modelId?: unknown }).modelId ?? '') || undefined;
+  const instructions = String((node.data as { instructions?: unknown }).instructions ?? '') || undefined;
+  const imageDataUrl = inputs.byPort['image']?.dataUrl ?? inputs.images[0];
+  ctx.onProgress(
+    `Running ${modelId ?? 'default LLM'}${imageDataUrl ? ' with 1 image ref' : ''}\u2026`,
+  );
+  const res = await runLlmText({ prompt, modelId, instructions, imageDataUrl });
+  ctx.onProgress('LLM run complete.');
+  return { kind: 'text', text: res.text };
+}
+
+async function runImageDescriber(
+  node: BaseNode,
+  inputs: ResolvedInputs,
+  ctx: RunCtx,
+): Promise<NodeOutput> {
+  const imageDataUrl = inputs.byPort['image']?.dataUrl ?? inputs.images[0];
+  if (!imageDataUrl) {
+    throw new Error('Image Describer: no upstream image. Wire an Image Gen, Panel Ref, or Custom FAL image output into its input.');
+  }
+  const modelId = String((node.data as { modelId?: unknown }).modelId ?? '') || undefined;
+  const instructions = String((node.data as { instructions?: unknown }).instructions ?? '') || undefined;
+  ctx.onProgress(`Describing image via ${modelId ?? 'default vision LLM'}\u2026`);
+  const res = await describeImage({ imageDataUrl, modelId, instructions });
+  ctx.onProgress('Image described.');
+  return { kind: 'text', text: res.text };
+}
+
+async function runVideoDescriber(
+  node: BaseNode,
+  inputs: ResolvedInputs,
+  ctx: RunCtx,
+): Promise<NodeOutput> {
+  const videoDataUrl = inputs.byPort['video']?.dataUrl ?? inputs.videos[0];
+  if (!videoDataUrl) {
+    throw new Error('Video Describer: no upstream video. Wire a Movie Gen (or any video-producing node) into its input.');
+  }
+  const modelId = String((node.data as { modelId?: unknown }).modelId ?? '') || undefined;
+  const instructions = String((node.data as { instructions?: unknown }).instructions ?? '') || undefined;
+  ctx.onProgress(`Describing video via ${modelId ?? 'default vision LLM'}\u2026 (this can take a minute)`);
+  const res = await describeVideo({ videoDataUrl, modelId, instructions });
+  ctx.onProgress('Video described.');
+  return { kind: 'text', text: res.text };
 }
 
 function runPromptConcat(node: BaseNode, inputs: ResolvedInputs): NodeOutput {

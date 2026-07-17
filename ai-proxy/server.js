@@ -15,7 +15,7 @@
 import express from 'express';
 import multer from 'multer';
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, readdirSync, unlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -767,6 +767,456 @@ app.post('/api/import/pdf', pdfUpload.single('file'), async (req, res) => {
   }
 });
 
+// ---------- LLM (text / image-describe / video-describe) endpoints ----------
+//
+// Backing store for the Boardfish 6 node editor's Prompt Enhancer, Run Any
+// LLM, Image Describer, and Video Describer nodes. All shell out to the
+// OpenClaw CLI (`openclaw capability model|image|video ...`) so provider
+// credentials stay server-side.
+//
+// Model catalog is cached in-process. Restart the proxy to pick up new
+// models added via `openclaw configure`.
+
+// LLM_DEFAULT_MODEL: optional env override for the "Server default" option in
+// each Inspector's model dropdown. Falls back to a reasonable Anthropic/OpenAI
+// pick from the catalog when unset.
+const LLM_DEFAULT_MODEL = process.env.LLM_DEFAULT_MODEL || 'openai/gpt-5.4';
+
+// Curated allow-lists of models exposed to the Boardfish node UI. Matt's
+// rules (2026-07-16):
+//   • Prompt Enhancer / Run Any LLM — text quality models only:
+//     Anthropic Sonnet + OpenAI ChatGPT (+ agents appended later).
+//   • Image Describer / Video Describer — vision quality models only:
+//     Anthropic Opus + OpenAI ChatGPT (no agents; agent CLI can't take
+//     image inputs yet).
+// Default in both pickers is OpenAI ChatGPT (gpt-5.4).
+const LLM_ALLOWLIST_TEXT = new Set([
+  'anthropic/claude-sonnet-4-6',
+  'openai/gpt-5.4',
+]);
+const LLM_ALLOWLIST_VISION = new Set([
+  'anthropic/claude-opus-4-7',
+  'openai/gpt-5.4',
+]);
+// Union so /api/llm/models with no filter returns everything a client
+// might legitimately pick.
+const LLM_ALLOWLIST_ALL = new Set([...LLM_ALLOWLIST_TEXT, ...LLM_ALLOWLIST_VISION]);
+// tmp scratch dir for describe-image / describe-video file writes. We write
+// the incoming data URL to a real file because `openclaw capability image
+// describe` takes --file <path>, not stdin.
+const LLM_TMP_DIR = path.join(__dirname, 'tmp-llm');
+try { mkdirSync(LLM_TMP_DIR, { recursive: true }); } catch { /* ignore */ }
+
+let _modelsCache = null;
+let _modelsCacheAt = 0;
+const MODELS_CACHE_MS = 5 * 60_000;
+
+// Synthetic "agent" entries the model picker exposes alongside raw catalog
+// models. Each maps to an OpenClaw agent id and gets routed through
+// `openclaw agent --agent <id>` in /api/llm/run instead of
+// `capability model run`. Handy for Prompt Enhancer / Run Any LLM when Matt
+// wants a persona (Ronan the director, CarlBot the deep researcher) rather
+// than a raw model. Ids are prefixed `agent/` so the executor can detect
+// them and swap CLI paths.
+const AGENT_MODEL_ENTRIES = [
+  {
+    id: 'agent/ronan',
+    name: 'RonanBot 🔍 (director / writer)',
+    provider: 'openclaw-agent',
+    input: ['text'],
+    reasoning: false,
+  },
+  {
+    id: 'agent/carlbot',
+    name: 'CarlBot (deep research)',
+    provider: 'openclaw-agent',
+    input: ['text'],
+    reasoning: false,
+  },
+];
+
+async function fetchLlmModels() {
+  const now = Date.now();
+  if (_modelsCache && (now - _modelsCacheAt) < MODELS_CACHE_MS) return _modelsCache;
+  const { stdout } = await runOpenclaw(['capability', 'model', 'list', '--json']);
+  // The CLI wraps its JSON output with a preamble/wallpaper block; strip
+  // everything before the first '[' and after the matching ']'.
+  const first = stdout.indexOf('[');
+  const last = stdout.lastIndexOf(']');
+  if (first < 0 || last < 0) throw new Error('capability model list --json returned no JSON array');
+  const arr = JSON.parse(stdout.slice(first, last + 1));
+  // Pick a sensible default: env override wins; else fall back to the
+  // curated OpenAI ChatGPT pick (Matt's 2026-07-16 preference).
+  let defaultModelId = LLM_DEFAULT_MODEL;
+  if (!defaultModelId) {
+    const preferred = ['gpt-5.4', 'claude-sonnet-4-6', 'claude-opus-4-7'];
+    for (const p of preferred) {
+      if (arr.find((m) => m.id === p)) { defaultModelId = p; break; }
+    }
+    if (!defaultModelId && arr.length > 0) defaultModelId = arr[0].id;
+  }
+  _modelsCache = { models: arr, defaultModelId };
+  _modelsCacheAt = now;
+  return _modelsCache;
+}
+
+app.get('/api/llm/models', async (req, res) => {
+  try {
+    const filter = String(req.query.filter || '').toLowerCase();
+    const allow =
+      filter === 'vision-only' ? LLM_ALLOWLIST_VISION
+      : filter === 'text-only' ? LLM_ALLOWLIST_TEXT
+      : LLM_ALLOWLIST_ALL;
+    const { models, defaultModelId } = await fetchLlmModels();
+    // Trim to the fields the browser needs. Full catalog entries carry a lot
+    // of provider metadata (api, compat.*) that the client doesn't touch.
+    // Emit `id` as provider-qualified (`anthropic/claude-opus-4-7`) because
+    // bare ids like `claude-opus-4-7` will otherwise route to the first
+    // provider that happens to list the model — which in this workspace is
+    // ollama and 404s.
+    const trimmed = models.map((m) => {
+      const provider = m.provider || 'unknown';
+      const qualified = provider !== 'unknown' && m.id ? `${provider}/${m.id}` : (m.id || '');
+      return {
+        id: qualified,
+        name: m.name || m.id,
+        provider,
+        contextWindow: m.contextWindow,
+        input: Array.isArray(m.input) ? m.input : ['text'],
+        reasoning: !!m.reasoning,
+      };
+    });
+    // Filter to Matt's curated allow-list for the requested picker kind.
+    const filtered = trimmed.filter((m) => allow.has(m.id));
+    // Nicer display names to match Matt's phrasing — easier to scan than
+    // "Claude Sonnet 4.6" / "Claude Opus 4.7" etc.
+    for (const m of filtered) {
+      if (m.id === 'anthropic/claude-sonnet-4-6') m.name = 'Anthropic Sonnet';
+      if (m.id === 'anthropic/claude-opus-4-7') m.name = 'Anthropic Opus';
+      if (m.id === 'openai/gpt-5.4') m.name = 'OpenAI ChatGPT';
+    }
+    // Append the synthetic OpenClaw-agent entries (Ronan, CarlBot) to
+    // TEXT-only pickers. Vision pickers exclude them because the agent
+    // CLI can't accept image inputs yet.
+    if (filter !== 'vision-only') {
+      for (const a of AGENT_MODEL_ENTRIES) filtered.push({ ...a });
+    }
+    // Reassign so the response payload uses the filtered set.
+    trimmed.length = 0;
+    for (const m of filtered) trimmed.push(m);
+    // Qualify the default too so the client shows/sends the same shape.
+    let defaultQualified = defaultModelId;
+    if (defaultModelId && !defaultModelId.includes('/')) {
+      const found = models.find((m) => m.id === defaultModelId);
+      if (found?.provider) defaultQualified = `${found.provider}/${defaultModelId}`;
+    }
+    res.json({ ok: true, models: trimmed, defaultModelId: defaultQualified });
+  } catch (err) {
+    console.error('[llm/models] error', err);
+    res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
+// Decode a `data:<mime>;base64,<b64>` URL to a Buffer + inferred file ext.
+function dataUrlToBuffer(url) {
+  if (typeof url !== 'string') throw new Error('data URL is not a string');
+  const m = url.match(/^data:([^;,]+)(?:;base64)?,(.+)$/);
+  if (!m) throw new Error('data URL malformed');
+  const mime = m[1];
+  const isBase64 = url.includes(';base64,');
+  const payload = m[2];
+  const buf = isBase64
+    ? Buffer.from(payload, 'base64')
+    : Buffer.from(decodeURIComponent(payload), 'utf8');
+  const ext = mimeToExt(mime);
+  return { buf, mime, ext };
+}
+
+function mimeToExt(mime) {
+  const map = {
+    'image/png': 'png',
+    'image/jpeg': 'jpg',
+    'image/jpg': 'jpg',
+    'image/webp': 'webp',
+    'image/gif': 'gif',
+    'video/mp4': 'mp4',
+    'video/quicktime': 'mov',
+    'video/webm': 'webm',
+  };
+  return map[mime] || 'bin';
+}
+
+// Write a data URL to a temp file and return its absolute path. Caller owns
+// cleanup (best-effort; we also sweep old files > 1h at boot below).
+function dataUrlToTempFile(url, prefix) {
+  const { buf, ext } = dataUrlToBuffer(url);
+  const hash = createHash('sha1').update(buf).digest('hex').slice(0, 16);
+  const filename = `${prefix}-${hash}.${ext}`;
+  const p = path.join(LLM_TMP_DIR, filename);
+  writeFileSync(p, buf);
+  return p;
+}
+
+// Sweep any tmp files older than 1h at boot so LLM_TMP_DIR doesn't grow
+// forever. Cheap: called once, non-recursive, ignores errors.
+try {
+  const dirents = readdirSync(LLM_TMP_DIR);
+  const cutoff = Date.now() - 60 * 60_000;
+  for (const name of dirents) {
+    const p = path.join(LLM_TMP_DIR, name);
+    try {
+      if (statSync(p).mtimeMs < cutoff) unlinkSync(p);
+    } catch { /* ignore */ }
+  }
+} catch { /* directory not readable — ignore */ }
+
+async function resolveModelId(requested, filterKind = 'text-only') {
+  // Pick the right allow-list for the picker context (text vs vision).
+  const allow = filterKind === 'vision-only' ? LLM_ALLOWLIST_VISION : LLM_ALLOWLIST_TEXT;
+  // Agent entries are always valid (they route through the agent CLI, not
+  // the model CLI, so they don't need to be in the catalog).
+  const isAgent = typeof requested === 'string' && requested.startsWith('agent/');
+  // If the client sent something in the allow-list (or an agent), honor it.
+  if (isAgent) return requested;
+  if (requested && allow.has(requested)) return requested;
+  // Anything else — empty string, stale modelId from a saved project
+  // (e.g. github-copilot/*, bare claude-opus-4-7, gpt-5.4-mini) — snap
+  // to the server default so the run doesn't 500 on a ghost model.
+  if (requested) {
+    console.warn(`[llm/run] requested model "${requested}" not in ${filterKind} allow-list — falling back to default.`);
+  }
+  try {
+    const { defaultModelId } = await fetchLlmModels();
+    return defaultModelId || '';
+  } catch {
+    return '';
+  }
+}
+
+// Build the merged prompt for LLM calls: instructions (if any) + upstream
+// prompt. Instructions live as a preamble because `openclaw capability
+// model run` doesn't split system vs. user prompts on the CLI.
+function buildLlmPrompt(instructions, prompt) {
+  const instr = (instructions || '').trim();
+  const usr = (prompt || '').trim();
+  if (instr && usr) return `${instr}\n\n---\n\n${usr}`;
+  return instr || usr;
+}
+
+// Extract the plain-text reply from `openclaw capability model run --json`.
+// The CLI wraps its JSON with a preamble/wallpaper block; find the first {}
+// object.
+function extractCliJson(stdout) {
+  const first = stdout.indexOf('{');
+  const last = stdout.lastIndexOf('}');
+  if (first < 0 || last < 0) return null;
+  try { return JSON.parse(stdout.slice(first, last + 1)); }
+  catch { return null; }
+}
+
+function extractLlmText(parsed) {
+  if (!parsed) return '';
+  // capability model run --json (current shape): { outputs: [{ text, mediaUrl }] }
+  if (Array.isArray(parsed.outputs)) {
+    for (const o of parsed.outputs) {
+      if (o && typeof o.text === 'string' && o.text.trim() !== '') return o.text;
+    }
+  }
+  // Legacy shape: { text: "..." }
+  if (typeof parsed.text === 'string') return parsed.text;
+  // Legacy Ronan-style shape: { result: { payloads: [{ text }] } }
+  const p = parsed?.result?.payloads;
+  if (Array.isArray(p)) {
+    for (const pl of p) {
+      if (pl && typeof pl.text === 'string') return pl.text;
+    }
+  }
+  // capability image/video describe → { description } or { summary }
+  if (typeof parsed.description === 'string') return parsed.description;
+  if (typeof parsed.summary === 'string') return parsed.summary;
+  return '';
+}
+
+app.post('/api/llm/run', async (req, res) => {
+  const { prompt, modelId, instructions, imageDataUrl } = req.body || {};
+  console.log(`[llm/run] request modelId=${JSON.stringify(modelId)} promptLen=${(prompt||'').length} hasImage=${!!imageDataUrl}`);
+  if (!prompt || typeof prompt !== 'string') {
+    return res.status(400).json({ error: 'prompt (string) required' });
+  }
+  let tmpFile = null;
+  try {
+    const resolvedModel = await resolveModelId(modelId);
+    console.log(`[llm/run] resolvedModel=${JSON.stringify(resolvedModel)} (from requested=${JSON.stringify(modelId)})`);
+    // Agent route: `agent/<id>` synthetic entries shell to
+    // `openclaw agent --agent <id>` instead of `capability model run`. The
+    // agent picks its own model per its openclaw.json config. Image inputs
+    // aren't currently wired through the agent CLI, so if one arrives with
+    // an agent selection we degrade gracefully to text-only.
+    if (typeof resolvedModel === 'string' && resolvedModel.startsWith('agent/')) {
+      const agentId = resolvedModel.slice('agent/'.length);
+      const merged = buildLlmPrompt(instructions, prompt);
+      const args = ['agent', '--agent', agentId, '--json', '--timeout', '180', '--message', merged];
+      const { stdout } = await runOpenclaw(args);
+      let parsed = null;
+      try { parsed = JSON.parse(stdout); } catch { parsed = extractCliJson(stdout); }
+      // Agent CLI returns { result: { payloads: [{ text }] } }; fall back to
+      // the shared extractor for anything odd.
+      const text = parsed?.result?.payloads?.[0]?.text ?? extractLlmText(parsed);
+      if (!text) {
+        console.error(`[llm/run agent=${agentId}] no text. First 400:`, stdout.slice(0, 400));
+        return res.status(502).json({ error: `Agent ${agentId} returned no text`, raw: stdout.slice(0, 2000) });
+      }
+      return res.json({ ok: true, text: String(text).trim(), modelId: resolvedModel });
+    }
+    const args = ['capability', 'model', 'run', '--json'];
+    if (resolvedModel) args.push('--model', resolvedModel);
+    const merged = buildLlmPrompt(instructions, prompt);
+    args.push('--prompt', merged);
+    if (imageDataUrl && typeof imageDataUrl === 'string') {
+      tmpFile = dataUrlToTempFile(imageDataUrl, 'llm-img');
+      args.push('--file', tmpFile);
+    }
+    const { stdout } = await runOpenclaw(args);
+    const parsed = extractCliJson(stdout);
+    const text = extractLlmText(parsed);
+    if (!text) {
+      console.error('[llm/run] no text in reply. First 400:', stdout.slice(0, 400));
+      return res.status(502).json({ error: 'LLM returned no text', raw: stdout.slice(0, 2000) });
+    }
+    res.json({ ok: true, text: text.trim(), modelId: resolvedModel });
+  } catch (err) {
+    console.error('[llm/run] error', err);
+    res.status(500).json({ error: String(err.message || err) });
+  } finally {
+    // Best-effort cleanup. If the sweep at boot missed anything, delete here.
+    if (tmpFile) { try { unlinkSync(tmpFile); } catch { /* ignore */ } }
+  }
+});
+
+app.post('/api/llm/describe-image', async (req, res) => {
+  const { imageDataUrl, modelId, instructions } = req.body || {};
+  if (!imageDataUrl || typeof imageDataUrl !== 'string') {
+    return res.status(400).json({ error: 'imageDataUrl (string) required' });
+  }
+  let tmpFile = null;
+  try {
+    tmpFile = dataUrlToTempFile(imageDataUrl, 'describe-img');
+    const resolvedModel = await resolveModelId(modelId, 'vision-only');
+    // Route through `capability model run --file <img>` rather than
+    // `capability image describe`. Reasons:
+    //   1. `image describe` has a Claude PNG bug (sends the file with the
+    //      wrong media type — "specified image/jpeg but appears image/png").
+    //      `model run --file` uses a different code path that infers the
+    //      real MIME type and works for both PNG and JPEG.
+    //   2. Every vision model in the catalog can be used uniformly, and
+    //      the user's Instructions field is passed as the prompt.
+    const args = ['capability', 'model', 'run', '--json', '--file', tmpFile];
+    if (resolvedModel) args.push('--model', resolvedModel);
+    const promptText = (instructions && instructions.trim()) || 'Describe this image in detail as a text-to-image prompt.';
+    args.push('--prompt', promptText);
+    const { stdout } = await runOpenclaw(args);
+    const parsed = extractCliJson(stdout);
+    const text = extractLlmText(parsed);
+    if (!text) {
+      console.error('[llm/describe-image] no text. First 400:', stdout.slice(0, 400));
+      return res.status(502).json({ error: 'Describe-image returned no text', raw: stdout.slice(0, 2000) });
+    }
+    res.json({ ok: true, text: text.trim(), modelId: resolvedModel });
+  } catch (err) {
+    console.error('[llm/describe-image] error', err);
+    res.status(500).json({ error: String(err.message || err) });
+  } finally {
+    if (tmpFile) { try { unlinkSync(tmpFile); } catch { /* ignore */ } }
+  }
+});
+
+// Turn a video file into a single 2x3 mosaic PNG of 6 evenly-spaced
+// keyframes so any vision LLM can "describe" it without needing native
+// video-input support. Uses ffmpeg (already installed on the mini).
+async function videoToKeyframeMosaic(videoPath, mosaicPath) {
+  // First: probe duration so we can pick sane sample times.
+  const probe = await new Promise((resolve) => {
+    const child = spawn('ffprobe', ['-v', 'error', '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1', videoPath]);
+    let out = '';
+    child.stdout.on('data', (b) => { out += b.toString(); });
+    child.on('close', () => resolve(parseFloat(out.trim()) || 0));
+    child.on('error', () => resolve(0));
+  });
+  const duration = probe > 0 ? probe : 10;
+  // 6 frames, evenly spaced, skipping the first/last 5% to avoid black.
+  const start = duration * 0.05;
+  const end = duration * 0.95;
+  const N = 6;
+  const times = [];
+  for (let i = 0; i < N; i++) {
+    const t = start + ((end - start) * i) / (N - 1);
+    times.push(t.toFixed(3));
+  }
+  const args = [];
+  for (const t of times) {
+    args.push('-ss', t, '-i', videoPath);
+  }
+  const scale = times.map((_, i) => `[${i}:v]scale=640:-2:force_original_aspect_ratio=decrease,setsar=1[v${i}]`).join(';');
+  const row1 = '[v0][v1][v2]hstack=inputs=3[r1]';
+  const row2 = '[v3][v4][v5]hstack=inputs=3[r2]';
+  const stack = '[r1][r2]vstack=inputs=2[out]';
+  const filter = `${scale};${row1};${row2};${stack}`;
+  args.push('-filter_complex', filter, '-map', '[out]', '-frames:v', '1', '-y', mosaicPath);
+  await new Promise((resolve, reject) => {
+    const child = spawn('ffmpeg', args);
+    let stderr = '';
+    child.stderr.on('data', (b) => { stderr += b.toString(); });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg mosaic exited ${code}: ${stderr.slice(-400)}`));
+    });
+  });
+  return { duration, frameCount: N, times };
+}
+
+app.post('/api/llm/describe-video', async (req, res) => {
+  const { videoDataUrl, modelId, instructions } = req.body || {};
+  if (!videoDataUrl || typeof videoDataUrl !== 'string') {
+    return res.status(400).json({ error: 'videoDataUrl (string) required' });
+  }
+  let tmpFile = null;
+  let mosaicFile = null;
+  try {
+    tmpFile = dataUrlToTempFile(videoDataUrl, 'describe-vid');
+    // Extract 6 keyframes into a single mosaic PNG so we can route the
+    // "describe video" call through the same vision-LLM path as image
+    // describe. Previously used `capability video describe` which
+    // internally routes to Google Gemini regardless of --model — and
+    // Google's prepay account is out of credits. Mosaic strategy lets any
+    // vision-capable model handle video (OpenAI, Anthropic, Mistral).
+    mosaicFile = path.join(LLM_TMP_DIR, `vid-mosaic-${createHash('sha1').update(tmpFile).digest('hex').slice(0,12)}.png`);
+    const mosaicMeta = await videoToKeyframeMosaic(tmpFile, mosaicFile);
+    const resolvedModel = await resolveModelId(modelId, 'vision-only');
+    const args = ['capability', 'model', 'run', '--json', '--file', mosaicFile];
+    if (resolvedModel) args.push('--model', resolvedModel);
+    const baseInstr = (instructions && instructions.trim())
+      || 'Describe the action in this video in one detailed paragraph. Focus on what happens, camera movement, subjects, and setting. Return only the description — no preamble.';
+    const promptText = `The following image is a 3x2 mosaic of ${mosaicMeta.frameCount} keyframes sampled evenly from a ${mosaicMeta.duration.toFixed(1)}-second video. Reading left-to-right, top-to-bottom, the frames represent the video in chronological order.\n\n${baseInstr}`;
+    args.push('--prompt', promptText);
+    const { stdout } = await runOpenclaw(args, { timeout: 5 * 60_000 });
+    const parsed = extractCliJson(stdout);
+    const text = extractLlmText(parsed);
+    if (!text) {
+      console.error('[llm/describe-video] no text. First 400:', stdout.slice(0, 400));
+      return res.status(502).json({ error: 'Describe-video returned no text', raw: stdout.slice(0, 2000) });
+    }
+    res.json({ ok: true, text: text.trim(), modelId: resolvedModel });
+  } catch (err) {
+    console.error('[llm/describe-video] error', err);
+    res.status(500).json({ error: String(err.message || err) });
+  } finally {
+    if (tmpFile) { try { unlinkSync(tmpFile); } catch { /* ignore */ } }
+    if (mosaicFile) { try { unlinkSync(mosaicFile); } catch { /* ignore */ } }
+  }
+});
+
 // ---------- helpers ----------
 
 // Best-effort JSON extraction from a Ronan reply. Ronan is instructed to return
@@ -939,6 +1389,10 @@ server.listen(PORT, HOST, () => {
   console.log(`  GET  /api/styles            → list of available style presets`);
   console.log(`  POST /api/image/generate    { prompt, aspectRatio? }`);
   console.log(`  POST /api/import/pdf        multipart 'file' → { text, pages, kind }`);
+  console.log(`  GET  /api/llm/models        → list LLM models from OpenClaw catalog`);
+  console.log(`  POST /api/llm/run           { prompt, modelId?, instructions?, imageDataUrl? }`);
+  console.log(`  POST /api/llm/describe-image { imageDataUrl, modelId?, instructions? }`);
+  console.log(`  POST /api/llm/describe-video { videoDataUrl, modelId?, instructions? }`);
   console.log(`  GET  /api/health`);
 });
 

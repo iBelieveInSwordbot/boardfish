@@ -25,6 +25,8 @@ import { appendHistory, readNodeHistory } from './graph-utils';
 import { FAL_MODELS, getFalModel, resolveFalModelId } from '../ai/fal-models';
 import type { FalModelInput } from '../ai/fal-models';
 import { GenerateButtonWithCost } from '../components/GenerateButtonWithCost';
+import { listLlmModels } from '../ai/client';
+import type { LlmModelInfo } from '../ai/client';
 
 // ---------------------------------------------------------------------------
 // Panel-ref lookup context. NodeEditor provides the list of available
@@ -2133,6 +2135,320 @@ const PanelRefInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) => 
 };
 
 // ---------------------------------------------------------------------------
+// LLM node previews + inspectors (Boardfish 6)
+//
+// Prompt Enhancer, Run Any LLM, Image Describer, Video Describer all share
+// the same skeleton: a model dropdown (populated from
+// `openclaw capability model list`), an instructions textarea, and a read-
+// only preview of the produced text (for the LLM-producing ones) or a media
+// thumb (for describers).
+// ---------------------------------------------------------------------------
+
+// Module-scoped caches per filter kind so we hit /api/llm/models at most
+// once per (session, filter). Different pickers need different subsets:
+//   - text-only    — Prompt Enhancer / Run Any LLM
+//   - vision-only  — Image / Video Describer
+// Every LLM-backed inspector calls useLlmModels(kind), so caching per kind
+// avoids duplicate fetches when multiple inspectors are mounted.
+type LoadedModels = { models: LlmModelInfo[]; defaultModelId: string };
+type LlmFilter = 'text-only' | 'vision-only';
+
+const _llmCache: Record<LlmFilter, LoadedModels | null> = {
+  'text-only': null,
+  'vision-only': null,
+};
+const _llmPromise: Record<LlmFilter, Promise<LoadedModels | null> | null> = {
+  'text-only': null,
+  'vision-only': null,
+};
+
+function loadLlmModels(filter: LlmFilter) {
+  if (_llmCache[filter]) return Promise.resolve(_llmCache[filter]);
+  if (_llmPromise[filter]) return _llmPromise[filter]!;
+  _llmPromise[filter] = listLlmModels(filter).then((res) => {
+    if (!res) return null;
+    const val: LoadedModels = { models: res.models, defaultModelId: res.defaultModelId };
+    _llmCache[filter] = val;
+    return val;
+  }).catch(() => null);
+  return _llmPromise[filter]!;
+}
+
+type LlmModelsHookResult = {
+  models: LlmModelInfo[];
+  defaultModelId: string;
+  loading: boolean;
+};
+
+function useLlmModels(filter?: 'vision-only'): LlmModelsHookResult {
+  // The picker previously accepted only `'vision-only' | undefined`;
+  // omitted meant "text". Preserve that call-site contract.
+  const kind: LlmFilter = filter === 'vision-only' ? 'vision-only' : 'text-only';
+  const [state, setState] = useState<LlmModelsHookResult>(() => {
+    const cached = _llmCache[kind];
+    if (cached) {
+      return {
+        models: cached.models,
+        defaultModelId: cached.defaultModelId,
+        loading: false,
+      };
+    }
+    return { models: [], defaultModelId: '', loading: true };
+  });
+  useEffect(() => {
+    let cancelled = false;
+    loadLlmModels(kind).then((res) => {
+      if (cancelled) return;
+      if (!res) {
+        setState({ models: [], defaultModelId: '', loading: false });
+        return;
+      }
+      setState({
+        models: res.models,
+        defaultModelId: res.defaultModelId,
+        loading: false,
+      });
+    });
+    return () => { cancelled = true; };
+  }, [kind]);
+  return state;
+}
+
+/**
+ * Render the shared LLM-model + instructions form used by all four LLM
+ * nodes. `vision` restricts the dropdown to vision-capable models (used
+ * by Image / Video Describer and by Run Any LLM when an image is wired).
+ *
+ * Named `useLlmModelPickerFields` (not `render...`) so react-hooks lint
+ * sees a legitimate hook — it does call useLlmModels()/useState()/etc.
+ * It returns JSX rather than a value, which is unusual but fine.
+ */
+function useLlmModelPickerFields(
+  node: BaseNode,
+  onChangeData: (patch: Record<string, unknown>) => void,
+  opts: { vision?: boolean; instructionsLabel: string; instructionsHelp?: string; instructionsRows?: number },
+) {
+  const filter: 'vision-only' | undefined = opts.vision ? 'vision-only' : undefined;
+  const { models, defaultModelId, loading } = useLlmModels(filter);
+  const selectedRaw = String(node.data.modelId ?? '');
+  const selected = selectedRaw || defaultModelId;
+  const instructions = String(node.data.instructions ?? '');
+
+  // Group by provider so the dropdown is scannable when the catalog has
+  // dozens of models (Anthropic + OpenAI + Google + FAL + Codex etc.).
+  const byProvider = new Map<string, LlmModelInfo[]>();
+  for (const m of models) {
+    const list = byProvider.get(m.provider) ?? [];
+    list.push(m);
+    byProvider.set(m.provider, list);
+  }
+
+  return createElement(
+    Fragment,
+    null,
+    createElement('label', { className: 'ne-inspect-label' }, 'Model'),
+    createElement(
+      'select',
+      {
+        className: 'ne-inspect-select',
+        value: selected,
+        disabled: loading && models.length === 0,
+        onChange: (e: React.ChangeEvent<HTMLSelectElement>) => onChangeData({ modelId: e.target.value }),
+      },
+      // "Default" option so the user can defer to the server's LLM_DEFAULT_MODEL.
+      createElement('option', { value: '' }, defaultModelId
+        ? `✨ Server default (${defaultModelId})`
+        : '✨ Server default'),
+      ...Array.from(byProvider.entries()).map(([provider, list]) =>
+        createElement(
+          'optgroup',
+          { key: provider, label: provider },
+          ...list.map((m) => createElement('option', { key: m.id, value: m.id },
+            m.name + (m.input && m.input.includes('image') ? ' 👁️' : ''),
+          )),
+        ),
+      ),
+    ),
+    loading && models.length === 0
+      ? createElement('div', { className: 'ne-inspect-note' }, 'Loading models…')
+      : (models.length === 0
+          ? createElement('div', { className: 'ne-inspect-note' }, 'No models available. Check ai-proxy /api/llm/models.')
+          : null),
+    createElement('label', { className: 'ne-inspect-label' }, opts.instructionsLabel),
+    createElement('textarea', {
+      className: 'ne-inspect-textarea',
+      rows: opts.instructionsRows ?? 6,
+      value: instructions,
+      placeholder: opts.instructionsHelp,
+      onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => onChangeData({ instructions: e.target.value }),
+    }),
+    opts.instructionsHelp
+      ? createElement('div', { className: 'ne-inspect-note', style: { fontSize: '11px' } }, opts.instructionsHelp)
+      : null,
+  );
+}
+
+// ---- Text-output preview (used by all four LLM nodes) ----
+const LlmTextOutputPreview: FC<PreviewProps> = ({ node }) => {
+  const text = node.output?.text ?? '';
+  const runtime = (node.data.__runtime ?? {}) as { error?: unknown };
+  const err = typeof runtime.error === 'string' ? runtime.error : '';
+  const modelId = String(node.data.modelId ?? '');
+  const caption = modelId || 'server default';
+  if (err) {
+    return createElement(
+      'div',
+      { className: 'ne-node-preview ne-node-preview--text is-readonly' },
+      createElement('textarea', {
+        className: 'ne-node-inline-textarea ne-node-inline-textarea--readonly',
+        value: err,
+        readOnly: true,
+        spellCheck: false,
+        style: { color: '#ff8f88' },
+        onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+        onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
+        onClick: (e: React.MouseEvent) => e.stopPropagation(),
+        onWheel: (e: React.WheelEvent) => e.stopPropagation(),
+      }),
+      createElement('div', { className: 'ne-node-preview-caption' }, `⚠️ ${caption}`),
+    );
+  }
+  return createElement(
+    'div',
+    { className: 'ne-node-preview ne-node-preview--text is-readonly' },
+    createElement('textarea', {
+      className: 'ne-node-inline-textarea ne-node-inline-textarea--readonly',
+      value: text,
+      placeholder: 'run the graph to fill this in…',
+      readOnly: true,
+      spellCheck: false,
+      onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+      onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
+      onClick: (e: React.MouseEvent) => e.stopPropagation(),
+      onDoubleClick: (e: React.MouseEvent) => e.stopPropagation(),
+      onWheel: (e: React.WheelEvent) => e.stopPropagation(),
+    }),
+    createElement('div', { className: 'ne-node-preview-caption' }, caption),
+  );
+};
+
+const PromptEnhancerPreview = LlmTextOutputPreview;
+const LlmRunPreview = LlmTextOutputPreview;
+const ImageDescriberPreview = LlmTextOutputPreview;
+const VideoDescriberPreview = LlmTextOutputPreview;
+
+// ---- Inspectors ----
+const PromptEnhancerInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
+  return createElement(
+    'div',
+    { className: 'ne-inspect-body' },
+    createElement(
+      'div',
+      { className: 'ne-inspect-note' },
+      'Rewrites the wired-in prompt using the chosen LLM and your instructions. Output is plain text — wire it into Image Gen, Movie Gen, or another LLM.',
+    ),
+    useLlmModelPickerFields(node, onChangeData, {
+      instructionsLabel: 'Enhancement instructions',
+      instructionsHelp: 'How should the LLM refine the prompt? (system-style guidance)',
+      instructionsRows: 8,
+    }),
+    createElement(
+      'button',
+      {
+        className: 'ne-inspect-generate' + (inFlight ? ' is-busy' : ''),
+        type: 'button',
+        disabled: inFlight,
+        onClick: () => onGenerate(),
+      },
+      inFlight ? 'Enhancing…' : 'Enhance',
+    ),
+  );
+};
+
+const LlmRunInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
+  return createElement(
+    'div',
+    { className: 'ne-inspect-body' },
+    createElement(
+      'div',
+      { className: 'ne-inspect-note' },
+      'Send the upstream prompt (and optional image) to any LLM. Output is plain text.',
+    ),
+    useLlmModelPickerFields(node, onChangeData, {
+      instructionsLabel: 'System / instructions (optional)',
+      instructionsHelp: 'Leave blank to send the upstream prompt verbatim.',
+      instructionsRows: 6,
+    }),
+    createElement(
+      'button',
+      {
+        className: 'ne-inspect-generate' + (inFlight ? ' is-busy' : ''),
+        type: 'button',
+        disabled: inFlight,
+        onClick: () => onGenerate(),
+      },
+      inFlight ? 'Running…' : 'Run',
+    ),
+  );
+};
+
+const ImageDescriberInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
+  return createElement(
+    'div',
+    { className: 'ne-inspect-body' },
+    createElement(
+      'div',
+      { className: 'ne-inspect-note' },
+      'Wire an image into this node. The chosen vision LLM analyzes it and returns a text prompt you can pipe into Image Gen or Movie Gen.',
+    ),
+    useLlmModelPickerFields(node, onChangeData, {
+      vision: true,
+      instructionsLabel: 'Image instructions',
+      instructionsHelp: 'How should the LLM describe the image? Return format, focus areas, style tags…',
+      instructionsRows: 8,
+    }),
+    createElement(
+      'button',
+      {
+        className: 'ne-inspect-generate' + (inFlight ? ' is-busy' : ''),
+        type: 'button',
+        disabled: inFlight,
+        onClick: () => onGenerate(),
+      },
+      inFlight ? 'Describing…' : 'Describe Image',
+    ),
+  );
+};
+
+const VideoDescriberInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
+  return createElement(
+    'div',
+    { className: 'ne-inspect-body' },
+    createElement(
+      'div',
+      { className: 'ne-inspect-note' },
+      'Wire a video into this node. The vision LLM analyzes it and returns a text prompt. Not all models support video — Gemini 2.5 Pro / Flash are the safe picks. NOTE: model instructions are currently NOT honored by the OpenClaw CLI’s `capability video describe`; the field is captured for a future upgrade but has no effect today.',
+    ),
+    useLlmModelPickerFields(node, onChangeData, {
+      vision: true,
+      instructionsLabel: 'Model instructions (not yet wired — saved for later)',
+      instructionsHelp: 'How should the LLM describe the video? Return format, focus areas, style tags…',
+      instructionsRows: 8,
+    }),
+    createElement(
+      'button',
+      {
+        className: 'ne-inspect-generate' + (inFlight ? ' is-busy' : ''),
+        type: 'button',
+        disabled: inFlight,
+        onClick: () => onGenerate(),
+      },
+      inFlight ? 'Describing… (may take 1–2 min)' : 'Describe Video',
+    ),
+  );
+};
+
+// ---------------------------------------------------------------------------
 // Registry table
 // ---------------------------------------------------------------------------
 
@@ -2217,6 +2533,54 @@ export const NODE_KINDS: Record<NodeKind, NodeKindDef> = {
     ports: (data) => defaultPortsFor('prompt-concat', data),
     Preview: PromptConcatPreview,
     Inspector: PromptConcatInspector,
+  },
+  'prompt-enhancer': {
+    kind: 'prompt-enhancer',
+    label: 'Prompt Enhancer',
+    // 'utility' groups it near Prompt Concat in the palette. It's text
+    // in / text out, no image/video.
+    category: 'utility',
+    defaultWidth: 220,
+    defaultHeight: 160,
+    defaultData: () => defaultDataFor('prompt-enhancer'),
+    ports: (data) => defaultPortsFor('prompt-enhancer', data),
+    Preview: PromptEnhancerPreview,
+    Inspector: PromptEnhancerInspector,
+  },
+  'llm-run': {
+    kind: 'llm-run',
+    label: 'Run Any LLM',
+    // 'gen' because it's an inference call that costs money and produces
+    // a fresh generation, like Image Gen / Movie Gen.
+    category: 'gen',
+    defaultWidth: 220,
+    defaultHeight: 160,
+    defaultData: () => defaultDataFor('llm-run'),
+    ports: (data) => defaultPortsFor('llm-run', data),
+    Preview: LlmRunPreview,
+    Inspector: LlmRunInspector,
+  },
+  'image-describer': {
+    kind: 'image-describer',
+    label: 'Image Describer',
+    category: 'gen',
+    defaultWidth: 220,
+    defaultHeight: 180,
+    defaultData: () => defaultDataFor('image-describer'),
+    ports: (data) => defaultPortsFor('image-describer', data),
+    Preview: ImageDescriberPreview,
+    Inspector: ImageDescriberInspector,
+  },
+  'video-describer': {
+    kind: 'video-describer',
+    label: 'Video Describer',
+    category: 'gen',
+    defaultWidth: 220,
+    defaultHeight: 180,
+    defaultData: () => defaultDataFor('video-describer'),
+    ports: (data) => defaultPortsFor('video-describer', data),
+    Preview: VideoDescriberPreview,
+    Inspector: VideoDescriberInspector,
   },
   'panel-ref': {
     kind: 'panel-ref',
