@@ -1565,9 +1565,23 @@ const TextPromptInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) =
 
   // Structured mode.
   const renderField = (f: PromptField) => {
+    // Visible delete button — one click to remove any field. Complements the
+    // ⋮ menu (which keeps Move Up / Move Down / Delete for keyboard/discovery).
+    const deleteBtn = createElement(
+      'button',
+      {
+        type: 'button',
+        className: 'tpv2-field-delete-btn',
+        title: 'Delete field',
+        'aria-label': 'Delete field',
+        onClick: () => deleteField(f.id),
+      },
+      '✕',
+    );
     const menu = createElement(
       'div',
-      { style: { position: 'relative' } },
+      { style: { position: 'relative', display: 'flex', alignItems: 'center', gap: 2 } },
+      deleteBtn,
       createElement(
         'button',
         {

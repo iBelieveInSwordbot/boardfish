@@ -313,6 +313,11 @@ const IMAGE_PROMPT_TEMPLATE: PromptField[] = [
   { id: '__t__', kind: 'text', label: 'Color Palette', value: '', join: 'inline' },
 ];
 
+const MULTI_PROMPT_TEMPLATE: PromptField[] = [
+  { id: '__t__', kind: 'text', label: 'Prompt 1', value: '', join: 'block' },
+  { id: '__t__', kind: 'text', label: 'Prompt 2', value: '', join: 'block' },
+];
+
 const MOVIE_PROMPT_TEMPLATE: PromptField[] = [
   { id: '__t__', kind: 'text', label: 'Video Shot Description', value: '', join: 'block' },
   { id: '__t__', kind: 'dialogue', label: 'Dialogue', value: '', join: 'block' },
@@ -337,6 +342,7 @@ const MOVIE_PROMPT_TEMPLATE: PromptField[] = [
 export const BUILT_IN_PRESETS: NodePresetTemplate[] = [
   { id: 'builtin:image-prompt', name: 'Image Prompt', fields: IMAGE_PROMPT_TEMPLATE, builtIn: true },
   { id: 'builtin:movie-prompt', name: 'Movie Prompt', fields: MOVIE_PROMPT_TEMPLATE, builtIn: true },
+  { id: 'builtin:multi-prompt', name: 'Multi Prompt', fields: MULTI_PROMPT_TEMPLATE, builtIn: true },
 ];
 
 /**

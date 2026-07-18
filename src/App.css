@@ -2361,6 +2361,22 @@ input, textarea, select {
   font-size: 12px;
 }
 .tpv2-field-menu-btn:hover { opacity: 1; }
+.tpv2-field-delete-btn {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.45;
+  padding: 2px 6px;
+  font-size: 12px;
+  border-radius: 4px;
+  transition: background 120ms, opacity 120ms, color 120ms;
+}
+.tpv2-field-delete-btn:hover {
+  opacity: 1;
+  background: rgba(255, 80, 80, 0.18);
+  color: rgb(255, 140, 140);
+}
 .tpv2-join-pill {
   font-size: 10px;
   padding: 2px 6px;
