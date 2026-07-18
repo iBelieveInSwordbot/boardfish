@@ -61,7 +61,9 @@ import {
 } from '../nodes/graph-utils';
 import { executeGraph } from '../ai/dag-executor';
 import { NODE_KINDS } from '../nodes/registry';
-import { PanelRefContext, type PanelRefOption } from '../nodes/registry';
+import { PanelRefContext, ActorRefContext, type PanelRefOption, type ActorRefOption } from '../nodes/registry';
+import { explodeFieldsToTextParts, type PromptField } from '../nodes/text-prompt-fields';
+import { defaultDataFor, defaultPortsFor } from '../nodes/types';
 import { NodeView, ContextMenu, type ContextMenuState } from './NodeCanvas';
 import { InspectorPane } from './NodeInspector';
 import { FalCreditsPill } from './FalCreditsPill';
@@ -80,6 +82,9 @@ export type NodeEditorProps = {
   panelAspect: string;
   /** Options fed into the Panel Ref node's picker (id + label + imageDataUrl). */
   availablePanels?: PanelRefOption[];
+  /** Options for the Text Prompt v2 Dialogue field's actor picker.
+   *  Sourced from the project's "Actors" storyboard. */
+  availableActors?: ActorRefOption[];
   /** Persist the graph + Out media to the panel. Does NOT unmount the editor;
    *  App-side lifecycle is controlled by onClose / onDetachedFinish so keep-
    *  alive detachment can be respected. */
@@ -211,7 +216,7 @@ const DROP_ON_WIRE_RADIUS = 40;
 // ---------------------------------------------------------------------------
 
 export function NodeEditor(props: NodeEditorProps) {
-  const { initialGraph, panelPrompt, panelAspect, availablePanels, onSave, onClose, hidden, onDetachedFinish, onCloseWhileBusy, onBusyChange } = props;
+  const { initialGraph, panelPrompt, panelAspect, availablePanels, availableActors, onSave, onClose, hidden, onDetachedFinish, onCloseWhileBusy, onBusyChange } = props;
 
   // Seed default 3-node chain if the incoming graph is empty. Applied once.
   const seeded = useMemo<NodeGraph>(() => {
@@ -323,6 +328,101 @@ export function NodeEditor(props: NodeEditorProps) {
     }
     window.addEventListener('boardfish:open-prompt-editor', onOpenPromptEditor);
     return () => window.removeEventListener('boardfish:open-prompt-editor', onOpenPromptEditor);
+  }, []);
+
+  // Listen for the Text Prompt v2 Inspector's Explode button. Splits a
+  // structured text-prompt node into one node per non-empty field wired
+  // through a prompt-concat, so downstream image-gen keeps working.
+  useEffect(() => {
+    function onExplode(e: Event) {
+      const detail = (e as CustomEvent).detail as { nodeId?: string } | undefined;
+      const nid = detail?.nodeId;
+      if (!nid) return;
+      const current = graphRef.current;
+      const target = current.nodes.find((n) => n.id === nid);
+      if (!target || target.kind !== 'text-prompt') return;
+
+      const fields = (target.data as { fields?: PromptField[] }).fields;
+      const legacyText = String((target.data as { text?: unknown }).text ?? '');
+      const parts = explodeFieldsToTextParts(fields, legacyText);
+
+      if (parts.length <= 1) {
+        // Nothing meaningful to explode — just flatten to a legacy node.
+        const flat = parts[0] ?? '';
+        dispatch({
+          type: 'UPDATE_NODE_DATA',
+          id: nid,
+          patch: { fields: undefined, presetName: undefined, text: flat },
+        });
+        console.warn('[boardfish] Explode: nothing to split (0-1 non-empty fields). Cleared fields.');
+        return;
+      }
+
+      const anyBlock =
+        Array.isArray(fields) &&
+        fields.some((f) => f.kind !== 'section' && (f as { join?: string }).join === 'block');
+      const separator = anyBlock ? '\n' : ' ';
+
+      // Build the new nodes + edges.
+      const N = parts.length;
+      const originX = target.x;
+      const originY = target.y;
+      const stackX = originX - 280;
+      const nodeSpacingY = 140;
+
+      const newTextNodes: BaseNode[] = parts.map((p, i) => {
+        const data = { ...defaultDataFor('text-prompt'), text: p };
+        return {
+          id: newId('n'),
+          kind: 'text-prompt',
+          x: stackX,
+          y: originY + (i - (N - 1) / 2) * nodeSpacingY,
+          ports: defaultPortsFor('text-prompt', data),
+          data,
+        } as BaseNode;
+      });
+
+      const concatData = { ...defaultDataFor('prompt-concat'), count: N, separator };
+      const concatNode: BaseNode = {
+        id: newId('n'),
+        kind: 'prompt-concat',
+        x: originX,
+        y: originY,
+        ports: defaultPortsFor('prompt-concat', concatData),
+        data: concatData,
+      };
+
+      // Wire each text-prompt.out -> concat.in{i}, and rewire outbound
+      // edges of the original node to come from concat.out.
+      const newEdges: Edge[] = newTextNodes.map((tn, i) => ({
+        id: newId('e'),
+        from: { nodeId: tn.id, portId: 'out' as PortId },
+        to: { nodeId: concatNode.id, portId: (`in${i}`) as PortId },
+      }));
+
+      const outbound = current.edges.filter((e) => e.from.nodeId === nid);
+      const rewired: Edge[] = outbound.map((e) => ({
+        id: newId('e'),
+        from: { nodeId: concatNode.id, portId: 'out' as PortId },
+        to: e.to,
+      }));
+
+      const nextNodes = current.nodes
+        .filter((n) => n.id !== nid)
+        .concat(newTextNodes, [concatNode]);
+      const nextEdges = current.edges
+        .filter((e) => e.from.nodeId !== nid && e.to.nodeId !== nid)
+        .concat(newEdges, rewired);
+
+      const nextGraph: NodeGraph = {
+        ...current,
+        nodes: nextNodes,
+        edges: nextEdges,
+      };
+      dispatch({ type: 'SET_GRAPH', graph: nextGraph, dirty: true });
+    }
+    window.addEventListener('boardfish:explode-text-prompt', onExplode);
+    return () => window.removeEventListener('boardfish:explode-text-prompt', onExplode);
   }, []);
 
   /**
@@ -1777,6 +1877,7 @@ export function NodeEditor(props: NodeEditorProps) {
   // -------------------------------------------------------------------------
 
   return (
+    <ActorRefContext.Provider value={{ actors: availableActors ?? [] }}>
     <PanelRefContext.Provider value={{ panels: availablePanels ?? [] }}>
     <div
       className="ne-root"
@@ -2215,6 +2316,7 @@ Drag empty canvas to select · Shift-click to add · ⌘X/⌘C/⌘V · Opt-drag 
       })()}
     </div>
     </PanelRefContext.Provider>
+    </ActorRefContext.Provider>
   );
 }
 

@@ -27,6 +27,22 @@ import type { FalModelInput } from '../ai/fal-models';
 import { GenerateButtonWithCost } from '../components/GenerateButtonWithCost';
 import { listLlmModels } from '../ai/client';
 import type { LlmModelInfo } from '../ai/client';
+import {
+  listTextPromptPresets,
+  saveTextPromptPreset,
+  deleteTextPromptPreset,
+  type TextPromptPreset,
+} from '../ai/client';
+import {
+  PRESET_GROUPS,
+  BUILT_IN_PRESETS,
+  cloneBuiltInPreset,
+  cloneFieldsFresh,
+  concatFields,
+  makeFieldId,
+  type PromptField,
+  type PresetGroupId,
+} from './text-prompt-fields';
 
 // ---------------------------------------------------------------------------
 // Panel-ref lookup context. NodeEditor provides the list of available
@@ -47,6 +63,23 @@ export type PanelRefOption = {
 export const PanelRefContext = createContext<{
   panels: PanelRefOption[];
 }>({ panels: [] });
+
+// ---------------------------------------------------------------------------
+// Actor-ref lookup context. NodeEditor provides the list of actors culled
+// from the project's "Actors" storyboard so the Text Prompt v2 Dialogue
+// field can render a picker. Optional — undefined means "not in an app
+// context" or no Actors storyboard exists yet.
+// ---------------------------------------------------------------------------
+export type ActorRefOption = {
+  id: string;           // panel id from the Actors storyboard
+  name: string;         // first field value (actor name)
+  description?: string;
+  thumbUrl?: string;    // panel image if present
+};
+
+export const ActorRefContext = createContext<{
+  actors: ActorRefOption[];
+}>({ actors: [] });
 
 // Local view of a FAL model as this file needs it (id + label + coming-soon flag).
 // Sourced from src/ai/fal-models.ts, filtered by kind.
@@ -452,6 +485,31 @@ function renderMediaThumb(opts: {
 
 const TextPromptPreview: FC<PreviewProps> = ({ node, onChangeData, onRun }) => {
   const text = String(node.data.text ?? '');
+  const fields = (node.data as { fields?: PromptField[] }).fields;
+  const structured = Array.isArray(fields) && fields.length > 0;
+
+  // Structured mode: read-only concat preview. Users edit fields in the
+  // Inspector — the node body just shows the resolved prompt so a glance
+  // tells them what will actually go to the model.
+  if (structured) {
+    const composed = concatFields(fields, text).trim();
+    return createElement(
+      'div',
+      { className: 'ne-node-preview ne-node-preview--text' },
+      composed
+        ? createElement(
+            'div',
+            { className: 'ne-node-preview-text' },
+            truncate(composed, 300),
+          )
+        : createElement(
+            'div',
+            { className: 'ne-node-preview-empty' },
+            '(empty prompt — fill fields in Inspector)',
+          ),
+    );
+  }
+
   // Read-only fallback if the parent didn't give us onChangeData. Keeps the
   // old behavior for anyone who instantiates the preview in isolation.
   if (!onChangeData) {
@@ -1182,19 +1240,677 @@ function renderDurationControl(
 }
 
 const TextPromptInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) => {
-  const value = String(node.data.text ?? '');
+  const legacyText = String(node.data.text ?? '');
+  const fields = ((node.data as { fields?: PromptField[] }).fields ?? []) as PromptField[];
+  const structured = fields.length > 0;
+  const presetName = String((node.data as { presetName?: unknown }).presetName ?? '');
+
+  const { actors } = useContext(ActorRefContext);
+  const [savedPresets, setSavedPresets] = useState<TextPromptPreset[]>(() => {
+    try {
+      const raw = localStorage.getItem('boardfish:text-prompt-presets:v1');
+      if (!raw) return [];
+      const j = JSON.parse(raw);
+      return Array.isArray(j) ? j : [];
+    } catch {
+      return [];
+    }
+  });
+  const [managingPresets, setManagingPresets] = useState(false);
+  const [openMenuFieldId, setOpenMenuFieldId] = useState<string | null>(null);
+  const [openAddMenu, setOpenAddMenu] = useState(false);
+  const [openPresetSubmenu, setOpenPresetSubmenu] = useState(false);
+
+  // Refresh preset list on mount. Falls back to cached localStorage if the
+  // server call fails so power-users on an offline dev box aren't stuck.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await listTextPromptPresets();
+        if (cancelled) return;
+        setSavedPresets(r.presets ?? []);
+        try {
+          localStorage.setItem(
+            'boardfish:text-prompt-presets:v1',
+            JSON.stringify(r.presets ?? []),
+          );
+        } catch { /* quota errors ignored */ }
+      } catch {
+        // Fall back to whatever's in localStorage already.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const setFields = (next: PromptField[]) => {
+    onChangeData({ fields: next });
+  };
+
+  const applyPreset = (presetId: string) => {
+    // Built-in first, then user-saved.
+    let nextFields: PromptField[] | null = null;
+    let nextName = '';
+    const builtIn = BUILT_IN_PRESETS.find((b) => b.id === presetId);
+    if (builtIn) {
+      nextFields = cloneBuiltInPreset(builtIn.id);
+      nextName = builtIn.name;
+    } else {
+      const saved = savedPresets.find((p) => p.id === presetId);
+      if (saved) {
+        nextFields = cloneFieldsFresh(saved.fields as PromptField[]);
+        nextName = saved.name;
+      }
+    }
+    if (!nextFields) return;
+    const hasContent =
+      structured && fields.some((f) =>
+        f.kind !== 'section' && String((f as { value?: string }).value ?? '').trim() !== '',
+      );
+    if (hasContent) {
+      // eslint-disable-next-line no-alert
+      const ok = window.confirm('Replace current fields with this preset? Existing values will be lost (legacy `text` is kept as a fallback).');
+      if (!ok) return;
+    }
+    // If the current legacy text has content and the preset's first text
+    // field is empty, move it into that field so nothing gets orphaned.
+    if (legacyText.trim()) {
+      const firstText = nextFields.find((f) => f.kind === 'text') as
+        | Extract<PromptField, { kind: 'text' }>
+        | undefined;
+      if (firstText && !firstText.value.trim()) {
+        firstText.value = legacyText;
+      }
+    }
+    onChangeData({ fields: nextFields, presetName: nextName });
+  };
+
+  const clearPreset = () => {
+    if (structured) {
+      const hasContent = fields.some((f) =>
+        f.kind !== 'section' && String((f as { value?: string }).value ?? '').trim() !== '',
+      );
+      if (hasContent) {
+        // eslint-disable-next-line no-alert
+        const ok = window.confirm('Discard structured fields and return to a single legacy textarea?');
+        if (!ok) return;
+      }
+    }
+    onChangeData({ fields: undefined, presetName: undefined });
+  };
+
+  const savePresetPrompt = async () => {
+    if (!structured) return;
+    // eslint-disable-next-line no-alert
+    const name = window.prompt('Preset name:', presetName || 'My preset');
+    if (!name || !name.trim()) return;
+    try {
+      const r = await saveTextPromptPreset(name.trim(), fields);
+      const next = [...savedPresets, r.preset];
+      setSavedPresets(next);
+      try {
+        localStorage.setItem('boardfish:text-prompt-presets:v1', JSON.stringify(next));
+      } catch { /* ignore */ }
+      onChangeData({ presetName: r.preset.name });
+    } catch (e) {
+      // Server unavailable — fall back to localStorage-only save.
+      const localId = 'local_' + Math.random().toString(36).slice(2, 10);
+      const preset = { id: localId, name: name.trim(), fields, createdAt: Date.now() };
+      const next = [...savedPresets, preset];
+      setSavedPresets(next);
+      try {
+        localStorage.setItem('boardfish:text-prompt-presets:v1', JSON.stringify(next));
+      } catch { /* ignore */ }
+      onChangeData({ presetName: preset.name });
+      // eslint-disable-next-line no-alert
+      window.alert(`Saved locally (server unavailable): ${String((e as Error)?.message || e)}`);
+    }
+  };
+
+  const deleteSavedPreset = async (id: string) => {
+    try {
+      await deleteTextPromptPreset(id);
+    } catch { /* ignore — still remove from local list */ }
+    const next = savedPresets.filter((p) => p.id !== id);
+    setSavedPresets(next);
+    try {
+      localStorage.setItem('boardfish:text-prompt-presets:v1', JSON.stringify(next));
+    } catch { /* ignore */ }
+  };
+
+  const updateField = (id: string, patch: Partial<PromptField>) => {
+    const next = fields.map((f) => (f.id === id ? ({ ...f, ...patch } as PromptField) : f));
+    setFields(next);
+  };
+
+  const moveField = (id: string, delta: number) => {
+    const idx = fields.findIndex((f) => f.id === id);
+    if (idx < 0) return;
+    const j = idx + delta;
+    if (j < 0 || j >= fields.length) return;
+    const next = [...fields];
+    const [f] = next.splice(idx, 1);
+    next.splice(j, 0, f);
+    setFields(next);
+    setOpenMenuFieldId(null);
+  };
+
+  const deleteField = (id: string) => {
+    setFields(fields.filter((f) => f.id !== id));
+    setOpenMenuFieldId(null);
+  };
+
+  const addField = (kind: PromptField['kind'], presetGroup?: PresetGroupId) => {
+    let f: PromptField;
+    if (kind === 'section') {
+      f = { id: makeFieldId(), kind: 'section', label: 'Section' };
+    } else if (kind === 'dialogue') {
+      f = { id: makeFieldId(), kind: 'dialogue', label: 'Dialogue', value: '', join: 'block' };
+    } else if (kind === 'preset-text') {
+      f = {
+        id: makeFieldId(),
+        kind: 'preset-text',
+        label: presetGroup ? PRESET_GROUPS[presetGroup].label : 'Preset',
+        value: '',
+        presetGroup: presetGroup ?? 'shot-type',
+        join: 'inline',
+      };
+    } else {
+      f = { id: makeFieldId(), kind: 'text', label: 'Text', value: '', join: 'block' };
+    }
+    setFields([...fields, f]);
+    setOpenAddMenu(false);
+    setOpenPresetSubmenu(false);
+  };
+
+  const onExplode = () => {
+    if (!structured) return;
+    window.dispatchEvent(
+      new CustomEvent('boardfish:explode-text-prompt', { detail: { nodeId: node.id } }),
+    );
+  };
+
+  // ---------------- render ----------------
+
+  const presetRow = createElement(
+    'div',
+    { className: 'tpv2-preset-row' },
+    createElement('label', { className: 'ne-inspect-label', style: { margin: 0 } }, 'Preset'),
+    createElement(
+      'select',
+      {
+        className: 'ne-inspect-select',
+        value: '',
+        onChange: (e: React.ChangeEvent<HTMLSelectElement>) => {
+          const v = e.target.value;
+          e.target.value = '';
+          if (!v) return;
+          if (v === '__clear__') { clearPreset(); return; }
+          if (v === '__save__') { void savePresetPrompt(); return; }
+          if (v === '__manage__') { setManagingPresets(true); return; }
+          applyPreset(v);
+        },
+      },
+      createElement(
+        'option',
+        { value: '' },
+        structured
+          ? `— ${presetName || 'Custom fields'} —`
+          : '— Legacy single-field —',
+      ),
+      ...BUILT_IN_PRESETS.map((b) =>
+        createElement('option', { key: b.id, value: b.id }, `${b.name} (built-in)`),
+      ),
+      savedPresets.length > 0
+        ? createElement(
+            'optgroup',
+            { key: 'saved', label: 'Saved' },
+            ...savedPresets.map((p) =>
+              createElement('option', { key: p.id, value: p.id }, p.name),
+            ),
+          )
+        : null,
+      createElement('option', { key: 'sep1', value: '', disabled: true }, '──────'),
+      structured
+        ? createElement('option', { key: 'save', value: '__save__' }, 'Save current as…')
+        : null,
+      savedPresets.length > 0
+        ? createElement('option', { key: 'manage', value: '__manage__' }, 'Manage saved…')
+        : null,
+      structured
+        ? createElement('option', { key: 'clear', value: '__clear__' }, 'Custom (clear preset)')
+        : null,
+    ),
+  );
+
+  const manageDialog = managingPresets
+    ? createElement(
+        'div',
+        {
+          style: {
+            padding: 8,
+            marginBottom: 12,
+            background: 'rgba(0,0,0,0.25)',
+            border: '1px solid rgba(255,255,255,0.12)',
+            borderRadius: 6,
+          },
+        },
+        createElement(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 } },
+          createElement(
+            'span',
+            { style: { fontWeight: 600, flex: 1 } },
+            'Saved presets',
+          ),
+          createElement(
+            'button',
+            {
+              type: 'button',
+              className: 'tpv2-field-menu-btn',
+              onClick: () => setManagingPresets(false),
+              title: 'Close',
+            },
+            '✕',
+          ),
+        ),
+        savedPresets.length === 0
+          ? createElement('div', { className: 'ne-inspect-note' }, 'No saved presets yet.')
+          : createElement(
+              'div',
+              { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+              ...savedPresets.map((p) =>
+                createElement(
+                  'div',
+                  {
+                    key: p.id,
+                    style: { display: 'flex', alignItems: 'center', gap: 8 },
+                  },
+                  createElement('span', { style: { flex: 1 } }, p.name),
+                  createElement(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'tpv2-field-menu-btn',
+                      onClick: () => { void deleteSavedPreset(p.id); },
+                      title: 'Delete',
+                    },
+                    '🗑',
+                  ),
+                ),
+              ),
+            ),
+      )
+    : null;
+
+  // Legacy mode — render a single textarea. Preset picker still shown at top
+  // so the user can promote to structured mode at any time.
+  if (!structured) {
+    return createElement(
+      'div',
+      { className: 'ne-inspect-body' },
+      presetRow,
+      manageDialog,
+      createElement('label', { className: 'ne-inspect-label' }, 'Prompt'),
+      createElement('textarea', {
+        className: 'ne-inspect-textarea',
+        rows: 8,
+        value: legacyText,
+        placeholder: 'Describe the shot…',
+        onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) =>
+          onChangeData({ text: e.target.value }),
+      }),
+    );
+  }
+
+  // Structured mode.
+  const renderField = (f: PromptField) => {
+    const menu = createElement(
+      'div',
+      { style: { position: 'relative' } },
+      createElement(
+        'button',
+        {
+          type: 'button',
+          className: 'tpv2-field-menu-btn',
+          title: 'Field menu',
+          onClick: () =>
+            setOpenMenuFieldId((prev) => (prev === f.id ? null : f.id)),
+        },
+        '⋮',
+      ),
+      openMenuFieldId === f.id
+        ? createElement(
+            'div',
+            {
+              style: {
+                position: 'absolute',
+                right: 0,
+                top: '100%',
+                zIndex: 20,
+                background: '#1a1a1f',
+                border: '1px solid rgba(255,255,255,0.15)',
+                borderRadius: 6,
+                padding: 4,
+                minWidth: 120,
+                boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+              },
+              onMouseLeave: () => setOpenMenuFieldId(null),
+            },
+            createElement(
+              'button',
+              {
+                type: 'button',
+                className: 'tpv2-field-menu-btn',
+                style: { display: 'block', width: '100%', textAlign: 'left', padding: '4px 8px' },
+                onClick: () => moveField(f.id, -1),
+              },
+              '↑ Move up',
+            ),
+            createElement(
+              'button',
+              {
+                type: 'button',
+                className: 'tpv2-field-menu-btn',
+                style: { display: 'block', width: '100%', textAlign: 'left', padding: '4px 8px' },
+                onClick: () => moveField(f.id, 1),
+              },
+              '↓ Move down',
+            ),
+            createElement(
+              'button',
+              {
+                type: 'button',
+                className: 'tpv2-field-menu-btn',
+                style: { display: 'block', width: '100%', textAlign: 'left', padding: '4px 8px' },
+                onClick: () => deleteField(f.id),
+              },
+              '🗑 Delete',
+            ),
+          )
+        : null,
+    );
+
+    if (f.kind === 'section') {
+      return createElement(
+        'div',
+        { key: f.id, className: 'tpv2-field tpv2-field-section' },
+        createElement(
+          'div',
+          { className: 'tpv2-field-header' },
+          createElement('input', {
+            className: 'tpv2-field-label-input',
+            value: f.label,
+            onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
+              updateField(f.id, { label: e.target.value }),
+          }),
+          menu,
+        ),
+      );
+    }
+
+    const joinPill = createElement(
+      'button',
+      {
+        type: 'button',
+        className: 'tpv2-join-pill' + ((f as { join?: string }).join === 'block' ? ' is-block' : ''),
+        title: 'Toggle inline / block join',
+        onClick: () => {
+          const current = (f as { join: 'inline' | 'block' }).join;
+          updateField(f.id, { join: current === 'inline' ? 'block' : 'inline' } as Partial<PromptField>);
+        },
+      },
+      (f as { join?: string }).join === 'block' ? 'block' : 'inline',
+    );
+
+    if (f.kind === 'text') {
+      return createElement(
+        'div',
+        { key: f.id, className: 'tpv2-field' },
+        createElement(
+          'div',
+          { className: 'tpv2-field-header' },
+          createElement('input', {
+            className: 'tpv2-field-label-input',
+            value: f.label,
+            onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
+              updateField(f.id, { label: e.target.value }),
+          }),
+          joinPill,
+          menu,
+        ),
+        createElement('textarea', {
+          className: 'ne-inspect-textarea',
+          rows: 3,
+          value: f.value,
+          placeholder: f.label,
+          onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) =>
+            updateField(f.id, { value: e.target.value } as Partial<PromptField>),
+        }),
+      );
+    }
+
+    if (f.kind === 'preset-text') {
+      const opts = PRESET_GROUPS[f.presetGroup]?.options ?? [];
+      return createElement(
+        'div',
+        { key: f.id, className: 'tpv2-field' },
+        createElement(
+          'div',
+          { className: 'tpv2-field-header' },
+          createElement('input', {
+            className: 'tpv2-field-label-input',
+            value: f.label,
+            onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
+              updateField(f.id, { label: e.target.value }),
+          }),
+          joinPill,
+          menu,
+        ),
+        createElement(
+          'select',
+          {
+            className: 'ne-inspect-select tpv2-preset-picker',
+            value: opts.includes(f.value) ? f.value : '',
+            onChange: (e: React.ChangeEvent<HTMLSelectElement>) =>
+              updateField(f.id, { value: e.target.value } as Partial<PromptField>),
+          },
+          createElement('option', { value: '' }, '— pick one —'),
+          ...opts.map((o) => createElement('option', { key: o, value: o }, o)),
+        ),
+        createElement('textarea', {
+          className: 'ne-inspect-textarea',
+          rows: 2,
+          value: f.value,
+          placeholder: `Free text (or pick from ${PRESET_GROUPS[f.presetGroup]?.label ?? 'preset'})`,
+          onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) =>
+            updateField(f.id, { value: e.target.value } as Partial<PromptField>),
+        }),
+      );
+    }
+
+    // dialogue
+    const actorId = f.actorId ?? '';
+    return createElement(
+      'div',
+      { key: f.id, className: 'tpv2-field' },
+      createElement(
+        'div',
+        { className: 'tpv2-field-header' },
+        createElement('input', {
+          className: 'tpv2-field-label-input',
+          value: f.label,
+          onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
+            updateField(f.id, { label: e.target.value }),
+        }),
+        menu,
+      ),
+      createElement('textarea', {
+        className: 'ne-inspect-textarea',
+        rows: 2,
+        value: f.value,
+        placeholder: 'What does the actor say?',
+        onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) =>
+          updateField(f.id, { value: e.target.value } as Partial<PromptField>),
+      }),
+      createElement(
+        'div',
+        { style: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 } },
+        createElement('label', { className: 'ne-inspect-label', style: { margin: 0 } }, 'Actor'),
+        createElement('input', {
+          className: 'ne-inspect-input',
+          style: { flex: 1 },
+          value: f.actorName ?? '',
+          placeholder: 'Manual actor name (or pick below)',
+          onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
+            updateField(f.id, { actorName: e.target.value, actorId: '' } as Partial<PromptField>),
+        }),
+      ),
+      actors.length === 0
+        ? createElement(
+            'div',
+            { className: 'ne-inspect-note', style: { marginTop: 4 } },
+            'No actors in project — you can still enter dialogue without an actor.',
+          )
+        : createElement(
+            'div',
+            { className: 'tpv2-actor-grid' },
+            ...actors.map((a) =>
+              createElement(
+                'button',
+                {
+                  key: a.id,
+                  type: 'button',
+                  className: 'tpv2-actor-tile' + (a.id === actorId ? ' is-selected' : ''),
+                  onClick: () =>
+                    updateField(f.id, {
+                      actorId: a.id,
+                      actorName: a.name,
+                    } as Partial<PromptField>),
+                  title: a.name,
+                },
+                a.thumbUrl
+                  ? createElement('img', { src: a.thumbUrl, alt: a.name, draggable: false })
+                  : null,
+                createElement('div', { className: 'tpv2-actor-tile-name' }, a.name),
+              ),
+            ),
+          ),
+    );
+  };
+
   return createElement(
     'div',
     { className: 'ne-inspect-body' },
-    createElement('label', { className: 'ne-inspect-label' }, 'Prompt'),
-    createElement('textarea', {
-      className: 'ne-inspect-textarea',
-      rows: 8,
-      value,
-      placeholder: 'Describe the shot\u2026',
-      onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) =>
-        onChangeData({ text: e.target.value }),
-    }),
+    presetRow,
+    manageDialog,
+    ...fields.map(renderField),
+    createElement(
+      'div',
+      { style: { position: 'relative' } },
+      createElement(
+        'button',
+        {
+          type: 'button',
+          className: 'tpv2-add-btn',
+          onClick: () => {
+            setOpenAddMenu((v) => !v);
+            setOpenPresetSubmenu(false);
+          },
+        },
+        '+ Add field ▾',
+      ),
+      openAddMenu
+        ? createElement(
+            'div',
+            {
+              style: {
+                position: 'absolute',
+                left: 0,
+                right: 0,
+                top: '100%',
+                zIndex: 20,
+                background: '#1a1a1f',
+                border: '1px solid rgba(255,255,255,0.15)',
+                borderRadius: 6,
+                padding: 4,
+                marginTop: 4,
+                boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+              },
+              onMouseLeave: () => { setOpenAddMenu(false); setOpenPresetSubmenu(false); },
+            },
+            createElement(
+              'button',
+              {
+                type: 'button',
+                className: 'tpv2-field-menu-btn',
+                style: { display: 'block', width: '100%', textAlign: 'left', padding: '4px 8px' },
+                onClick: () => addField('text'),
+              },
+              'Text field',
+            ),
+            createElement(
+              'button',
+              {
+                type: 'button',
+                className: 'tpv2-field-menu-btn',
+                style: { display: 'block', width: '100%', textAlign: 'left', padding: '4px 8px' },
+                onClick: () => setOpenPresetSubmenu((v) => !v),
+              },
+              'Preset field ▸',
+            ),
+            openPresetSubmenu
+              ? createElement(
+                  'div',
+                  { style: { paddingLeft: 12 } },
+                  ...(Object.keys(PRESET_GROUPS) as PresetGroupId[]).map((g) =>
+                    createElement(
+                      'button',
+                      {
+                        key: g,
+                        type: 'button',
+                        className: 'tpv2-field-menu-btn',
+                        style: { display: 'block', width: '100%', textAlign: 'left', padding: '3px 8px' },
+                        onClick: () => addField('preset-text', g),
+                      },
+                      PRESET_GROUPS[g].label,
+                    ),
+                  ),
+                )
+              : null,
+            createElement(
+              'button',
+              {
+                type: 'button',
+                className: 'tpv2-field-menu-btn',
+                style: { display: 'block', width: '100%', textAlign: 'left', padding: '4px 8px' },
+                onClick: () => addField('dialogue'),
+              },
+              'Dialogue field',
+            ),
+            createElement(
+              'button',
+              {
+                type: 'button',
+                className: 'tpv2-field-menu-btn',
+                style: { display: 'block', width: '100%', textAlign: 'left', padding: '4px 8px' },
+                onClick: () => addField('section'),
+              },
+              'Section header',
+            ),
+          )
+        : null,
+    ),
+    createElement(
+      'button',
+      {
+        type: 'button',
+        className: 'tpv2-explode-btn',
+        onClick: onExplode,
+        title: 'Break this Text Prompt into one node per non-empty field, connected to a Prompt Concat.',
+      },
+      '⚡ Explode to Nodes',
+    ),
   );
 };
 

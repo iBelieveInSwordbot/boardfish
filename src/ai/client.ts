@@ -27,6 +27,46 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// ---------- Text Prompt presets ----------
+// Server persists user-saved presets at data/presets/text-prompt.json.
+// Browser talks same-origin /api routes so the calls work in both dev
+// (Vite proxies /api -> ai-proxy) and prod (ai-proxy serves the SPA).
+
+export type TextPromptPresetField = Record<string, unknown>;
+export type TextPromptPreset = {
+  id: string;
+  name: string;
+  fields: TextPromptPresetField[];
+  createdAt?: number;
+};
+
+export async function listTextPromptPresets(): Promise<{ presets: TextPromptPreset[] }> {
+  const r = await fetch('/api/presets/text-prompt');
+  if (!r.ok) throw new Error('failed to list presets');
+  return r.json();
+}
+
+export async function saveTextPromptPreset(
+  name: string,
+  fields: TextPromptPresetField[],
+): Promise<{ preset: TextPromptPreset }> {
+  const r = await fetch('/api/presets/text-prompt', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name, fields }),
+  });
+  if (!r.ok) throw new Error('failed to save preset');
+  return r.json();
+}
+
+export async function deleteTextPromptPreset(id: string): Promise<{ ok: true }> {
+  const r = await fetch(`/api/presets/text-prompt/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  if (!r.ok) throw new Error('failed to delete preset');
+  return r.json();
+}
+
 export async function healthCheck(): Promise<boolean> {
   try {
     const res = await fetch('/api/health');

@@ -416,6 +416,30 @@ function App() {
               }
               return opts;
             })()}
+            availableActors={(() => {
+              // Text Prompt v2 Dialogue field picker source. Scan the
+              // project's "Actors" storyboard (matched by name, same rule
+              // as Canvas.computeSectionKind) and expose each panel as an
+              // actor option: name = first field, description = second
+              // field, thumb = current panel image.
+              const acts: import('./nodes/registry').ActorRefOption[] = [];
+              for (const it of state.items) {
+                if (it.kind !== 'storyboard') continue;
+                const name = (it.overrides?.name || '').trim().toLowerCase();
+                if (name !== 'actors') continue;
+                for (const p of it.panels) {
+                  const actorName = (p.fields[0]?.value || '').trim();
+                  if (!actorName) continue;
+                  acts.push({
+                    id: p.id,
+                    name: actorName,
+                    description: (p.fields[1]?.value || '').trim() || undefined,
+                    thumbUrl: p.imageDataUrl ?? undefined,
+                  });
+                }
+              }
+              return acts;
+            })()}
             onSave={(nextGraph, outMedia) => {
               // Persist only; unmounting is owned by onClose /
               // onDetachedFinish so keep-alive detach can survive an

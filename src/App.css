@@ -2307,3 +2307,127 @@ input, textarea, select {
   min-width: 32px;
   text-align: right;
 }
+
+/* ---------------------------------------------------------------------------
+ * Text Prompt v2 (structured fields + presets) Inspector styles.
+ * ------------------------------------------------------------------------- */
+.tpv2-preset-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.tpv2-preset-row select { flex: 1; }
+.tpv2-field {
+  padding: 8px;
+  border-radius: 6px;
+  background: rgba(255,255,255,0.03);
+  margin-bottom: 8px;
+}
+.tpv2-field-section {
+  background: rgba(255,255,255,0.08);
+  font-weight: 600;
+}
+.tpv2-field-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.tpv2-field-label-input {
+  flex: 1;
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 3px 6px;
+  border-radius: 4px;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 500;
+}
+.tpv2-field-label-input:hover,
+.tpv2-field-label-input:focus {
+  border-color: rgba(255,255,255,0.15);
+  background: rgba(0,0,0,0.2);
+}
+.tpv2-field-menu-btn {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.6;
+  padding: 2px 6px;
+  font-size: 12px;
+}
+.tpv2-field-menu-btn:hover { opacity: 1; }
+.tpv2-join-pill {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  cursor: pointer;
+  border: 1px solid rgba(255,255,255,0.15);
+  background: transparent;
+  color: inherit;
+}
+.tpv2-join-pill.is-block {
+  background: rgba(100,180,255,0.2);
+  border-color: rgba(100,180,255,0.4);
+}
+.tpv2-preset-picker { width: 100%; margin-bottom: 4px; }
+.tpv2-add-btn {
+  width: 100%;
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: rgba(255,255,255,0.05);
+  border: 1px dashed rgba(255,255,255,0.2);
+  border-radius: 6px;
+  color: inherit;
+  cursor: pointer;
+}
+.tpv2-explode-btn {
+  width: 100%;
+  margin-top: 12px;
+  padding: 8px 10px;
+  background: rgba(255,100,50,0.15);
+  border: 1px solid rgba(255,100,50,0.3);
+  border-radius: 6px;
+  color: inherit;
+  cursor: pointer;
+  font-weight: 500;
+}
+.tpv2-explode-btn:hover { background: rgba(255,100,50,0.25); }
+.tpv2-actor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+  gap: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+  margin-top: 6px;
+}
+.tpv2-actor-tile {
+  aspect-ratio: 2/3;
+  background: rgba(0,0,0,0.3);
+  border-radius: 4px;
+  cursor: pointer;
+  border: 2px solid transparent;
+  overflow: hidden;
+  position: relative;
+  padding: 0;
+}
+.tpv2-actor-tile.is-selected { border-color: rgba(100,180,255,0.8); }
+.tpv2-actor-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tpv2-actor-tile-name {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(0,0,0,0.7);
+  color: white;
+  font-size: 10px;
+  padding: 2px 4px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

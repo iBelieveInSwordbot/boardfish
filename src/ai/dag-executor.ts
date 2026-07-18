@@ -30,6 +30,7 @@ import {
 import { getFalModel, resolveFalModelId } from './fal-models';
 import type { FalModelDef } from './fal-models';
 import type { NodeGraph, BaseNode, NodeId, Edge } from '../nodes/types';
+import { concatFields, type PromptField } from '../nodes/text-prompt-fields';
 
 // The stored per-node output shape used by the executor. This is a superset of
 // what BaseNode.output declares in nodes/types.ts (which has kind/dataUrl/text/
@@ -403,7 +404,9 @@ async function runNode(
 }
 
 function runTextPrompt(node: BaseNode): NodeOutput {
-  const text = String((node.data as { text?: unknown }).text ?? '');
+  const fields = (node.data as { fields?: PromptField[] }).fields;
+  const legacyText = String((node.data as { text?: unknown }).text ?? '');
+  const text = concatFields(fields, legacyText);
   return { kind: 'text', text };
 }
 

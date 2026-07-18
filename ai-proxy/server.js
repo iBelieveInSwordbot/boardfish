@@ -1662,6 +1662,87 @@ function normalizeAspect(input) {
   return best;
 }
 
+// ---------- Text Prompt presets ----------
+// Persists Matt's saved Text Prompt v2 presets so they survive restarts and
+// stay in sync across browser tabs. Stored as a plain JSON array.
+const PRESETS_DIR = path.join(__dirname, '..', 'data', 'presets');
+const PRESETS_FILE = path.join(PRESETS_DIR, 'text-prompt.json');
+
+async function readPresets() {
+  try {
+    mkdirSync(PRESETS_DIR, { recursive: true });
+    if (!existsSync(PRESETS_FILE)) return [];
+    const raw = readFileSync(PRESETS_FILE, 'utf8');
+    const j = JSON.parse(raw);
+    return Array.isArray(j) ? j : [];
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return [];
+    throw e;
+  }
+}
+
+async function writePresets(list) {
+  mkdirSync(PRESETS_DIR, { recursive: true });
+  writeFileSync(PRESETS_FILE, JSON.stringify(list, null, 2));
+}
+
+app.get('/api/presets/text-prompt', async (_req, res) => {
+  try {
+    res.json({ presets: await readPresets() });
+  } catch (e) {
+    res.status(500).json({ error: String((e && e.message) || e) });
+  }
+});
+
+app.post('/api/presets/text-prompt', async (req, res) => {
+  try {
+    const { name, fields } = req.body || {};
+    if (!name || !Array.isArray(fields)) {
+      return res.status(400).json({ error: 'name and fields[] required' });
+    }
+    const list = await readPresets();
+    const id = 'preset_' + Math.random().toString(36).slice(2, 10);
+    const preset = {
+      id,
+      name: String(name).slice(0, 100),
+      fields,
+      createdAt: Date.now(),
+    };
+    list.push(preset);
+    await writePresets(list);
+    res.json({ preset });
+  } catch (e) {
+    res.status(500).json({ error: String((e && e.message) || e) });
+  }
+});
+
+app.put('/api/presets/text-prompt/:id', async (req, res) => {
+  try {
+    const list = await readPresets();
+    const idx = list.findIndex((p) => p.id === req.params.id);
+    if (idx < 0) return res.status(404).json({ error: 'not found' });
+    const { name, fields } = req.body || {};
+    if (name) list[idx].name = String(name).slice(0, 100);
+    if (Array.isArray(fields)) list[idx].fields = fields;
+    await writePresets(list);
+    res.json({ preset: list[idx] });
+  } catch (e) {
+    res.status(500).json({ error: String((e && e.message) || e) });
+  }
+});
+
+app.delete('/api/presets/text-prompt/:id', async (req, res) => {
+  try {
+    const list = await readPresets();
+    const next = list.filter((p) => p.id !== req.params.id);
+    if (next.length === list.length) return res.status(404).json({ error: 'not found' });
+    await writePresets(next);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: String((e && e.message) || e) });
+  }
+});
+
 // ---------- start ----------
 
 // Static app (only when a prod build exists). Mount AFTER the /api routes so
