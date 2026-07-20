@@ -513,6 +513,10 @@
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
+/* Gap between category groups in the canvas context menu (headerless). */
+.ne-context-gap {
+  height: 8px;
+}
 
 /* --- Inspector drawer --- */
 .ne-inspector {

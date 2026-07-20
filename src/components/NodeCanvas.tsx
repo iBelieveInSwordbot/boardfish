@@ -373,10 +373,12 @@ export function ContextMenu({ menu, onClose, onAddNode, onNodeAction, onAddWired
       )}
       {menu.kind === 'canvas' && (
         <>
-          {CATEGORY_ORDER.map((cat) => (
+          {CATEGORY_ORDER.map((cat, idx) => (
             grouped[cat].length === 0 ? null : (
               <div key={cat}>
-                <div className="ne-context-sub-label">{CATEGORY_LABELS[cat]}</div>
+                {idx > 0 && CATEGORY_ORDER.slice(0, idx).some((c) => grouped[c].length > 0) && (
+                  <div className="ne-context-gap" />
+                )}
                 {grouped[cat].map((item) => (
                   <div
                     key={item.kind}
@@ -396,13 +398,12 @@ export function ContextMenu({ menu, onClose, onAddNode, onNodeAction, onAddWired
       )}
       {menu.kind === 'wire-from-port' && (
         <>
-          <div className="ne-context-sub-label" style={{ color: '#8ea9ff' }}>
-            Wire {menu.sourceSide === 'out' ? '→ to' : '← from'}
-          </div>
-          {CATEGORY_ORDER.map((cat) => (
+          {CATEGORY_ORDER.map((cat, idx) => (
             grouped[cat].length === 0 ? null : (
               <div key={cat}>
-                <div className="ne-context-sub-label">{CATEGORY_LABELS[cat]}</div>
+                {idx > 0 && CATEGORY_ORDER.slice(0, idx).some((c) => grouped[c].length > 0) && (
+                  <div className="ne-context-gap" />
+                )}
                 {grouped[cat].map((item) => (
                   <div
                     key={item.kind}
