@@ -790,12 +790,14 @@ const SwitchPreview: FC<PreviewProps> = ({ node }) => {
   );
 };
 
-const NullNodePreview: FC<PreviewProps> = () =>
-  createElement(
+const NullNodePreview: FC<PreviewProps> = ({ node }) => {
+  const label = String((node.data as Record<string, unknown>).label ?? 'Null');
+  return createElement(
     'div',
     { className: 'ne-node-preview ne-node-preview--null' },
-    createElement('div', { className: 'ne-node-preview-caption' }, 'passthrough'),
+    createElement('div', { className: 'ne-null-label' }, label),
   );
+};
 
 const PromptConcatPreview: FC<PreviewProps> = ({ node, graph }) => {
   const count = Number(node.data.count ?? 2);
@@ -2463,16 +2465,31 @@ const SwitchInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) => {
   );
 };
 
-const NullNodeInspector: NodeKindDef['Inspector'] = () =>
-  createElement(
+const NullNodeInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) => {
+  const label = String((node.data as Record<string, unknown>).label ?? 'Null');
+  return createElement(
     'div',
     { className: 'ne-inspect-body' },
+    createElement('label', { className: 'ne-inspect-label' }, 'Label'),
+    createElement('input', {
+      className: 'ne-inspect-input',
+      type: 'text',
+      value: label,
+      maxLength: 24,
+      placeholder: 'Null',
+      onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+        const v = e.target.value;
+        // Empty string → clear the override so the label falls back to "Null".
+        onChangeData({ label: v === '' ? undefined : v });
+      },
+    }),
     createElement(
       'div',
-      { className: 'ne-inspect-note' },
-      'Passthrough \u2014 forwards its single input unchanged. Handy for organizing long chains.',
+      { className: 'ne-inspect-note', style: { marginTop: '10px' } },
+      'Passthrough \u2014 forwards its single input unchanged. Handy for organizing long chains. The label shows in the center of the circle.',
     ),
   );
+};
 
 const PromptConcatInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) => {
   // Clamp 2\u20138 per the task spec (was 2\u20136 before).

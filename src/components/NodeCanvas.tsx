@@ -190,12 +190,17 @@ export function NodeView(p: NodeViewProps) {
     [],
   );
 
+  // For nodes with no visible header (e.g. null-node), the whole body
+  // acts as the drag handle. Ports still stop propagation so port drags
+  // aren't hijacked into a node move.
+  const isHeaderless = node.kind === 'null-node';
   return (
     <div
       className={`ne-node ne-node--${node.kind} ${selected ? 'is-selected' : ''}`}
       style={{ left: node.x, top: node.y, width: w, height: h }}
       onClick={onClick}
       onContextMenu={onContextMenu}
+      onPointerDown={isHeaderless ? onHeaderPointerDown : undefined}
       data-node-id={node.id}
     >
       <div className="ne-node-header" onPointerDown={onHeaderPointerDown}>

@@ -1643,3 +1643,23 @@
   padding: 0;
   gap: 0;
 }
+
+/* Null-node center label — a short text label in the middle of the circle.
+   User-editable in the Inspector; defaults to "Null". Kept tiny so the
+   circle stays a circle even with a 24-char label. */
+.ne-null-label {
+  color: #b0b0bb;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  text-align: center;
+  padding: 0 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  pointer-events: none;
+  user-select: none;
+}
+.ne-node--null-node.is-selected .ne-null-label { color: #d6e5ff; }
