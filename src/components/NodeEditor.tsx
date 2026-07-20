@@ -257,12 +257,30 @@ function reducer(state: State, action: Action): State {
       }
       return { graph: addEdge(g1, from, to), dirty: true };
     }
-    case 'REMOVE_NODE':
+    case 'REMOVE_NODE': {
+      // Out node is never deletable — every panel needs exactly one and
+      // it's auto-seeded when the editor opens.
+      const n = state.graph.nodes.find((nn) => nn.id === action.id);
+      if (n?.kind === 'out') return state;
       return { graph: removeNode(state.graph, action.id), dirty: true };
-    case 'REMOVE_NODES':
-      return { graph: removeNodes(state.graph, action.ids), dirty: true };
-    case 'DUPLICATE_NODE':
+    }
+    case 'REMOVE_NODES': {
+      // Strip any Out ids from the deletion set before applying.
+      const outIds = new Set(
+        state.graph.nodes.filter((n) => n.kind === 'out').map((n) => n.id),
+      );
+      const filtered = new Set<NodeId>();
+      for (const id of action.ids) if (!outIds.has(id)) filtered.add(id);
+      if (filtered.size === 0) return state;
+      return { graph: removeNodes(state.graph, filtered), dirty: true };
+    }
+    case 'DUPLICATE_NODE': {
+      // Duplicating an Out would create a second one; the ADD_NODE guard
+      // above blocks this at the palette level, so mirror that here.
+      const n = state.graph.nodes.find((nn) => nn.id === action.id);
+      if (n?.kind === 'out') return state;
       return { graph: duplicateNode(state.graph, action.id), dirty: true };
+    }
     case 'DISCONNECT_NODE':
       return { graph: disconnectNode(state.graph, action.id), dirty: true };
     case 'UPDATE_NODE_DATA':

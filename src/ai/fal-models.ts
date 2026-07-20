@@ -735,14 +735,19 @@ export const FAL_MODELS: FalModelDef[] = [
     label: 'Kling 2.5 Turbo Pro',
     vendor: 'Kling (Kuaishou)',
     kind: 'video',
+    // The i2v endpoint doubles as a first/last-frame endpoint: fal docs
+    // list `image_url` (start) + optional `tail_image_url` (last frame)
+    // on the same route. Two dedicated ref ports let the graph wire both.
     endpoint: 'fal-ai/kling-video/v2.5-turbo/pro/text-to-video',
     editEndpoint: 'fal-ai/kling-video/v2.5-turbo/pro/image-to-video',
-    refImageKey: 'image_url',
-    refImageIsArray: false,
+    refPorts: [
+      { portId: 'first', label: 'first frame', falKey: 'image_url' },
+      { portId: 'last',  label: 'last frame',  falKey: 'tail_image_url' },
+    ],
     supportsImageInput: true,
     supportsPrompt: true,
     status: 'active',
-    notes: 'Kling 2.5 Turbo Pro — fast pro-tier Kling.',
+    notes: 'Kling 2.5 Turbo Pro — fast pro-tier Kling. Wire an image to `first frame` for i2v; wire a second image to `last frame` for a first/last frame transition.',
     inputs: [
       PROMPT_INPUT,
       NEGATIVE_PROMPT_INPUT,
@@ -773,7 +778,6 @@ export const FAL_MODELS: FalModelDef[] = [
         step: 0.1,
         help: 'How closely the model sticks to the prompt (0–1).',
       },
-      IMAGE_URL_INPUT,
       SEED_INPUT,
     ],
   },
