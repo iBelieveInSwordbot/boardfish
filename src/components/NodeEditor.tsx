@@ -1748,6 +1748,24 @@ export function NodeEditor(props: NodeEditorProps) {
     setContextMenu({ kind: 'node', nodeId, x: e.clientX, y: e.clientY });
   }
 
+  // Ctrl-click / right-click on a port DOT → open the wire-from-port menu.
+  // Picking a kind creates the node and auto-wires it to this port.
+  function onPortContextMenu(e: React.MouseEvent, node: BaseNode, portId: PortId) {
+    const port = node.ports.find((p) => p.id === portId);
+    if (!port) return;
+    const c = screenToCanvas(e.clientX, e.clientY);
+    setContextMenu({
+      kind: 'wire-from-port',
+      canvasX: c.x,
+      canvasY: c.y,
+      x: e.clientX,
+      y: e.clientY,
+      sourceNodeId: node.id,
+      sourcePortId: portId,
+      sourceSide: port.side,
+    });
+  }
+
   function onCanvasContextMenu(e: React.MouseEvent) {
     const target = e.target as HTMLElement;
     const onEmpty =
@@ -2193,6 +2211,7 @@ export function NodeEditor(props: NodeEditorProps) {
                 onClick={(e) => onNodeClick(e, node.id)}
                 onContextMenu={(e) => onNodeContextMenu(e, node.id)}
                 onPortPointerDown={onPortPointerDown}
+                onPortContextMenu={onPortContextMenu}
               />
             ))}
           </div>

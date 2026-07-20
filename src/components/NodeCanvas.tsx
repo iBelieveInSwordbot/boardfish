@@ -45,12 +45,14 @@ export type NodeViewProps = {
   onClick: (e: React.MouseEvent) => void;
   onContextMenu: (e: React.MouseEvent) => void;
   onPortPointerDown: (e: ReactPointerEvent<HTMLDivElement>, node: BaseNode, portId: PortId) => void;
+  /** Ctrl-click / right-click on a port dot — open the "add + wire" menu. */
+  onPortContextMenu?: (e: React.MouseEvent, node: BaseNode, portId: PortId) => void;
 };
 
 export function NodeView(p: NodeViewProps) {
   const {
     node, selected, inFlight, graph, onChangeData, onRun, onPromoteFrame,
-    onHeaderPointerDown, onClick, onContextMenu, onPortPointerDown,
+    onHeaderPointerDown, onClick, onContextMenu, onPortPointerDown, onPortContextMenu,
   } = p;
   const def = NODE_KINDS[node.kind];
   const { width: w, height: h } = readNodeSize(node);
@@ -224,7 +226,14 @@ export function NodeView(p: NodeViewProps) {
               data-port-id={port.id}
               data-port-side={port.side}
               onPointerDown={(e) => onPortPointerDown(e, node, port.id)}
-              title={`${port.label} (${port.dataType})`}
+              onContextMenu={(e) => {
+                if (onPortContextMenu) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onPortContextMenu(e, node, port.id);
+                }
+              }}
+              title={`${port.label} (${port.dataType}) — ctrl-click / right-click for menu`}
             />
             <span className="ne-port-label">{port.label}</span>
           </div>
@@ -242,7 +251,14 @@ export function NodeView(p: NodeViewProps) {
               data-port-id={port.id}
               data-port-side={port.side}
               onPointerDown={(e) => onPortPointerDown(e, node, port.id)}
-              title={`${port.label} (${port.dataType})`}
+              onContextMenu={(e) => {
+                if (onPortContextMenu) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onPortContextMenu(e, node, port.id);
+                }
+              }}
+              title={`${port.label} (${port.dataType}) — ctrl-click / right-click for menu`}
             />
             <span className="ne-port-label">{port.label}</span>
           </div>
