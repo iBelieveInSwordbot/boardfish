@@ -4,7 +4,7 @@
 // Nothing here owns state; the parent NodeEditor drives everything via props.
 
 import { useMemo, useRef, useCallback } from 'react';
-import type { PointerEvent as ReactPointerEvent } from 'react';
+import type { PointerEvent as ReactPointerEvent, ReactNode, ReactElement } from 'react';
 import type { BaseNode, NodeGraph, NodeId, NodeKind, PortId } from '../nodes/types';
 import {
   isPortConnected,
@@ -327,33 +327,83 @@ export type ContextMenuProps = {
 };
 
 export function ContextMenu({ menu, onClose, onAddNode, onNodeAction, onAddWiredNode }: ContextMenuProps) {
-  // Categories the menu displays, in order. Keep in sync with
-  // NodeKindDef['category'] in registry.ts. Any new category added there
-  // must be listed here or those nodes won't appear in the menu.
-  const CATEGORY_ORDER = ['input', 'gen', 'edit', 'utility', 'output'] as const;
-  type Cat = typeof CATEGORY_ORDER[number];
-  const CATEGORY_LABELS: Record<Cat, string> = {
-    input:   'Add input',
-    gen:     'Add gen',
-    edit:    'Add edit',
-    utility: 'Add utility',
-    output:  'Add output',
-  };
+  // Explicit menu order per Matt's 2026-07-20 spec. Sections separated by
+  // null (renders as a gap between items). Any kind not listed here won't
+  // appear in the menu — update this list when adding a new node kind.
+  const MENU_LAYOUT: (NodeKind | null)[] = [
+    'text-prompt',
+    'image-gen',
+    'movie-gen',
+    'null-node',
+    null, // ────────────────────────
+    'panel-ref',
+    'extract-frame',
+    'import',
+    'export',
+    null, // ────────────────────────
+    'crop',
+    'resize',
+    'blur',
+    'invert',
+    null, // ────────────────────────
+    'prompt-enhancer',
+    'prompt-concat',
+    'llm-run',
+    'image-describer',
+    'video-describer',
+    'switch',
+    'custom-fal',
+    'frame-fix',
+  ];
 
-  const grouped = useMemo(() => {
-    const g: Record<Cat, { kind: NodeKind; label: string }[]> = {
-      input: [], gen: [], edit: [], utility: [], output: [],
-    };
-    for (const def of Object.values(NODE_KINDS)) {
-      if (def.hiddenFromPalette) continue;
-      const cat = def.category as Cat;
-      // Defensive: if a node's category isn't one we recognize, skip it
-      // rather than crash the menu (and thus the whole canvas).
-      if (!g[cat]) continue;
-      g[cat].push({ kind: def.kind, label: def.label });
-    }
-    return g;
+  // Resolve labels for the listed kinds against the live NODE_KINDS table.
+  // Skip any that don't exist or are hidden from the palette.
+  const layoutItems = useMemo(() => {
+    return MENU_LAYOUT.map((k) => {
+      if (k === null) return null;
+      const def = NODE_KINDS[k];
+      if (!def || def.hiddenFromPalette) return undefined;
+      return { kind: def.kind, label: def.label };
+    }).filter((x) => x !== undefined) as (null | { kind: NodeKind; label: string })[];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Render helper for a single item click — shared by both menu kinds.
+  const renderItem = (
+    item: { kind: NodeKind; label: string },
+    onPick: (kind: NodeKind) => void,
+  ) => (
+    <div
+      key={item.kind}
+      className="ne-context-item"
+      onClick={() => { onPick(item.kind); onClose(); }}
+    >
+      {item.label}
+    </div>
+  );
+
+  const renderLayout = (onPick: (kind: NodeKind) => void) => {
+    // Collapse consecutive/leading/trailing nulls so we don't render
+    // double or leading gaps when a section is empty.
+    const out: ReactNode[] = [];
+    let lastWasGap = true; // suppress a leading gap
+    layoutItems.forEach((it, i) => {
+      if (it === null) {
+        if (!lastWasGap) {
+          out.push(<div key={`gap-${i}`} className="ne-context-gap" />);
+          lastWasGap = true;
+        }
+      } else {
+        out.push(renderItem(it, onPick));
+        lastWasGap = false;
+      }
+    });
+    // Trim trailing gap if any (rare — MENU_LAYOUT ends on an item today).
+    if (out.length && (out[out.length - 1] as ReactElement<{ className?: string }>).props?.className === 'ne-context-gap') {
+      out.pop();
+    }
+    return out;
+  };
 
   return (
     <div
@@ -373,60 +423,24 @@ export function ContextMenu({ menu, onClose, onAddNode, onNodeAction, onAddWired
       )}
       {menu.kind === 'canvas' && (
         <>
-          {CATEGORY_ORDER.map((cat, idx) => (
-            grouped[cat].length === 0 ? null : (
-              <div key={cat}>
-                {idx > 0 && CATEGORY_ORDER.slice(0, idx).some((c) => grouped[c].length > 0) && (
-                  <div className="ne-context-gap" />
-                )}
-                {grouped[cat].map((item) => (
-                  <div
-                    key={item.kind}
-                    className="ne-context-item"
-                    onClick={() => {
-                      onAddNode(item.kind, { x: menu.canvasX, y: menu.canvasY });
-                      onClose();
-                    }}
-                  >
-                    {item.label}
-                  </div>
-                ))}
-              </div>
-            )
-          ))}
+          {renderLayout((kind) => {
+            onAddNode(kind, { x: menu.canvasX, y: menu.canvasY });
+          })}
         </>
       )}
       {menu.kind === 'wire-from-port' && (
         <>
-          {CATEGORY_ORDER.map((cat, idx) => (
-            grouped[cat].length === 0 ? null : (
-              <div key={cat}>
-                {idx > 0 && CATEGORY_ORDER.slice(0, idx).some((c) => grouped[c].length > 0) && (
-                  <div className="ne-context-gap" />
-                )}
-                {grouped[cat].map((item) => (
-                  <div
-                    key={item.kind}
-                    className="ne-context-item"
-                    onClick={() => {
-                      if (onAddWiredNode) {
-                        onAddWiredNode(
-                          item.kind,
-                          { x: menu.canvasX, y: menu.canvasY },
-                          { nodeId: menu.sourceNodeId, portId: menu.sourcePortId, side: menu.sourceSide },
-                        );
-                      } else {
-                        onAddNode(item.kind, { x: menu.canvasX, y: menu.canvasY });
-                      }
-                      onClose();
-                    }}
-                  >
-                    {item.label}
-                  </div>
-                ))}
-              </div>
-            )
-          ))}
+          {renderLayout((kind) => {
+            if (onAddWiredNode) {
+              onAddWiredNode(
+                kind,
+                { x: menu.canvasX, y: menu.canvasY },
+                { nodeId: menu.sourceNodeId, portId: menu.sourcePortId, side: menu.sourceSide },
+              );
+            } else {
+              onAddNode(kind, { x: menu.canvasX, y: menu.canvasY });
+            }
+          })}
         </>
       )}
     </div>
