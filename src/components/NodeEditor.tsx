@@ -63,6 +63,7 @@ import {
 import { executeGraph } from '../ai/dag-executor';
 import { uploadFile } from '../ai/media-store';
 import { NODE_KINDS } from '../nodes/registry';
+import { NODE_KINDS_META } from '../nodes/registry-meta';
 import { PanelRefContext, ActorRefContext, OutPanelContext, type PanelRefOption, type ActorRefOption } from '../nodes/registry';
 import { explodeFieldsToTextParts, type PromptField } from '../nodes/text-prompt-fields';
 import { defaultDataFor, defaultPortsFor } from '../nodes/types';
@@ -165,24 +166,65 @@ function reducer(state: State, action: Action): State {
       return { graph: moveNode(state.graph, action.id, action.x, action.y), dirty: true };
     case 'MOVE_NODES':
       return { graph: moveNodesTo(state.graph, action.positions), dirty: true };
-    case 'ADD_NODE':
+    case 'ADD_NODE': {
       // Enforce a single Out node per graph — it represents the storyboard
       // panel, so extras would just be dead weight. Any other kind is fine.
       if (action.kind === 'out' && state.graph.nodes.some((n) => n.kind === 'out')) {
         return state;
       }
-      return { graph: addNode(state.graph, action.kind, action.at), dirty: true };
+      // Center the new node on the click point (rather than putting the
+      // click at the node's top-left). Fixes "the drop position is to the
+      // right of the null" — caused by top-left placement + subsequent
+      // drag that captures offset=0 from the top-left.
+      const meta = NODE_KINDS_META[action.kind];
+      const centered = {
+        x: action.at.x - (meta?.defaultWidth ?? 220) / 2,
+        y: action.at.y - (meta?.defaultHeight ?? 140) / 2,
+      };
+      return { graph: addNode(state.graph, action.kind, centered), dirty: true };
+    }
     case 'ADD_WIRED_NODE': {
       // Enforce the single-Out rule here too.
       if (action.kind === 'out' && state.graph.nodes.some((n) => n.kind === 'out')) {
         return state;
       }
-      const g1 = addNode(state.graph, action.kind, action.at);
+      // Center on the click point (see ADD_NODE for rationale).
+      const meta = NODE_KINDS_META[action.kind];
+      const centered = {
+        x: action.at.x - (meta?.defaultWidth ?? 220) / 2,
+        y: action.at.y - (meta?.defaultHeight ?? 140) / 2,
+      };
+      const g1 = addNode(state.graph, action.kind, centered);
       const newNode = g1.nodes[g1.nodes.length - 1];
       // Find the source port so we know the source dataType.
       const srcNode = g1.nodes.find((n) => n.id === action.source.nodeId);
       const srcPort = srcNode?.ports.find((p) => p.id === action.source.portId);
       if (!srcNode || !srcPort) return { graph: g1, dirty: true };
+
+      // SPLICE SHORTCUT: if the source port has an existing edge AND the
+      // new node can insert inline (has both an in and out port), splice
+      // it into that edge. E.g. ctrl-click on an Image Gen's output that
+      // already goes to an Out node → pick Null → Image Gen → Null → Out.
+      // Only fires when the source is an OUTPUT port; input-side ctrl-click
+      // keeps the plain "add + wire" behavior.
+      if (action.source.side === 'out' && canInsertInline(newNode)) {
+        const attached = g1.edges.filter(
+          (e) => e.from.nodeId === action.source.nodeId && e.from.portId === action.source.portId,
+        );
+        // Prefer the first attached edge; multiple fan-outs would need a UI
+        // picker, which we don't want to build for the common single-edge case.
+        const spliceEdge = attached[0];
+        if (spliceEdge) {
+          const spliced = insertNodeOnEdge(g1, spliceEdge.id, newNode.id);
+          if (spliced !== g1) {
+            return { graph: spliced, dirty: true };
+          }
+          // insertNodeOnEdge refused (e.g. new node's schema types don't
+          // line up with both endpoints of the edge). Fall through to the
+          // plain add + wire path so we still connect the source at least.
+        }
+      }
+
       // Pick a port on the new node whose side is opposite of source's
       // side AND whose dataType is compatible (or 'any'). Prefer exact
       // type match over 'any' so an image → image-gen wires to the
