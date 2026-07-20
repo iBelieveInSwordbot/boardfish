@@ -758,6 +758,15 @@ const OutPreview: FC<PreviewProps> = ({ node, onRun, onPromoteFrame, onChangeDat
             labelHint: 'panel',
           })
         : createElement('div', { className: 'ne-out-page-empty' }, 'wire something to me'),
+      // Translucent storyboard-sheet overlay on top of the media so the Out
+      // node visually reads as a storyboard panel. Sits inside the frame
+      // with pointer-events disabled so it doesn't block clicks.
+      createElement('img', {
+        className: 'ne-out-page-overlay',
+        src: '/overlays/boards-overlay.png',
+        alt: '',
+        draggable: false,
+      }),
     ),
     // Caption strip: render each non-empty panel field as its own line.
     createElement(

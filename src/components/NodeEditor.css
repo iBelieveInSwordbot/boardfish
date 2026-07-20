@@ -892,6 +892,23 @@
   overflow: hidden;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35), inset 0 0 0 1px #d6d0c1;
 }
+
+/* Differentiate the whole Out node from other node kinds — paper-tinted
+   outer frame so it reads as "the storyboard slot" at a glance. */
+.ne-node--out {
+  background: #24221c;
+  border-color: #58513f;
+}
+.ne-node--out.is-selected {
+  border-color: #d8bd6e;
+  box-shadow: 0 0 0 1px #d8bd6e, 0 4px 14px rgba(216, 189, 110, 0.22);
+}
+.ne-node--out .ne-node-header {
+  background: #2c281f;
+  color: #d8bd6e;
+  border-bottom-color: #3a3626;
+}
+.ne-node--out .ne-node-header-cat { color: #8a7f5f; }
 .ne-out-page-header {
   display: flex;
   justify-content: space-between;
@@ -912,9 +929,31 @@
   align-items: center;
   justify-content: center;
   overflow: hidden;
+  position: relative; /* anchor the storyboard-sheet overlay */
 }
 .ne-out-page-frame img,
 .ne-out-page-frame video { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* Translucent storyboard-sheet overlay laid on top of the generated media.
+   Stretches to fill the frame; ignores pointer events so promote/click UI
+   on the media below still works. Blend + opacity keep the panel art visible
+   underneath while showing the sheet lines/labels on top. */
+.ne-out-page-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+  opacity: 0.65;
+  mix-blend-mode: multiply;
+  user-select: none;
+}
+/* Fade the overlay a bit further when the frame is empty (no media yet) so
+   it doesn't dominate the "wire something to me" hint. */
+.ne-node-preview--out-page.is-empty .ne-out-page-overlay {
+  opacity: 0.35;
+}
 .ne-out-page-empty { color: #7a7a80; font-size: 11px; font-style: italic; }
 .ne-out-page-caption {
   padding: 5px 8px 7px;
