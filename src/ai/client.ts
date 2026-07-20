@@ -413,6 +413,52 @@ export async function urlToDataUrl(
   return { dataUrl, mime };
 }
 
+// ---------- Frame Fix (v1.1.0) ----------
+
+export type FrameFixOptions = {
+  videoDataUrl?: string;
+  mediaId?: string;
+  detectMissing: boolean;
+  detectDuplicates: boolean;
+  dupMode: 'exact' | 'near';
+  dupSensitivity: number;
+  dupesDropInterpolate: boolean;
+  framerateModes: string[];
+  posterizeEnabled: boolean;
+  posterizeN: number;
+  interpModel: string;
+  crf: number;
+};
+
+export type FrameFixResult = {
+  ok: true;
+  dataUrl: string;
+  mediaId?: string;
+  mediaUrl?: string;
+  mime: string;
+};
+
+export async function runFrameFix(
+  opts: FrameFixOptions,
+  signal?: AbortSignal,
+): Promise<FrameFixResult> {
+  const res = await fetch('/api/frame-fix', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(opts),
+    signal,
+  });
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try {
+      const err = await res.json();
+      if (err?.error) msg = err.error;
+    } catch { /* ignore */ }
+    throw new Error(`Frame Fix: ${msg}`);
+  }
+  return res.json() as Promise<FrameFixResult>;
+}
+
 // Convert a numeric panel aspect ratio (width/height) to the closest supported
 // label string. Mirrors the proxy's normalizeAspect(); we send both so the
 // server has final say.

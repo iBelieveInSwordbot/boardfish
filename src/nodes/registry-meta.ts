@@ -34,4 +34,8 @@ export const NODE_KINDS_META: Record<NodeKind, NodeKindMeta> = {
   'blur':            { defaultWidth: 200, defaultHeight: 140 },
   'invert':          { defaultWidth: 180, defaultHeight: 120 },
   'extract-frame':   { defaultWidth: 200, defaultHeight: 160 },
+  // I/O nodes (v1.1.0).
+  'frame-fix':       { defaultWidth: 240, defaultHeight: 220 },
+  'import':          { defaultWidth: 220, defaultHeight: 200 },
+  'export':          { defaultWidth: 240, defaultHeight: 220 },
 };

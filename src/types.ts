@@ -47,6 +47,13 @@ export type PanelImageVersion = {
   kind?: 'image' | 'video';
   /** When kind='video', the actual video data-URL for playback. */
   videoDataUrl?: string;
+  /**
+   * Stable generation index (1-based, monotonic). Assigned at creation and
+   * preserved when hearting/restoring a version. Legacy panels without
+   * `seq` get a stable backfill from the generatedAt-sorted position. See
+   * `nextSeqForPanel` / display helpers.
+   */
+  seq?: number;
 };
 
 // Style tag applied to the panel's AI prompt at generation time. Mirrors the
@@ -94,6 +101,33 @@ export const PANEL_STYLE_ORDER: PanelStyleMode[] = [
 // Legacy alias kept for any lingering imports.
 export const STYLE_TAG_PENCIL_SKETCH = STYLE_PRESET_TAGS['pencil-sketch'];
 
+/**
+ * Next stable image-generation index for a panel. Considers the current
+ * imageSeq plus any seqs on historical versions and returns max + 1
+ * (defaults to 1). Used by APPLY_AI_IMAGE / APPLY_AI_VIDEO / RESTORE_AI_IMAGE
+ * so newly-generated media get a stable, monotonically-increasing version
+ * number.
+ */
+export function nextSeqForPanel(panel: {
+  currentImageSeq?: number;
+  imageHistory?: PanelImageVersion[];
+}): number {
+  let maxSeq = 0;
+  const cur = panel.currentImageSeq;
+  if (typeof cur === 'number' && Number.isFinite(cur) && cur > maxSeq) maxSeq = cur;
+  for (const v of panel.imageHistory ?? []) {
+    const s = v.seq;
+    if (typeof s === 'number' && Number.isFinite(s) && s > maxSeq) maxSeq = s;
+  }
+  if (maxSeq > 0) return maxSeq + 1;
+  // No sequenced entries. Backfill above the count of unsequenced entries
+  // so display seq assignments don't collide.
+  const unseqCount =
+    (panel.imageHistory ?? []).filter((v) => typeof v.seq !== 'number').length +
+    (typeof panel.currentImageSeq !== 'number' ? 1 : 0);
+  return unseqCount + 1;
+}
+
 export function styleSuffix(mode: PanelStyleMode | undefined): string {
   const effective = mode ?? 'pencil-sketch';
   const tag = STYLE_PRESET_TAGS[effective] ?? '';
@@ -121,6 +155,13 @@ export type Panel = {
   cornerNote: string; // optional per-panel text shown in the top-right corner
   aiPrompt?: string; // last prompt used to generate the panel image (editable, re-gennable)
   imageHistory?: PanelImageVersion[]; // prior AI generations, oldest first. Current image is NOT in this list.
+  /**
+   * Stable generation index for the CURRENT `imageDataUrl` / `videoDataUrl`.
+   * When set, archived history entries preserve this seq so version labels
+   * (v1, v2, …) don't renumber when a version is hearted / restored.
+   * Optional — legacy panels backfill seqs from generatedAt-sorted order.
+   */
+  currentImageSeq?: number;
   styleMode?: PanelStyleMode; // undefined = default (pencil-sketch)
   nodeGraph?: PanelNodeGraph; // Saved node-editor graph. Opened on double-click.
 };

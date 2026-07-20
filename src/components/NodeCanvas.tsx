@@ -270,23 +270,60 @@ export function NodeView(p: NodeViewProps) {
 
 export type ContextMenuState =
   | { kind: 'node'; nodeId: NodeId; x: number; y: number }
-  | { kind: 'canvas'; canvasX: number; canvasY: number; x: number; y: number };
+  | { kind: 'canvas'; canvasX: number; canvasY: number; x: number; y: number }
+  // Alt-drag from a port: dropped on empty canvas. Menu shows all
+  // kinds and (when the user picks one) the new node is auto-wired
+  // from the dragged port to a compatible port on the new node.
+  | {
+      kind: 'wire-from-port';
+      canvasX: number;
+      canvasY: number;
+      x: number;
+      y: number;
+      sourceNodeId: NodeId;
+      sourcePortId: string;
+      sourceSide: 'in' | 'out';
+    };
 
 export type ContextMenuProps = {
   menu: ContextMenuState;
   onClose: () => void;
   onAddNode: (kind: NodeKind, at: { x: number; y: number }) => void;
   onNodeAction: (action: 'delete' | 'duplicate' | 'disconnect') => void;
+  /** Called by wire-from-port variant when the user picks a kind.
+   *  Parent creates the node AND wires the source port to the new node. */
+  onAddWiredNode?: (
+    kind: NodeKind,
+    at: { x: number; y: number },
+    source: { nodeId: NodeId; portId: string; side: 'in' | 'out' },
+  ) => void;
 };
 
-export function ContextMenu({ menu, onClose, onAddNode, onNodeAction }: ContextMenuProps) {
+export function ContextMenu({ menu, onClose, onAddNode, onNodeAction, onAddWiredNode }: ContextMenuProps) {
+  // Categories the menu displays, in order. Keep in sync with
+  // NodeKindDef['category'] in registry.ts. Any new category added there
+  // must be listed here or those nodes won't appear in the menu.
+  const CATEGORY_ORDER = ['input', 'gen', 'edit', 'utility', 'output'] as const;
+  type Cat = typeof CATEGORY_ORDER[number];
+  const CATEGORY_LABELS: Record<Cat, string> = {
+    input:   'Add input',
+    gen:     'Add gen',
+    edit:    'Add edit',
+    utility: 'Add utility',
+    output:  'Add output',
+  };
+
   const grouped = useMemo(() => {
-    const g: Record<string, { kind: NodeKind; label: string }[]> = {
-      input: [], gen: [], utility: [], output: [],
+    const g: Record<Cat, { kind: NodeKind; label: string }[]> = {
+      input: [], gen: [], edit: [], utility: [], output: [],
     };
     for (const def of Object.values(NODE_KINDS)) {
       if (def.hiddenFromPalette) continue;
-      g[def.category].push({ kind: def.kind, label: def.label });
+      const cat = def.category as Cat;
+      // Defensive: if a node's category isn't one we recognize, skip it
+      // rather than crash the menu (and thus the whole canvas).
+      if (!g[cat]) continue;
+      g[cat].push({ kind: def.kind, label: def.label });
     }
     return g;
   }, []);
@@ -309,22 +346,58 @@ export function ContextMenu({ menu, onClose, onAddNode, onNodeAction }: ContextM
       )}
       {menu.kind === 'canvas' && (
         <>
-          {(['input', 'gen', 'utility', 'output'] as const).map((cat) => (
-            <div key={cat}>
-              <div className="ne-context-sub-label">Add {cat}</div>
-              {grouped[cat].map((item) => (
-                <div
-                  key={item.kind}
-                  className="ne-context-item"
-                  onClick={() => {
-                    onAddNode(item.kind, { x: menu.canvasX, y: menu.canvasY });
-                    onClose();
-                  }}
-                >
-                  {item.label}
-                </div>
-              ))}
-            </div>
+          {CATEGORY_ORDER.map((cat) => (
+            grouped[cat].length === 0 ? null : (
+              <div key={cat}>
+                <div className="ne-context-sub-label">{CATEGORY_LABELS[cat]}</div>
+                {grouped[cat].map((item) => (
+                  <div
+                    key={item.kind}
+                    className="ne-context-item"
+                    onClick={() => {
+                      onAddNode(item.kind, { x: menu.canvasX, y: menu.canvasY });
+                      onClose();
+                    }}
+                  >
+                    {item.label}
+                  </div>
+                ))}
+              </div>
+            )
+          ))}
+        </>
+      )}
+      {menu.kind === 'wire-from-port' && (
+        <>
+          <div className="ne-context-sub-label" style={{ color: '#8ea9ff' }}>
+            Wire {menu.sourceSide === 'out' ? '→ to' : '← from'}
+          </div>
+          {CATEGORY_ORDER.map((cat) => (
+            grouped[cat].length === 0 ? null : (
+              <div key={cat}>
+                <div className="ne-context-sub-label">{CATEGORY_LABELS[cat]}</div>
+                {grouped[cat].map((item) => (
+                  <div
+                    key={item.kind}
+                    className="ne-context-item"
+                    onClick={() => {
+                      if (onAddWiredNode) {
+                        onAddWiredNode(
+                          item.kind,
+                          { x: menu.canvasX, y: menu.canvasY },
+                          { nodeId: menu.sourceNodeId, portId: menu.sourcePortId, side: menu.sourceSide },
+                        );
+                      } else {
+                        onAddNode(item.kind, { x: menu.canvasX, y: menu.canvasY });
+                      }
+                      onClose();
+                    }}
+                  >
+                    {item.label}
+                  </div>
+                ))}
+              </div>
+            )
           ))}
         </>
       )}

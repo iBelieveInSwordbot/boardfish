@@ -46,7 +46,14 @@ export type NodeKind =
   | 'resize'
   | 'blur'
   | 'invert'
-  | 'extract-frame';
+  | 'extract-frame'
+  // I/O nodes — added in v1.1.0. Import loads a local file into the graph
+  // as an image/video source. Export is a leaf that lets the user download
+  // the wired upstream media. Frame-Fix runs the aifix.py Python tool on
+  // an upstream video for skip/dupe detection + framerate ops.
+  | 'frame-fix'
+  | 'import'
+  | 'export';
 
 export type PortDataType = 'text' | 'image' | 'video' | 'any';
 
@@ -67,6 +74,15 @@ export type NodeOutput = {
   text?: string;
   mime?: string;
   generatedAt?: number;
+  /**
+   * Stable generation index for this node — 1-based, monotonically
+   * increasing, assigned at creation time. Survives promotion (hearting a
+   * history frame doesn't renumber the frames). When absent (legacy saved
+   * projects), display code backfills a stable number from the
+   * generatedAt-sorted position across [output, ...history]. See
+   * `nextSeqForNode` in graph-utils.ts.
+   */
+  seq?: number;
 };
 
 // -----------------------------------------------------------------------
@@ -288,6 +304,20 @@ export function defaultPortsFor(kind: NodeKind, data?: Record<string, unknown>):
         { id: 'in', side: 'in', dataType: 'video', label: 'video' },
         { id: 'out', side: 'out', dataType: 'image', label: 'image' },
       ];
+    // ---- I/O nodes (v1.1.0) ----
+    case 'frame-fix':
+      return [
+        { id: 'in', side: 'in', dataType: 'video', label: 'video' },
+        { id: 'out', side: 'out', dataType: 'video', label: 'fixed' },
+      ];
+    case 'import':
+      return [
+        { id: 'out', side: 'out', dataType: 'any', label: 'media' },
+      ];
+    case 'export':
+      return [
+        { id: 'in', side: 'in', dataType: 'any', label: 'media' },
+      ];
   }
 }
 
@@ -455,6 +485,38 @@ export function defaultDataFor(kind: NodeKind): Record<string, unknown> {
         frame: 0,
         // Which of the two fields is authoritative in the UI: 'time' | 'frame'.
         pickBy: 'time',
+      };
+    // ---- I/O nodes (v1.1.0) ----
+    case 'frame-fix':
+      return {
+        detectMissing: true,
+        detectDuplicates: true,
+        // 'exact' catches near-exact adjacent dupes with EXACT_DUP_PARAMS in
+        // the Python tool; 'near' exposes a 1..10 sensitivity slider that
+        // picks a preset from NEAR_DUP_PRESETS.
+        dupMode: 'exact',
+        dupSensitivity: 5,
+        // When true, replace duplicate runs with RIFE-synthesized frames
+        // instead of dropping them (keeps the source length identical).
+        dupesDropInterpolate: false,
+        // Multi-select is allowed in the UI but v1.1.0 only APPLIES the first.
+        // v1.2 will fan out one video per mode.
+        framerateModes: [] as string[],
+        posterizeEnabled: false,
+        posterizeN: 2,
+        interpModel: 'rife-v4.6',
+        crf: 18,
+      };
+    case 'import':
+      return {
+        mediaId: '',
+        mediaUrl: '',
+        mediaKind: '' as 'image' | 'video' | '',
+        filename: '',
+      };
+    case 'export':
+      return {
+        filename: 'export',
       };
   }
 }

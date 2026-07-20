@@ -293,6 +293,12 @@
   /* Labels must NEVER cover interactive UI (media toolbar, video controls,
    expand icon, etc.). Toolbar sits at z-index 6, so keep labels below. */
   z-index: 1;
+  /* Matt 2026-07-18: port labels were obscuring node preview media. Hidden
+     for now; port color coding (green=text, blue=image, orange=video,
+     grey=any) plus the `title` tooltip on hover carries the meaning.
+     To bring labels back, delete `display: none` on the next line or
+     scope with a `.show-port-labels` class on the editor root. */
+  display: none;
 }
 
 /* --- Resize handle (bottom-right corner of every node) --- */
@@ -428,6 +434,25 @@
   line-height: 1.35;
   overflow: hidden;
   white-space: pre-wrap;
+}
+/* Structured Text Prompt preview — no character cap. Grow with the node
+   and scroll when content exceeds the container so the entire
+   concatenated prompt is visible (Matt 2026-07-18). */
+.ne-node-preview-text--scroll {
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  word-break: break-word;
+}
+.ne-node-preview-text--scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.ne-node-preview-text--scroll::-webkit-scrollbar-thumb {
+  background: #3a3a45;
+  border-radius: 3px;
+}
+.ne-node-preview-text--scroll::-webkit-scrollbar-track {
+  background: transparent;
 }
 .ne-node-preview-empty {
   font-size: 11px;

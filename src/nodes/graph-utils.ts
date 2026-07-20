@@ -67,6 +67,71 @@ export function readNodeHistory(node: BaseNode): NodeOutput[] {
 }
 
 /**
+ * Next stable generation index for a node. Returns
+ *   max(seq across output + history) + 1
+ * defaulting to 1 when no prior gens exist. Callers should stamp new
+ * outputs (and every __historyExtras entry) with the returned seq so the
+ * UI can label them stably across heart-promote reorderings.
+ *
+ * When output/history entries are missing `seq` (legacy saved projects),
+ * we fall back to `1 + count-of-known-frames` which gives a reasonable
+ * upper-bound to avoid colliding with any backfilled displays.
+ */
+export function nextSeqForNode(node: BaseNode): number {
+  const hist = readNodeHistory(node);
+  const all: NodeOutput[] = [...hist];
+  if (node.output) all.push(node.output);
+  let maxSeq = 0;
+  let unknown = 0;
+  for (const f of all) {
+    const s = (f as { seq?: unknown }).seq;
+    if (typeof s === 'number' && Number.isFinite(s)) {
+      if (s > maxSeq) maxSeq = s;
+    } else {
+      unknown += 1;
+    }
+  }
+  if (maxSeq > 0) return maxSeq + 1;
+  // No sequenced frames yet — start above any legacy backfill would land.
+  return unknown + 1;
+}
+
+/**
+ * Return the seq for each frame in the given ordered list. If a frame
+ * already has a `seq`, use it. Otherwise backfill by giving the oldest
+ * unsequenced frame the next available small number, ordered by
+ * `generatedAt`. Stable across renders because ordering by `generatedAt`
+ * doesn't change when a heart-promote swap happens (the underlying
+ * timestamps are preserved).
+ */
+export function resolveFrameSeqs(frames: NodeOutput[]): number[] {
+  // Sort a copy by generatedAt ascending; earliest = seq 1.
+  const indexed = frames.map((f, i) => ({ f, i }));
+  const unseq = indexed
+    .filter(({ f }) => !(typeof (f as { seq?: unknown }).seq === 'number' && Number.isFinite((f as { seq?: number }).seq)))
+    .sort((a, b) => (a.f.generatedAt ?? 0) - (b.f.generatedAt ?? 0));
+  // Figure out which seqs are already taken so backfill doesn't collide.
+  const taken = new Set<number>();
+  for (const { f } of indexed) {
+    const s = (f as { seq?: unknown }).seq;
+    if (typeof s === 'number' && Number.isFinite(s)) taken.add(s);
+  }
+  const backfill = new Map<number, number>();
+  let next = 1;
+  for (const { i } of unseq) {
+    while (taken.has(next)) next += 1;
+    backfill.set(i, next);
+    taken.add(next);
+    next += 1;
+  }
+  return indexed.map(({ f, i }) => {
+    const s = (f as { seq?: unknown }).seq;
+    if (typeof s === 'number' && Number.isFinite(s)) return s;
+    return backfill.get(i) ?? i + 1;
+  });
+}
+
+/**
  * Push a previous output snapshot onto a node's per-node history and return
  * the new full array. Bounded to the most recent HISTORY_LIMIT entries so
  * long-running graphs don't inflate `data` indefinitely.
@@ -112,13 +177,18 @@ export function pushToHistory(
 }
 
 /**
- * Swap a history frame into `node.output` (in-place, no reorder).
+ * Swap a history frame into `node.output`, preserving chronological order.
  *
- * The chosen history frame becomes the new `node.output`. The old
- * `node.output` takes the chosen frame's SLOT in history — so all other
- * history frames keep their original positions. This is the heart-select
- * behavior Matt wants: hearted frame becomes current + goes to downstream,
- * everyone else stays put.
+ * Matt's rule (2026-07-18): version labels (v1, v2, …) and the strip's
+ * display order must stay stable across heart-promotes. Every frame has a
+ * `seq` stamped at generation time (see dag-executor.runNode) so labels
+ * always match the original generation number. To keep the strip's
+ * chronological order visually stable too, we promote by REMOVING the
+ * chosen frame from history and moving the old current into history at
+ * its ORIGINAL chronological position (based on generatedAt). Because
+ * we're using `seq` labels, the frames don't renumber even if the array
+ * ordering shifts — but keeping the chronological order intact means
+ * the strip never scrambles.
  *
  * `historyIndex` is 0-based indexing into the array returned by
  * `readNodeHistory` (oldest→newest). Returns the mutated graph, or the
@@ -134,15 +204,24 @@ export function promoteFrameToCurrent(
   const hist = readNodeHistory(node);
   if (historyIndex < 0 || historyIndex >= hist.length) return g;
   const chosen = hist[historyIndex];
-  const nextHist = hist.slice();
   const oldCurrent = node.output;
-  // In-place swap: chosen slot now holds the demoted old-current (or gets
-  // dropped if there was no old current). The chosen frame moves out of
-  // history entirely and becomes node.output.
+  // Remove the chosen frame from history — it's about to become current.
+  const withoutChosen = hist.filter((_, i) => i !== historyIndex);
+  // Insert the demoted old-current back into history at its chronological
+  // position (sorted by generatedAt ascending, i.e. oldest first). This
+  // keeps the strip stable even after multiple promotes.
+  let nextHist: NodeOutput[];
   if (oldCurrent && oldCurrent.dataUrl) {
-    nextHist[historyIndex] = { ...oldCurrent };
+    const demoted = { ...oldCurrent } as NodeOutput;
+    const demotedAt = demoted.generatedAt ?? 0;
+    const insertAt = withoutChosen.findIndex(
+      (h) => (h.generatedAt ?? 0) > demotedAt,
+    );
+    nextHist = withoutChosen.slice();
+    if (insertAt < 0) nextHist.push(demoted);
+    else nextHist.splice(insertAt, 0, demoted);
   } else {
-    nextHist.splice(historyIndex, 1);
+    nextHist = withoutChosen;
   }
   const nextNode: BaseNode = {
     ...node,
@@ -153,6 +232,9 @@ export function promoteFrameToCurrent(
       text: chosen.text,
       mime: chosen.mime,
       generatedAt: chosen.generatedAt ?? Date.now(),
+      // Preserve the stable seq from the promoted frame so its label
+      // number doesn't change when it becomes current.
+      seq: (chosen as { seq?: number }).seq,
     },
   };
   return {
@@ -321,6 +403,10 @@ export function updateNodeData(
     const patchClean = { ...patch };
     if (Array.isArray(extrasRaw) && extrasRaw.length > 0) {
       const existing = readNodeHistory(n);
+      // Extras already come pre-stamped with seqs from the executor
+      // (see dag-executor.runImageGen / runMovieGen). Just append them
+      // to the live history array. Downstream display code reads
+      // `frame.seq` so ordering is stable across heart-promotes.
       const merged = [...existing, ...(extrasRaw as NodeOutput[])];
       patchClean.__history = merged;
       delete patchClean.__historyExtras;

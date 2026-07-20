@@ -522,8 +522,10 @@ app.get('/api/fal/price', async (req, res) => {
     return res.status(503).json({ error: 'FAL_ADMIN_KEY not configured on server' });
   }
   const endpointId = String(req.query.endpoint || '').trim();
-  if (!endpointId || !endpointId.startsWith('fal-ai/')) {
-    return res.status(400).json({ error: 'endpoint (fal-ai/...) query param required' });
+  // Accept any endpoint slug (fal-ai/*, bytedance/*, openai/*, google/*, ...).
+  // Just guard against obviously malformed values (no slash → not an endpoint).
+  if (!endpointId || !endpointId.includes('/') || endpointId.length > 200) {
+    return res.status(400).json({ error: 'endpoint slug (vendor/model[/variant]) query param required' });
   }
   try {
     const info = await fetchFalPrice(endpointId);
@@ -918,8 +920,27 @@ app.get('/api/llm/models', async (req, res) => {
 });
 
 // Decode a `data:<mime>;base64,<b64>` URL to a Buffer + inferred file ext.
+// Also accepts media-store URLs (`/api/media/<sha>.<ext>` or the full
+// absolute variant from the browser) so Import nodes — whose output is a
+// media-store URL, not an inline data URL — can feed Image Describer,
+// LLM Run, Video Describer, etc.
 function dataUrlToBuffer(url) {
   if (typeof url !== 'string') throw new Error('data URL is not a string');
+  // Media-store URL branch. Handle both the relative form and an absolute
+  // URL that still contains `/api/media/<id>` (browser sometimes hands us
+  // the resolved absolute path in exported/saved projects).
+  const mediaMatch = url.match(/\/api\/media\/([a-f0-9]{64}\.[a-z0-9]{1,6})(?:\?.*)?$/i);
+  if (mediaMatch) {
+    const id = mediaMatch[1];
+    const [sha, ext] = id.split('.');
+    const filepath = path.join(MEDIA_DIR, sha.slice(0, 2), `${sha.slice(2)}.${ext}`);
+    if (!existsSync(filepath)) {
+      throw new Error(`media-store URL not found on disk: ${id}`);
+    }
+    const buf = readFileSync(filepath);
+    const mime = MIME_FOR_EXT[ext] || 'application/octet-stream';
+    return { buf, mime, ext };
+  }
   const m = url.match(/^data:([^;,]+)(?:;base64)?,(.+)$/);
   if (!m) throw new Error('data URL malformed');
   const mime = m[1];
@@ -1547,6 +1568,334 @@ app.post('/api/edit/apply', async (req, res) => {
   }
 });
 
+// ---------- Frame Fix (v1.1.0) ----------
+// Runs the aifix.py Python tool on an uploaded video for skip/dupe detection
+// and (optionally) framerate conversion + posterize time. Ports the ffmpeg
+// filter construction from aifix_app.py::apply_framerate_op.
+
+const FRAME_FIX_PY = process.env.FRAME_FIX_PY
+  || '/Users/swordbot/wozbot/frame-skip-detector/aifix.py';
+const FRAME_FIX_PYTHON = process.env.FRAME_FIX_PYTHON || '/opt/homebrew/bin/python3.11';
+const FRAME_FIX_TIMEOUT_MS = 10 * 60_000;  // 10 minutes
+
+// Slider 1..10 -> (mad_threshold, phash_distance, min_run). Mirrors
+// NEAR_DUP_PRESETS in aifix_app.py.
+const NEAR_DUP_PRESETS = {
+  1:  [1.0,  1,  3],
+  2:  [1.5,  2,  3],
+  3:  [2.0,  3,  3],
+  4:  [3.0,  4,  3],
+  5:  [4.0,  6,  3],
+  6:  [5.0,  7,  3],
+  7:  [6.0,  8,  3],
+  8:  [7.0, 10,  3],
+  9:  [8.0, 11,  3],
+  10: [10.0, 14, 3],
+};
+const EXACT_DUP_PARAMS = [0.5, 2, 2];
+
+// Ffprobe: return video fps as a string 'num/den'. Fallback '24'.
+async function probeSourceFps(inputPath) {
+  return new Promise((resolve) => {
+    const args = [
+      '-v', 'error',
+      '-select_streams', 'v:0',
+      '-show_entries', 'stream=avg_frame_rate',
+      '-of', 'csv=p=0',
+      inputPath,
+    ];
+    const child = spawn('ffprobe', args);
+    let out = '';
+    child.stdout.on('data', (b) => { out += b.toString(); });
+    child.on('close', () => {
+      const val = out.trim();
+      resolve(val && val !== '0/0' ? val : '24');
+    });
+    child.on('error', () => resolve('24'));
+  });
+}
+
+async function probeHasAudio(inputPath) {
+  return new Promise((resolve) => {
+    const args = [
+      '-v', 'error',
+      '-select_streams', 'a:0',
+      '-show_entries', 'stream=index',
+      '-of', 'csv=p=0',
+      inputPath,
+    ];
+    const child = spawn('ffprobe', args);
+    let out = '';
+    child.stdout.on('data', (b) => { out += b.toString(); });
+    child.on('close', () => resolve(out.trim().length > 0));
+    child.on('error', () => resolve(false));
+  });
+}
+
+// Build ffmpeg args for a framerate conversion + optional posterize step.
+// Ported from aifix_app.py::apply_framerate_op. `expand2430` / `expand242997`
+// modes use per-frame planning in the Python version; we approximate here
+// with `-vf fps=<target>` (evenly duplicates frames) which is close enough
+// for the v1.1.0 UX. Returns an args array (input path already included
+// via -i src) OR null when no re-encode is needed.
+function buildFramerateArgs(src, dst, mode, posterizeEnabled, posterizeN, crf, srcFpsStr, hasAudio) {
+  let vfParts = [];
+  let rArg = [];
+  let atempo = null;
+  let srcFps = 24.0;
+  try {
+    const [num, den] = srcFpsStr.split('/').map(Number);
+    if (den && Number.isFinite(num / den)) srcFps = num / den;
+  } catch { /* ignore */ }
+  let target = null; // for posterize suffix
+  switch (mode) {
+    case 'conform24': {
+      const ratio = srcFps / 24.0;
+      vfParts.push(`setpts=PTS*${ratio.toFixed(6)}`);
+      rArg = ['-r', '24'];
+      atempo = Math.abs(ratio - 1.0) > 0.003 ? ratio : null;
+      target = '24';
+      break;
+    }
+    case 'conform30': {
+      const ratio = srcFps / 30.0;
+      vfParts.push(`setpts=PTS*${ratio.toFixed(6)}`);
+      rArg = ['-r', '30'];
+      atempo = 30.0 / srcFps;
+      target = '30';
+      break;
+    }
+    case 'conform2997': {
+      const ratio = srcFps * 1001.0 / 30000.0;
+      vfParts.push(`setpts=PTS*${ratio.toFixed(6)}`);
+      rArg = ['-r', '30000/1001'];
+      atempo = (30000.0 / 1001.0) / srcFps;
+      target = '30000/1001';
+      break;
+    }
+    case 'expand2430': {
+      // v1.1.0 simplification: use `fps=30` filter to evenly duplicate frames.
+      // The Python tool uses random-dup planning; visually similar for short GenAI clips.
+      vfParts.push('fps=30');
+      rArg = ['-r', '30'];
+      atempo = null;
+      target = '30';
+      break;
+    }
+    case 'expand242997': {
+      vfParts.push('fps=30000/1001');
+      rArg = ['-r', '30000/1001'];
+      atempo = null;
+      target = '30000/1001';
+      break;
+    }
+    case 'pulldown': {
+      vfParts.push('telecine=pattern=23');
+      rArg = ['-r', '30000/1001'];
+      atempo = null;
+      target = '30000/1001';
+      break;
+    }
+    case 'none':
+    case null:
+    case undefined:
+    case '': {
+      target = srcFpsStr || '24';
+      break;
+    }
+    default:
+      throw new Error(`unknown framerate mode: ${mode}`);
+  }
+  if (posterizeEnabled && posterizeN >= 2) {
+    vfParts.push(`fps=${target}/${posterizeN}`);
+    vfParts.push(`fps=${target}`);
+  }
+  if (vfParts.length === 0 && rArg.length === 0) return null;
+  const args = ['-i', src];
+  if (vfParts.length > 0) args.push('-vf', vfParts.join(','));
+  if (rArg.length > 0) args.push(...rArg);
+  args.push('-c:v', 'libx264', '-crf', String(crf), '-preset', 'medium', '-pix_fmt', 'yuv420p');
+  if (hasAudio) {
+    if (atempo != null && Math.abs(atempo - 1.0) > 0.001) {
+      args.push('-af', `atempo=${atempo.toFixed(6)}`, '-c:a', 'aac', '-b:a', '192k');
+    } else {
+      args.push('-c:a', 'copy');
+    }
+  } else {
+    args.push('-an');
+  }
+  args.push('-movflags', '+faststart', '-y', dst);
+  return args;
+}
+
+function runPython(args, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(FRAME_FIX_PYTHON, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (b) => { stdout += b.toString(); });
+    child.stderr.on('data', (b) => { stderr += b.toString(); });
+    const t = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch { /* ignore */ }
+      reject(new Error(`python timeout after ${Math.round(timeoutMs / 1000)}s`));
+    }, timeoutMs);
+    child.on('error', (err) => { clearTimeout(t); reject(err); });
+    child.on('close', (code) => {
+      clearTimeout(t);
+      if (code === 0) resolve({ stdout, stderr });
+      else reject(new Error(`aifix.py exited ${code}: ${stderr.slice(-800) || stdout.slice(-800)}`));
+    });
+  });
+}
+
+app.post('/api/frame-fix', async (req, res) => {
+  const {
+    videoDataUrl,
+    mediaId,
+    detectMissing,
+    detectDuplicates,
+    dupMode,
+    dupSensitivity,
+    dupesDropInterpolate,
+    framerateModes,
+    posterizeEnabled,
+    posterizeN,
+    interpModel,
+    crf,
+  } = req.body || {};
+
+  const tmpFiles = [];
+  const cleanup = () => {
+    for (const p of tmpFiles) { try { unlinkSync(p); } catch { /* ignore */ } }
+  };
+
+  try {
+    // ---- 1. Resolve the input video to a temp file ----
+    let inFile = null;
+    if (typeof videoDataUrl === 'string' && videoDataUrl.startsWith('data:')) {
+      const { buf, ext } = dataUrlToBuffer(videoDataUrl);
+      const hash = createHash('sha1').update(buf).digest('hex').slice(0, 12);
+      inFile = path.join(EDIT_TMP_DIR, `framefix-in-${hash}.${ext || 'mp4'}`);
+      writeFileSync(inFile, buf);
+      tmpFiles.push(inFile);
+    } else if (typeof mediaId === 'string' && mediaId.length > 0) {
+      // mediaId can be either bare "<sha>.<ext>" OR just an id-like path from /api/media/.
+      const cleanId = mediaId.replace(/^\/api\/media\//, '');
+      if (!/^[a-f0-9]{64}\.[a-z0-9]{1,6}$/i.test(cleanId)) {
+        return res.status(400).json({ error: 'invalid mediaId' });
+      }
+      const [sha, ext] = cleanId.split('.');
+      const stored = path.join(MEDIA_DIR, sha.slice(0, 2), `${sha.slice(2)}.${ext}`);
+      if (!existsSync(stored)) return res.status(404).json({ error: `mediaId not found: ${cleanId}` });
+      inFile = stored;   // no cleanup for stored media
+    } else {
+      return res.status(400).json({ error: 'videoDataUrl or mediaId required' });
+    }
+
+    // ---- 2. Run aifix.py if any detection is requested ----
+    const hash = createHash('sha1').update(inFile + Date.now()).digest('hex').slice(0, 12);
+    const detectSkips = Boolean(detectMissing);
+    const detectDupes = Boolean(detectDuplicates);
+    let afterDetectFile = inFile;
+
+    if (detectSkips || detectDupes) {
+      const outAifix = path.join(EDIT_TMP_DIR, `framefix-aifix-${hash}.mp4`);
+      tmpFiles.push(outAifix);
+
+      const args = [FRAME_FIX_PY, inFile, outAifix, '--quiet'];
+      if (detectSkips) args.push('--detect-skips');
+      if (detectDupes) args.push('--detect-dupes');
+
+      // Duplicate detection params
+      if (detectDupes) {
+        const [mad, phash, minRun] = dupMode === 'near'
+          ? (NEAR_DUP_PRESETS[Math.max(1, Math.min(10, Math.round(Number(dupSensitivity) || 5)))] || NEAR_DUP_PRESETS[5])
+          : EXACT_DUP_PARAMS;
+        args.push('--dupes-mad-threshold', String(mad));
+        args.push('--dupes-phash-distance', String(phash));
+        args.push('--dupes-min-run', String(minRun));
+        if (dupesDropInterpolate) args.push('--dupes-drop-interpolate');
+      }
+
+      if (typeof interpModel === 'string' && interpModel.trim()) {
+        args.push('--rife-model', interpModel.trim());
+      }
+      if (Number.isFinite(Number(crf))) {
+        args.push('--crf', String(Math.max(10, Math.min(30, Math.round(Number(crf))))));
+      }
+
+      console.log('[frame-fix] running aifix.py:', args.slice(1).join(' '));
+      try {
+        await runPython(args, FRAME_FIX_TIMEOUT_MS);
+      } catch (err) {
+        cleanup();
+        return res.status(500).json({ error: `aifix.py failed: ${err.message || err}` });
+      }
+      if (!existsSync(outAifix)) {
+        cleanup();
+        return res.status(500).json({ error: 'aifix.py produced no output' });
+      }
+      afterDetectFile = outAifix;
+    }
+
+    // ---- 3. Framerate conversion + posterize (single mode for v1.1.0) ----
+    const modes = Array.isArray(framerateModes) ? framerateModes.filter((x) => typeof x === 'string' && x.length > 0) : [];
+    const mode = modes[0] || null;
+    const needFrOp = Boolean(mode) || Boolean(posterizeEnabled);
+    let finalFile = afterDetectFile;
+
+    if (needFrOp) {
+      const srcFpsStr = await probeSourceFps(afterDetectFile);
+      const hasAudio = await probeHasAudio(afterDetectFile);
+      const outFr = path.join(EDIT_TMP_DIR, `framefix-fr-${hash}.mp4`);
+      tmpFiles.push(outFr);
+      const args = buildFramerateArgs(
+        afterDetectFile,
+        outFr,
+        mode,
+        Boolean(posterizeEnabled),
+        Math.max(2, Math.min(100, Math.round(Number(posterizeN) || 2))),
+        Math.max(10, Math.min(30, Math.round(Number(crf) || 18))),
+        srcFpsStr,
+        hasAudio,
+      );
+      if (args) {
+        console.log('[frame-fix] running ffmpeg:', args.join(' '));
+        try {
+          await runFfmpeg(args);
+        } catch (err) {
+          cleanup();
+          return res.status(500).json({ error: `framerate op failed: ${err.message || err}` });
+        }
+        if (existsSync(outFr)) finalFile = outFr;
+      }
+    }
+
+    // ---- 4. Store the final output in the media store, return { mediaId, mediaUrl, dataUrl } ----
+    if (!existsSync(finalFile)) {
+      cleanup();
+      return res.status(500).json({ error: 'no output file produced' });
+    }
+    const outBuf = readFileSync(finalFile);
+    const stored = storeMediaBytes(outBuf, 'video/mp4');
+    const id = `${stored.sha}.${stored.ext}`;
+    // Also return a data URL so the executor can inline into the graph.
+    const dataUrl = `data:video/mp4;base64,${outBuf.toString('base64')}`;
+    cleanup();
+    return res.json({
+      ok: true,
+      dataUrl,
+      mediaId: id,
+      mediaUrl: `/api/media/${id}`,
+      mime: 'video/mp4',
+    });
+  } catch (err) {
+    console.error('[frame-fix] error', err);
+    cleanup();
+    return res.status(500).json({ error: String(err.message || err) });
+  }
+});
+
 // ---------- helpers ----------
 
 // Best-effort JSON extraction from a Ronan reply. Ronan is instructed to return
@@ -1805,6 +2154,7 @@ server.listen(PORT, HOST, () => {
   console.log(`  POST /api/llm/describe-image { imageDataUrl, modelId?, instructions? }`);
   console.log(`  POST /api/llm/describe-video { videoDataUrl, modelId?, instructions? }`);
   console.log(`  POST /api/edit/apply        { tool, data, mediaKind, dataUrl } — crop/resize/blur/invert/extract-frame`);
+  console.log(`  POST /api/frame-fix         { videoDataUrl|mediaId, detectMissing, detectDuplicates, dupMode, ... } — aifix.py + framerate ops`);
   console.log(`  GET  /api/health`);
 });
 

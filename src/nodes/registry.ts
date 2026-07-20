@@ -40,6 +40,7 @@ import {
   cloneFieldsFresh,
   concatFields,
   makeFieldId,
+  normalizePresetOptions,
   type PromptField,
   type PresetGroupId,
 } from './text-prompt-fields';
@@ -80,6 +81,24 @@ export type ActorRefOption = {
 export const ActorRefContext = createContext<{
   actors: ActorRefOption[];
 }>({ actors: [] });
+
+// ---------------------------------------------------------------------------
+// Out-node target-panel context. The NodeEditor tells the Out node preview
+// what real board panel it will land in (index, corner note, caption
+// fields, project aspect + label styling) so the preview can render a
+// pixel-accurate mini-board look. Optional — renders fall back to generic
+// styling when absent.
+// ---------------------------------------------------------------------------
+export type OutPanelInfo = {
+  panelIndex: number;        // 1-based within its storyboard
+  panelNumberPrefix: string; // e.g. "PANEL " so header reads "PANEL 01"
+  cornerNote: string;        // right-aligned corner text (e.g. "S01")
+  cornerNotePrefix: string;
+  fields: Array<{ id: string; label: string; value: string }>;
+  panelAspectRatio: number;  // width / height
+};
+
+export const OutPanelContext = createContext<OutPanelInfo | null>(null);
 
 // Local view of a FAL model as this file needs it (id + label + coming-soon flag).
 // Sourced from src/ai/fal-models.ts, filtered by kind.
@@ -161,6 +180,10 @@ export type NodeKindDef = {
     onChangeData: (patch: Record<string, unknown>) => void;
     onGenerate: () => void;
     inFlight: boolean;
+    /** True when multiple gen-capable nodes are selected. Per-node
+     *  Generate button should be disabled and the batch "Generate all"
+     *  in the top-bar handles the run. */
+    multiGenSelected?: boolean;
   }>;
 };
 
@@ -491,6 +514,10 @@ const TextPromptPreview: FC<PreviewProps> = ({ node, onChangeData, onRun }) => {
   // Structured mode: read-only concat preview. Users edit fields in the
   // Inspector — the node body just shows the resolved prompt so a glance
   // tells them what will actually go to the model.
+  //
+  // Matt's rule (2026-07-18): show the ENTIRE concatenated prompt. If the
+  // text overflows the node's rendered height, the container scrolls;
+  // resizing the node exposes more without a hard character cap.
   if (structured) {
     const composed = concatFields(fields, text).trim();
     return createElement(
@@ -499,8 +526,13 @@ const TextPromptPreview: FC<PreviewProps> = ({ node, onChangeData, onRun }) => {
       composed
         ? createElement(
             'div',
-            { className: 'ne-node-preview-text' },
-            truncate(composed, 300),
+            {
+              className: 'ne-node-preview-text ne-node-preview-text--scroll',
+              // Stop wheel events from bubbling to the canvas zoom handler so
+              // users can scroll the preview instead of zooming the canvas.
+              onWheel: (e: React.WheelEvent) => e.stopPropagation(),
+            },
+            composed,
           )
         : createElement(
             'div',
@@ -657,22 +689,39 @@ const MovieGenPreview: FC<PreviewProps> = ({ node, onChangeData, onPromoteFrame 
   );
 };
 
-// Out node visualized as a mini storyboard page: numbered header, image frame,
-// and a caption strip. Makes it visually obvious that this is what will land
-// in the panel when the editor closes.
+// Out node visualized as a mini storyboard page (Matt 2026-07-18):
+// renders the SAME chrome the target board panel will render — monospace
+// "PANEL NN" header, right-corner note (e.g. "S01"), the current upstream
+// media dropped into a slot that matches the project's panel aspect ratio,
+// and a caption strip listing every non-empty panel field. When the
+// OutPanelContext isn't provided we fall back to generic numbering
+// ("01" / "OUT") and a 16:9 slot.
 const OutPreview: FC<PreviewProps> = ({ node, onRun, onPromoteFrame, onChangeData }) => {
   const url = node.output?.dataUrl;
   const kind = node.output?.kind;
   const history = readNodeHistory(node);
+  const panelInfo = useContext(OutPanelContext);
+
+  const numPrefix = (panelInfo?.panelNumberPrefix ?? '').trim();
+  const numText = panelInfo
+    ? `${numPrefix ? numPrefix.toUpperCase() + ' ' : ''}${String(panelInfo.panelIndex).padStart(2, '0')}`.trim()
+    : '01';
+  const cornerText = panelInfo
+    ? (panelInfo.cornerNote?.trim() || `S${String(panelInfo.panelIndex).padStart(2, '0')}`)
+    : 'OUT';
+  const aspect = panelInfo?.panelAspectRatio && panelInfo.panelAspectRatio > 0
+    ? panelInfo.panelAspectRatio
+    : 16 / 9;
+  const fieldsToShow = (panelInfo?.fields ?? []).filter((f) => (f.value ?? '').trim() !== '');
+
   return createElement(
     'div',
     { className: 'ne-node-preview ne-node-preview--out-page' + (url ? '' : ' is-empty') },
-    // Header strip mimicking a storyboard panel number / corner note
     createElement(
       'div',
       { className: 'ne-out-page-header' },
-      createElement('span', { className: 'ne-out-page-num' }, '01'),
-      createElement('span', { className: 'ne-out-page-corner' }, 'OUT'),
+      createElement('span', { className: 'ne-out-page-num' }, numText),
+      createElement('span', { className: 'ne-out-page-corner' }, cornerText),
       onRun
         ? createElement(
             'button',
@@ -691,11 +740,13 @@ const OutPreview: FC<PreviewProps> = ({ node, onRun, onPromoteFrame, onChangeDat
           )
         : null,
     ),
-    // Image frame (or empty placeholder). Video Out shows first-frame poster
-    // through the shared MediaThumb — playback controls come along too.
+    // Image frame with real project aspect ratio.
     createElement(
       'div',
-      { className: 'ne-out-page-frame' },
+      {
+        className: 'ne-out-page-frame',
+        style: { aspectRatio: `${aspect}` },
+      },
       url
         ? renderMediaThumb({
             node,
@@ -708,11 +759,19 @@ const OutPreview: FC<PreviewProps> = ({ node, onRun, onPromoteFrame, onChangeDat
           })
         : createElement('div', { className: 'ne-out-page-empty' }, 'wire something to me'),
     ),
-    // Caption strip
+    // Caption strip: render each non-empty panel field as its own line.
     createElement(
       'div',
       { className: 'ne-out-page-caption' },
-      url ? 'panel image \u2192 storyboard' : 'wire something to me',
+      panelInfo && fieldsToShow.length > 0
+        ? fieldsToShow.map((f, i) =>
+            createElement(
+              'div',
+              { key: f.id ?? i, className: 'ne-out-page-caption-line' },
+              f.value.trim(),
+            ),
+          )
+        : (url ? 'panel image \u2192 storyboard' : 'wire something to me'),
     ),
   );
 };
@@ -1220,6 +1279,22 @@ function renderDurationControl(
   }
 
   // Number range fallback. Keep the schema's min/max/step and enforce them.
+  // Rock-solid guard: if `value` is anything that would render blank
+  // (undefined, null, NaN, "", or a string like "8s" that Number() rejects),
+  // fall back to durationInput.default → min → 5 so the input always
+  // displays a real number. This is defence-in-depth in case the effect
+  // above hasn't fired yet on the very first render after model switch.
+  const numericValue = (() => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim() !== '') {
+      const stripped = value.replace(/[^\d.\-]/g, '');
+      const n = Number(stripped !== '' ? stripped : value);
+      if (Number.isFinite(n)) return n;
+    }
+    if (typeof durationInput.default === 'number') return durationInput.default;
+    if (typeof durationInput.min === 'number') return durationInput.min;
+    return 5;
+  })();
   return createElement(
     Fragment,
     null,
@@ -1230,7 +1305,7 @@ function renderDurationControl(
       min: durationInput.min ?? 1,
       max: durationInput.max ?? 60,
       step: durationInput.step ?? 1,
-      value: Number(value ?? 5),
+      value: numericValue,
       onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
         const n = Number(e.target.value);
         onChangeData({ duration: Number.isFinite(n) ? n : (durationInput.default ?? 5) });
@@ -1456,15 +1531,22 @@ const TextPromptInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) =
         { value: '' },
         structured
           ? `— ${presetName || 'Custom fields'} —`
-          : '— Legacy single-field —',
+          : '— Text Prompt (legacy) —',
       ),
-      ...BUILT_IN_PRESETS.map((b) =>
-        createElement('option', { key: b.id, value: b.id }, `${b.name} (built-in)`),
+      // Top-level: Text Prompt (legacy — clears structured fields) + any
+      // non-example built-ins (currently just Multi Prompt).
+      createElement('option', { key: '__clear__', value: '__clear__' }, 'Text Prompt (legacy single field)'),
+      ...BUILT_IN_PRESETS.filter((b) => !b.example).map((b) =>
+        createElement('option', { key: b.id, value: b.id }, b.name),
       ),
-      savedPresets.length > 0
+      // "User Saved Presets" — built-in examples first, then the user's own.
+      (BUILT_IN_PRESETS.some((b) => b.example) || savedPresets.length > 0)
         ? createElement(
             'optgroup',
-            { key: 'saved', label: 'Saved' },
+            { key: 'saved', label: 'User Saved Presets' },
+            ...BUILT_IN_PRESETS.filter((b) => b.example).map((b) =>
+              createElement('option', { key: b.id, value: b.id }, `${b.name} (example)`),
+            ),
             ...savedPresets.map((p) =>
               createElement('option', { key: p.id, value: p.id }, p.name),
             ),
@@ -1476,9 +1558,6 @@ const TextPromptInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) =
         : null,
       savedPresets.length > 0
         ? createElement('option', { key: 'manage', value: '__manage__' }, 'Manage saved…')
-        : null,
-      structured
-        ? createElement('option', { key: 'clear', value: '__clear__' }, 'Custom (clear preset)')
         : null,
     ),
   );
@@ -1705,7 +1784,14 @@ const TextPromptInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) =
     }
 
     if (f.kind === 'preset-text') {
-      const opts = PRESET_GROUPS[f.presetGroup]?.options ?? [];
+      const rawOpts = PRESET_GROUPS[f.presetGroup]?.options ?? [];
+      const opts = normalizePresetOptions(rawOpts);
+      // Reverse lookup: does the current value match a normalized option?
+      // If yes, show that option as selected in the dropdown even after the
+      // full prompt has been written into the textarea (so the user can
+      // still see which preset they picked).
+      const matchedIdx = opts.findIndex((o) => !o.heading && o.value === f.value);
+      const rows = f.value && f.value.length > 80 ? 6 : 3;
       return createElement(
         'div',
         { key: f.id, className: 'tpv2-field' },
@@ -1725,16 +1811,30 @@ const TextPromptInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) =
           'select',
           {
             className: 'ne-inspect-select tpv2-preset-picker',
-            value: opts.includes(f.value) ? f.value : '',
-            onChange: (e: React.ChangeEvent<HTMLSelectElement>) =>
-              updateField(f.id, { value: e.target.value } as Partial<PromptField>),
+            value: matchedIdx >= 0 ? String(matchedIdx) : '',
+            onChange: (e: React.ChangeEvent<HTMLSelectElement>) => {
+              const raw = e.target.value;
+              if (!raw) return;
+              const idx = Number(raw);
+              const picked = opts[idx];
+              if (!picked || picked.heading) return;
+              updateField(f.id, { value: picked.value } as Partial<PromptField>);
+            },
           },
           createElement('option', { value: '' }, '— pick one —'),
-          ...opts.map((o) => createElement('option', { key: o, value: o }, o)),
+          ...opts.map((o, i) =>
+            o.heading
+              ? createElement(
+                  'option',
+                  { key: `h-${i}`, value: '', disabled: true, className: 'tpv2-preset-heading' },
+                  `─ ${o.label} ─`,
+                )
+              : createElement('option', { key: `o-${i}`, value: String(i) }, o.label),
+          ),
         ),
         createElement('textarea', {
           className: 'ne-inspect-textarea',
-          rows: 2,
+          rows,
           value: f.value,
           placeholder: `Free text (or pick from ${PRESET_GROUPS[f.presetGroup]?.label ?? 'preset'})`,
           onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) =>
@@ -1928,7 +2028,7 @@ const TextPromptInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) =
   );
 };
 
-const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
+const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight, multiGenSelected }) => {
   const rawModelId = String(node.data.modelId ?? 'nano-banana-pro');
   const modelId = resolveFalModelId(rawModelId) ?? rawModelId;
   const url = node.output?.dataUrl;
@@ -2084,7 +2184,7 @@ const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
           images: Math.max(1, Math.min(20, Number(node.data.num_images ?? 1))),
           resolutionMultiplier: resMul,
         },
-        disabled: inFlight,
+        disabled: inFlight || !!multiGenSelected,
         inFlight,
         busyLabel: 'Generating\u2026',
         onClick: () => onGenerate(),
@@ -2101,7 +2201,7 @@ const ImageGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
   );
 };
 
-const MovieGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
+const MovieGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight, multiGenSelected }) => {
   const rawModelId = String(node.data.modelId ?? 'veo-3');
   const modelId = resolveFalModelId(rawModelId) ?? rawModelId;
   const url = node.output?.dataUrl;
@@ -2244,13 +2344,19 @@ const MovieGenInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGen
             ? parseFloat(rawDuration.replace(/[^0-9.]/g, ''))
             : NaN;
       const variants = Math.max(1, Math.min(10, Math.floor(Number(node.data.num_videos ?? 1))));
+      // Same resolution scaling for video (Seedance uses pricingOverride).
+      const resValue = String(node.data.resolution ?? '');
+      const resMul = model?.pricingOverride?.resolutionMultiplier?.[resValue]
+        ?? model?.resolutionCostMultiplier?.[resValue]
+        ?? 1;
       return createElement(GenerateButtonWithCost, {
         endpointId: model?.endpoint ?? null,
         quantity: {
           seconds: Number.isFinite(durationSecs) && durationSecs > 0 ? durationSecs : undefined,
           variants,
+          resolutionMultiplier: resMul,
         },
-        disabled: inFlight,
+        disabled: inFlight || !!multiGenSelected,
         inFlight,
         busyLabel: 'Generating\u2026 (video takes 1-5 min)',
         onClick: () => onGenerate(),
@@ -3915,6 +4021,475 @@ const ExtractFrameInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, o
 };
 
 // ---------------------------------------------------------------------------
+// Frame Fix / Import / Export (v1.1.0)
+// ---------------------------------------------------------------------------
+
+// FRAMERATE_MODES ordering + labels mirror aifix_app.py so the node UI is
+// visually identical to the .app dialog. If you touch this, keep the mode
+// ids in sync with server.js's FRAMERATE_MODES table and aifix_app.py.
+const FRAMERATE_MODES: { id: string; label: string }[] = [
+  { id: 'conform24',    label: 'Conform 24 → 24 fps  (rebase wonky 23.75/23.94 GenAI clips)' },
+  { id: 'conform30',    label: 'Conform 24 → 30 fps  (retimes; audio pitches up)' },
+  { id: 'conform2997',  label: 'Conform 24 → 29.97 fps  (broadcast NTSC)' },
+  { id: 'expand2430',   label: 'Expand 24 → 30 fps  (keep duration; random dup, audio kept)' },
+  { id: 'expand242997', label: 'Expand 24 → 29.97 fps  (keep duration; random dup, audio kept)' },
+  { id: 'pulldown',     label: '3:2 pulldown → 29.97 fps  (interlaced, broadcast)' },
+];
+
+// Interp models exposed to the UI — the Python tool's INTERP_MODELS list.
+const INTERP_MODELS: { value: string; label: string }[] = [
+  { value: 'rife-v4.6',  label: 'RIFE v4.6 — latest, balanced (default)' },
+  { value: 'rife-v4',    label: 'RIFE v4 — earlier v4 weights' },
+  { value: 'rife-v3.1',  label: 'RIFE v3.1 — alt architecture' },
+  { value: 'rife-anime', label: 'RIFE anime — stylized content' },
+  { value: 'rife-HD',    label: 'RIFE HD — high-detail variant' },
+];
+
+const FrameFixPreview: FC<PreviewProps> = ({ node, onChangeData, onPromoteFrame }) => {
+  const history = useHistoryMirror(node, onChangeData);
+  const url = node.output?.dataUrl;
+  const modes = Array.isArray(node.data.framerateModes) ? (node.data.framerateModes as string[]) : [];
+  const parts: string[] = [];
+  if (node.data.detectMissing) parts.push('missing');
+  if (node.data.detectDuplicates) {
+    parts.push(node.data.dupMode === 'exact' ? 'dupes/exact' : `dupes/near-${node.data.dupSensitivity ?? 5}`);
+  }
+  if (modes.length > 0) parts.push(modes[0]);
+  if (node.data.posterizeEnabled) parts.push(`posterize/${node.data.posterizeN ?? 2}`);
+  const summary = parts.length > 0 ? parts.join(', ') : 'no ops';
+  return createElement(
+    'div',
+    { className: 'ne-node-preview ne-node-preview--video' + (url ? '' : ' is-empty') },
+    renderMediaThumb({
+      node,
+      kind: 'video',
+      currentUrl: url,
+      history,
+      onPromoteFrame,
+      onChangeData,
+      labelHint: 'framefix',
+    }),
+    createElement(
+      'div',
+      { className: 'ne-node-preview-caption' },
+      summary,
+    ),
+  );
+};
+
+const FrameFixInspector: NodeKindDef['Inspector'] = ({ node, onChangeData, onGenerate, inFlight }) => {
+  const detectMissing = Boolean(node.data.detectMissing ?? true);
+  const detectDuplicates = Boolean(node.data.detectDuplicates ?? true);
+  const dupMode = String(node.data.dupMode ?? 'exact');
+  const dupSensitivity = Math.max(1, Math.min(10, Number(node.data.dupSensitivity ?? 5)));
+  const dupesDropInterpolate = Boolean(node.data.dupesDropInterpolate ?? false);
+  const framerateModes = Array.isArray(node.data.framerateModes) ? (node.data.framerateModes as string[]) : [];
+  const posterizeEnabled = Boolean(node.data.posterizeEnabled ?? false);
+  const posterizeN = Math.max(2, Math.min(100, Number(node.data.posterizeN ?? 2)));
+  const interpModel = String(node.data.interpModel ?? 'rife-v4.6');
+  const crf = Math.max(10, Math.min(30, Number(node.data.crf ?? 18)));
+
+  const toggleFramerate = (id: string, checked: boolean) => {
+    const next = new Set(framerateModes);
+    if (checked) next.add(id); else next.delete(id);
+    // Preserve source ordering per FRAMERATE_MODES.
+    onChangeData({ framerateModes: FRAMERATE_MODES.map((m) => m.id).filter((mid) => next.has(mid)) });
+  };
+
+  const section = (title: string, ...kids: React.ReactNode[]) =>
+    createElement(
+      'div',
+      { className: 'ne-framefix-section' },
+      createElement('div', { className: 'ne-framefix-section-title' }, title),
+      ...kids,
+    );
+
+  const check = (label: string, value: boolean, onChange: (v: boolean) => void, disabled?: boolean) =>
+    createElement(
+      'label',
+      { className: 'ne-inspect-label', style: { display: 'flex', alignItems: 'center', gap: '6px', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1 } },
+      createElement('input', {
+        type: 'checkbox',
+        checked: value,
+        disabled,
+        onChange: (e: React.ChangeEvent<HTMLInputElement>) => onChange(e.target.checked),
+      }),
+      label,
+    );
+
+  return createElement(
+    'div',
+    { className: 'ne-inspect-body' },
+    createElement(
+      'div',
+      { className: 'ne-inspect-note' },
+      'AI Frame Fix — detect + repair frame skips / duplicate runs, and (optionally) convert framerate. Runs the aifix.py Python tool on the server.',
+    ),
+    section('Detection',
+      check('Detect missing frames', detectMissing, (v) => onChangeData({ detectMissing: v })),
+      check('Detect duplicate frames', detectDuplicates, (v) => onChangeData({ detectDuplicates: v })),
+    ),
+    section('Duplicate detection mode',
+      createElement(
+        'label',
+        { className: 'ne-inspect-label', style: { display: 'flex', alignItems: 'center', gap: '6px', opacity: detectDuplicates ? 1 : 0.5 } },
+        createElement('input', {
+          type: 'radio',
+          name: `dupMode-${node.id}`,
+          checked: dupMode === 'exact',
+          disabled: !detectDuplicates,
+          onChange: () => onChangeData({ dupMode: 'exact' }),
+        }),
+        'Exact (near-exact adjacent dupes)',
+      ),
+      createElement(
+        'label',
+        { className: 'ne-inspect-label', style: { display: 'flex', alignItems: 'center', gap: '6px', opacity: detectDuplicates ? 1 : 0.5 } },
+        createElement('input', {
+          type: 'radio',
+          name: `dupMode-${node.id}`,
+          checked: dupMode === 'near',
+          disabled: !detectDuplicates,
+          onChange: () => onChangeData({ dupMode: 'near' }),
+        }),
+        'Near (adjustable sensitivity)',
+      ),
+      dupMode === 'near'
+        ? createElement(
+            Fragment,
+            null,
+            createElement('label', { className: 'ne-inspect-label' }, `Sensitivity: ${dupSensitivity} (1 = strict, 10 = aggressive)`),
+            createElement('input', {
+              className: 'ne-inspect-input',
+              type: 'range',
+              min: 1, max: 10, step: 1,
+              value: String(dupSensitivity),
+              disabled: !detectDuplicates,
+              onChange: (e: React.ChangeEvent<HTMLInputElement>) => onChangeData({ dupSensitivity: Number(e.target.value) }),
+              style: { width: '100%' },
+            }),
+          )
+        : null,
+      check('Replace duplicates with RIFE-synth (keep length)',
+        dupesDropInterpolate,
+        (v) => onChangeData({ dupesDropInterpolate: v }),
+        !detectDuplicates,
+      ),
+    ),
+    section('Interpolation model',
+      renderSelectField(
+        'RIFE model',
+        interpModel,
+        INTERP_MODELS,
+        (v) => onChangeData({ interpModel: v }),
+        (detectMissing || dupesDropInterpolate) ? undefined : 'Only used when “Detect missing” or “Replace with RIFE-synth” is on.',
+      ),
+    ),
+    section('Frame rate conversion',
+      ...FRAMERATE_MODES.map((m) => check(m.label, framerateModes.includes(m.id), (v) => toggleFramerate(m.id, v))),
+      framerateModes.length > 1
+        ? createElement('div', { className: 'ne-inspect-note', style: { color: 'rgba(255,180,60,0.9)' } },
+            `Only the first selected mode (${framerateModes[0]}) will be applied. Multi-select coming later.`,
+          )
+        : null,
+      createElement('div', { className: 'ne-inspect-note', style: { fontSize: '11px' } },
+        'Conform speeds up playback; the bundled ffmpeg has no rubberband, so pitch shifts up on conform. Use expand modes to keep duration + audio.',
+      ),
+    ),
+    section('Posterize time',
+      check('Enable posterize (hold every N frames)', posterizeEnabled, (v) => onChangeData({ posterizeEnabled: v })),
+      posterizeEnabled
+        ? renderNumberField('N (frames to hold)', posterizeN, (n) => onChangeData({ posterizeN: Math.max(2, Math.min(100, Math.round(n))) }), { min: 2, max: 100, step: 1 })
+        : null,
+    ),
+    section('Encoding',
+      renderNumberField('CRF', crf, (n) => onChangeData({ crf: Math.max(10, Math.min(30, Math.round(n))) }), {
+        min: 10, max: 30, step: 1,
+        help: 'Lower = higher quality, larger file. 18 is visually lossless.',
+      }),
+    ),
+    createElement(
+      'button',
+      {
+        className: 'ne-inspect-generate' + (inFlight ? ' is-busy' : ''),
+        type: 'button',
+        disabled: inFlight,
+        onClick: () => onGenerate(),
+      },
+      inFlight ? 'Fixing frames…' : 'Run Frame Fix',
+    ),
+  );
+};
+
+const ImportPreview: FC<PreviewProps> = ({ node, onChangeData }) => {
+  const url = String((node.data as { mediaUrl?: unknown }).mediaUrl ?? '');
+  const kind = String((node.data as { mediaKind?: unknown }).mediaKind ?? '');
+  const filename = String((node.data as { filename?: unknown }).filename ?? '');
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const pickFile = () => inputRef.current?.click();
+  const onFileChosen = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!onChangeData) return;
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const { uploadFile } = await import('../ai/media-store');
+      const rec = await uploadFile(file);
+      const isVideo = file.type.startsWith('video/');
+      if (rec) {
+        onChangeData({
+          mediaId: rec.id,
+          mediaUrl: rec.url,
+          mediaKind: isVideo ? 'video' : 'image',
+          filename: file.name,
+        });
+      }
+    } finally {
+      if (inputRef.current) inputRef.current.value = '';
+    }
+  };
+  const hiddenInput = createElement('input', {
+    ref: inputRef,
+    type: 'file',
+    accept: 'image/*,video/*',
+    style: { display: 'none' },
+    onChange: onFileChosen,
+    onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+    onClick: (e: React.MouseEvent) => e.stopPropagation(),
+  });
+  if (!url) {
+    return createElement(
+      'div',
+      {
+        className: 'ne-node-preview ne-import-preview is-empty',
+        onClick: (e: React.MouseEvent) => {
+          e.stopPropagation();
+          pickFile();
+        },
+        onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+      },
+      '(empty — click to choose, or drop file onto canvas)',
+      hiddenInput,
+    );
+  }
+  return createElement(
+    'div',
+    {
+      className: 'ne-node-preview ne-import-preview',
+      onClick: (e: React.MouseEvent) => {
+        e.stopPropagation();
+        pickFile();
+      },
+      onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+      title: 'Click to replace file',
+    },
+    kind === 'video'
+      ? createElement('video', { src: url, muted: true, loop: true, autoPlay: true, playsInline: true })
+      : createElement('img', { src: url, alt: filename || 'imported media' }),
+    filename
+      ? createElement('div', { className: 'ne-node-preview-caption' }, filename)
+      : null,
+    hiddenInput,
+  );
+};
+
+const ImportInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) => {
+  const url = String((node.data as { mediaUrl?: unknown }).mediaUrl ?? '');
+  const kind = String((node.data as { mediaKind?: unknown }).mediaKind ?? '');
+  const filename = String((node.data as { filename?: unknown }).filename ?? '');
+  const [uploading, setUploading] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const onPick = () => inputRef.current?.click();
+  const onClear = () => onChangeData({ mediaId: '', mediaUrl: '', mediaKind: '', filename: '' });
+
+  const onFileChosen = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      // Lazy import so this file stays a .ts (no runtime top-level fetch impact).
+      const { uploadFile } = await import('../ai/media-store');
+      const rec = await uploadFile(file);
+      const isVideo = file.type.startsWith('video/');
+      if (rec) {
+        onChangeData({
+          mediaId: rec.id,
+          mediaUrl: rec.url,
+          mediaKind: isVideo ? 'video' : 'image',
+          filename: file.name,
+        });
+      } else {
+        // Fallback: keep the data URL locally. Not ideal for big videos but
+        // at least the node works.
+        const reader = new FileReader();
+        reader.onload = () => {
+          onChangeData({
+            mediaId: '',
+            mediaUrl: String(reader.result),
+            mediaKind: isVideo ? 'video' : 'image',
+            filename: file.name,
+          });
+        };
+        reader.readAsDataURL(file);
+      }
+    } finally {
+      setUploading(false);
+      if (inputRef.current) inputRef.current.value = '';
+    }
+  };
+
+  return createElement(
+    'div',
+    { className: 'ne-inspect-body' },
+    createElement(
+      'div',
+      { className: 'ne-inspect-note' },
+      'Import a local image or video into the graph. Files are uploaded to the media store so they survive page reload.',
+    ),
+    createElement('label', { className: 'ne-inspect-label' }, 'Filename'),
+    createElement('div', { className: 'ne-inspect-input', style: { padding: '6px 8px', opacity: filename ? 1 : 0.5 } }, filename || '(none)'),
+    createElement('label', { className: 'ne-inspect-label' }, 'Media kind'),
+    createElement('div', { className: 'ne-inspect-input', style: { padding: '6px 8px', opacity: kind ? 1 : 0.5 } }, kind || '(none)'),
+    createElement('input', {
+      ref: inputRef,
+      type: 'file',
+      accept: 'image/*,video/*',
+      style: { display: 'none' },
+      onChange: onFileChosen,
+    }),
+    createElement(
+      'button',
+      {
+        className: 'ne-inspect-generate',
+        type: 'button',
+        disabled: uploading,
+        onClick: onPick,
+      },
+      uploading ? 'Uploading…' : (url ? 'Replace file…' : 'Choose file…'),
+    ),
+    url
+      ? createElement(
+          'button',
+          {
+            className: 'ne-inspect-generate',
+            type: 'button',
+            style: { marginTop: '6px', background: 'rgba(255,80,80,0.2)', border: '1px solid rgba(255,80,80,0.4)' },
+            onClick: onClear,
+          },
+          'Clear',
+        )
+      : null,
+  );
+};
+
+// Trigger a browser download of the given URL with the given filename.
+// Handles both data: URLs and /api/media/... references.
+async function triggerDownload(url: string, filename: string): Promise<void> {
+  let href = url;
+  let cleanup: (() => void) | null = null;
+  if (!url.startsWith('data:')) {
+    // Fetch → blob → object URL. Ensures the download attribute is honored
+    // (some browsers ignore `download` for cross-origin refs).
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`);
+    const blob = await res.blob();
+    href = URL.createObjectURL(blob);
+    cleanup = () => URL.revokeObjectURL(href);
+  }
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = filename;
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  if (cleanup) setTimeout(cleanup, 5_000);
+}
+
+const ExportPreview: FC<PreviewProps> = ({ node }) => {
+  const outKind = node.output?.kind;
+  const outUrl = node.output?.dataUrl;
+  const filename = String((node.data as { filename?: unknown }).filename ?? 'export');
+  return createElement(
+    'div',
+    { className: 'ne-node-preview' + (outUrl ? '' : ' is-empty') },
+    outUrl
+      ? createElement(
+          Fragment,
+          null,
+          outKind === 'video'
+            ? createElement('video', { src: outUrl, muted: true, loop: true, autoPlay: true, playsInline: true, style: { width: '100%', height: 'auto' } })
+            : createElement('img', { src: outUrl, alt: filename, style: { width: '100%', height: 'auto' } }),
+          createElement(
+            'button',
+            {
+              className: 'ne-export-download-btn',
+              type: 'button',
+              onClick: (e: React.MouseEvent) => {
+                e.stopPropagation();
+                const ext = outKind === 'video' ? 'mp4' : 'png';
+                const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+                triggerDownload(outUrl, `${filename}-${stamp}.${ext}`).catch((err) => {
+                  // eslint-disable-next-line no-console
+                  console.error('[export] download error', err);
+                });
+              },
+              onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+              onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
+            },
+            `⬇ Download ${outKind ?? 'media'}`,
+          ),
+        )
+      : createElement('div', { className: 'ne-node-preview-caption' }, '(wire media to export)'),
+  );
+};
+
+const ExportInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) => {
+  const filename = String((node.data as { filename?: unknown }).filename ?? 'export');
+  const outKind = node.output?.kind;
+  const outUrl = node.output?.dataUrl;
+  const ext = outKind === 'video' ? 'mp4' : outKind === 'image' ? 'png' : '—';
+  const doDownload = () => {
+    if (!outUrl) return;
+    const outExt = outKind === 'video' ? 'mp4' : 'png';
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    triggerDownload(outUrl, `${filename}-${stamp}.${outExt}`).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error('[export] download error', err);
+    });
+  };
+  return createElement(
+    'div',
+    { className: 'ne-inspect-body' },
+    createElement(
+      'div',
+      { className: 'ne-inspect-note' },
+      'Export the wired upstream media to a local file. Format auto-detected from upstream kind.',
+    ),
+    createElement('label', { className: 'ne-inspect-label' }, 'Filename prefix'),
+    createElement('input', {
+      className: 'ne-inspect-input',
+      type: 'text',
+      value: filename,
+      onChange: (e: React.ChangeEvent<HTMLInputElement>) => onChangeData({ filename: e.target.value }),
+      placeholder: 'export',
+    }),
+    createElement('label', { className: 'ne-inspect-label' }, 'Format'),
+    createElement('div', { className: 'ne-inspect-input', style: { padding: '6px 8px' } }, `.${ext} (${outKind ?? 'no upstream media'})`),
+    createElement(
+      'button',
+      {
+        className: 'ne-export-download-btn',
+        type: 'button',
+        disabled: !outUrl,
+        onClick: doDownload,
+      },
+      outUrl ? `⬇ Download ${outKind ?? 'media'}` : 'Wire media to enable download',
+    ),
+  );
+};
+
+// ---------------------------------------------------------------------------
 // Registry table
 // ---------------------------------------------------------------------------
 
@@ -4125,6 +4700,40 @@ export const NODE_KINDS: Record<NodeKind, NodeKindDef> = {
     ports: (data) => defaultPortsFor('extract-frame', data),
     Preview: EditToolPreview,
     Inspector: ExtractFrameInspector,
+  },
+  // ---- I/O nodes (v1.1.0) ----
+  'frame-fix': {
+    kind: 'frame-fix',
+    label: 'AI Frame Fix',
+    category: 'edit',
+    defaultWidth: 240,
+    defaultHeight: 220,
+    defaultData: () => defaultDataFor('frame-fix'),
+    ports: (data) => defaultPortsFor('frame-fix', data),
+    Preview: FrameFixPreview,
+    Inspector: FrameFixInspector,
+  },
+  'import': {
+    kind: 'import',
+    label: 'Import',
+    category: 'input',
+    defaultWidth: 220,
+    defaultHeight: 200,
+    defaultData: () => defaultDataFor('import'),
+    ports: (data) => defaultPortsFor('import', data),
+    Preview: ImportPreview,
+    Inspector: ImportInspector,
+  },
+  'export': {
+    kind: 'export',
+    label: 'Export',
+    category: 'output',
+    defaultWidth: 240,
+    defaultHeight: 220,
+    defaultData: () => defaultDataFor('export'),
+    ports: (data) => defaultPortsFor('export', data),
+    Preview: ExportPreview,
+    Inspector: ExportInspector,
   },
 };
 

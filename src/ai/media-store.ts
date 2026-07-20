@@ -60,6 +60,30 @@ export async function uploadDataUrl(
 }
 
 /**
+ * Upload a File (from a file picker or drop event) to the server media store.
+ * Reads the file as a data URL first, then delegates to uploadDataUrl.
+ * Returns null on failure (caller keeps the local File / falls back).
+ */
+export function uploadFile(file: File): Promise<MediaStoreEntry | null> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const dataUrl = String(reader.result);
+        const rec = await uploadDataUrl(dataUrl, file.type || undefined);
+        resolve(rec);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[media-store] uploadFile error', err);
+        resolve(null);
+      }
+    };
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
  * Return true if a string looks like a data URL for image or video content.
  */
 export function isDataUrl(s: unknown): s is string {

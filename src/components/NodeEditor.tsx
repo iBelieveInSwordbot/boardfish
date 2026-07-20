@@ -34,7 +34,7 @@ import {
   useState,
 } from 'react';
 import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from 'react';
-import type { BaseNode, Edge, NodeGraph, NodeId, NodeKind, PortId } from '../nodes/types';
+import type { BaseNode, Edge, NodeGraph, NodeId, NodeKind, NodeOutput, PortId } from '../nodes/types';
 import { emptyGraph, seedDefaultGraph, newId } from '../nodes/types';
 import {
   addEdge,
@@ -55,13 +55,15 @@ import {
   removeEdge,
   removeNode,
   removeNodes,
+  resolveFrameSeqs,
   setNodeOutput,
   updateNodeData,
   type NodeClipboard,
 } from '../nodes/graph-utils';
 import { executeGraph } from '../ai/dag-executor';
+import { uploadFile } from '../ai/media-store';
 import { NODE_KINDS } from '../nodes/registry';
-import { PanelRefContext, ActorRefContext, type PanelRefOption, type ActorRefOption } from '../nodes/registry';
+import { PanelRefContext, ActorRefContext, OutPanelContext, type PanelRefOption, type ActorRefOption } from '../nodes/registry';
 import { explodeFieldsToTextParts, type PromptField } from '../nodes/text-prompt-fields';
 import { defaultDataFor, defaultPortsFor } from '../nodes/types';
 import { NodeView, ContextMenu, type ContextMenuState } from './NodeCanvas';
@@ -118,6 +120,11 @@ export type NodeEditorProps = {
    *  zero and non-zero, so the App can show/hide a spinner on the panel
    *  tile in the storyboard while background gens are cooking. */
   onBusyChange?: (isBusy: boolean) => void;
+  /** Target-panel context handed to the Out node's preview so it can
+   *  render pixel-accurate mini-board chrome (num, corner note, real
+   *  aspect ratio, caption fields). Optional — when omitted the Out
+   *  preview falls back to generic styling. */
+  outPanelInfo?: import('../nodes/registry').OutPanelInfo;
 };
 
 // ---------------------------------------------------------------------------
@@ -133,6 +140,11 @@ type Action =
   | { type: 'MOVE_NODE'; id: NodeId; x: number; y: number }
   | { type: 'MOVE_NODES'; positions: Map<NodeId, { x: number; y: number }> }
   | { type: 'ADD_NODE'; kind: NodeKind; at: { x: number; y: number } }
+  // Compound: add a node + connect it to an existing port in one atomic
+  // step. Used by the alt-drag "wire from port → add node" flow so the
+  // new node's id is known immediately for the edge.
+  | { type: 'ADD_WIRED_NODE'; kind: NodeKind; at: { x: number; y: number };
+      source: { nodeId: NodeId; portId: PortId; side: 'in' | 'out' } }
   | { type: 'REMOVE_NODE'; id: NodeId }
   | { type: 'REMOVE_NODES'; ids: Set<NodeId> }
   | { type: 'DUPLICATE_NODE'; id: NodeId }
@@ -160,6 +172,32 @@ function reducer(state: State, action: Action): State {
         return state;
       }
       return { graph: addNode(state.graph, action.kind, action.at), dirty: true };
+    case 'ADD_WIRED_NODE': {
+      // Enforce the single-Out rule here too.
+      if (action.kind === 'out' && state.graph.nodes.some((n) => n.kind === 'out')) {
+        return state;
+      }
+      const g1 = addNode(state.graph, action.kind, action.at);
+      const newNode = g1.nodes[g1.nodes.length - 1];
+      // Pick a port on the new node whose side is the OPPOSITE of the
+      // source's side (out→in / in→out). Prefer the first candidate.
+      const targetSide: 'in' | 'out' = action.source.side === 'out' ? 'in' : 'out';
+      const targetPort = newNode.ports.find((p) => p.side === targetSide);
+      if (!targetPort) {
+        // No compatible port on this kind — still add the node, just don't wire it.
+        return { graph: g1, dirty: true };
+      }
+      const from = action.source.side === 'out'
+        ? { nodeId: action.source.nodeId, portId: action.source.portId }
+        : { nodeId: newNode.id, portId: targetPort.id };
+      const to = action.source.side === 'out'
+        ? { nodeId: newNode.id, portId: targetPort.id }
+        : { nodeId: action.source.nodeId, portId: action.source.portId };
+      if (!canConnect(g1, from, to)) {
+        return { graph: g1, dirty: true };
+      }
+      return { graph: addEdge(g1, from, to), dirty: true };
+    }
     case 'REMOVE_NODE':
       return { graph: removeNode(state.graph, action.id), dirty: true };
     case 'REMOVE_NODES':
@@ -216,7 +254,7 @@ const DROP_ON_WIRE_RADIUS = 40;
 // ---------------------------------------------------------------------------
 
 export function NodeEditor(props: NodeEditorProps) {
-  const { initialGraph, panelPrompt, panelAspect, availablePanels, availableActors, onSave, onClose, hidden, onDetachedFinish, onCloseWhileBusy, onBusyChange } = props;
+  const { initialGraph, panelPrompt, panelAspect, availablePanels, availableActors, onSave, onClose, hidden, onDetachedFinish, onCloseWhileBusy, onBusyChange, outPanelInfo } = props;
 
   // Seed default 3-node chain if the incoming graph is empty. Applied once.
   const seeded = useMemo<NodeGraph>(() => {
@@ -293,6 +331,9 @@ export function NodeEditor(props: NodeEditorProps) {
   //    pointer time via e.altKey, no persistent state needed.
   const [spaceDown, setSpaceDown] = useState(false);
   const [metaDown, setMetaDown] = useState(false);
+  // OS file-drop affordance — flips true on dragOver, resets on drop/leave.
+  const [dragActive, setDragActive] = useState(false);
+  const dragActiveRef = useRef(false);
   // Distinguishes a plain Space tap (→ fullscreen) from a Space+drag pan.
   // Flipped true the moment a pan starts while Space is held.
   const spacePannedRef = useRef(false);
@@ -498,6 +539,9 @@ export function NodeEditor(props: NodeEditorProps) {
     curY: number;
     /** If truthy, this drag started by ripping an existing edge; drop-on-empty deletes it. */
     ripEdgeId: string | null;
+    /** Option/Alt held at drag start → drop on empty canvas opens the
+     *  contextual "Add node + wire" menu instead of just cancelling. */
+    altDrag: boolean;
   } | null>(null);
   // Force a re-render during rubber-band / marquee drag without spamming reducer state.
   const [interactionTick, setInteractionTick] = useState(0);
@@ -1383,6 +1427,21 @@ export function NodeEditor(props: NodeEditorProps) {
       } else if (cr.ripEdgeId) {
         // Dropped on empty canvas while ripping -> delete the edge.
         dispatch({ type: 'REMOVE_EDGE', edgeId: cr.ripEdgeId });
+      } else if (cr.altDrag) {
+        // Alt-drag dropped on empty canvas → open the contextual menu.
+        // User picks a node kind; we create it and auto-wire from the
+        // source port to a compatible port on the new node.
+        const c = screenToCanvas(e.clientX, e.clientY);
+        setContextMenu({
+          kind: 'wire-from-port',
+          canvasX: c.x,
+          canvasY: c.y,
+          x: e.clientX,
+          y: e.clientY,
+          sourceNodeId: cr.from.nodeId,
+          sourcePortId: cr.from.portId,
+          sourceSide: cr.from.side,
+        });
       }
       bumpTick();
     }
@@ -1732,6 +1791,7 @@ export function NodeEditor(props: NodeEditorProps) {
         curX: cur.x,
         curY: cur.y,
         ripEdgeId: edge.id,
+        altDrag: e.altKey,
       };
       canvasRef.current?.setPointerCapture(e.pointerId);
       bumpTick();
@@ -1750,6 +1810,7 @@ export function NodeEditor(props: NodeEditorProps) {
       curX: cur.x,
       curY: cur.y,
       ripEdgeId: null,
+      altDrag: e.altKey,
     };
     canvasRef.current?.setPointerCapture(e.pointerId);
     bumpTick();
@@ -1879,6 +1940,7 @@ export function NodeEditor(props: NodeEditorProps) {
   return (
     <ActorRefContext.Provider value={{ actors: availableActors ?? [] }}>
     <PanelRefContext.Provider value={{ panels: availablePanels ?? [] }}>
+    <OutPanelContext.Provider value={outPanelInfo ?? null}>
     <div
       className="ne-root"
       onClick={() => setContextMenu(null)}
@@ -1935,7 +1997,7 @@ export function NodeEditor(props: NodeEditorProps) {
         />
         <div
           ref={canvasRef}
-          className={`ne-canvas ${panningRef.current ? 'is-panning' : (spaceDown || metaDown) ? 'is-space' : ''}`}
+          className={`ne-canvas ${panningRef.current ? 'is-panning' : (spaceDown || metaDown) ? 'is-space' : ''} ${dragActive ? 'is-drop-active' : ''}`}
           onPointerDown={onCanvasPointerDown}
           onPointerMove={onCanvasPointerMove}
           onPointerUp={onCanvasPointerUp}
@@ -1945,9 +2007,22 @@ export function NodeEditor(props: NodeEditorProps) {
             // Accept drops from the palette or the OS.
             e.preventDefault();
             e.dataTransfer.dropEffect = 'copy';
+            if (e.dataTransfer.types.includes('Files') && !dragActiveRef.current) {
+              dragActiveRef.current = true;
+              setDragActive(true);
+            }
+          }}
+          onDragLeave={(e) => {
+            // Only reset when leaving the canvas element itself, not a child.
+            if (e.currentTarget === e.target) {
+              dragActiveRef.current = false;
+              setDragActive(false);
+            }
           }}
           onDrop={(e) => {
             e.preventDefault();
+            dragActiveRef.current = false;
+            setDragActive(false);
             const rect = canvasRef.current?.getBoundingClientRect();
             if (!rect) return;
             const zoom = state.graph.zoom;
@@ -1960,40 +2035,72 @@ export function NodeEditor(props: NodeEditorProps) {
               dispatch({ type: 'ADD_NODE', kind: paletteKind as NodeKind, at: { x: cx, y: cy } });
               return;
             }
-            // (b) OS file drop → image/video files become a null-node source
-            // with the file's data URL baked into its output. Wire it into
-            // an ImageGen's ref port to do image-to-image, or straight into
-            // the Out node.
+            // (b) OS file drop → create an Import node per file, upload to
+            // the media store, and bake the media URL into the node's data.
+            // v1.1.0: replaced the old null-node-with-baked-dataUrl pattern
+            // so large videos don't bloat the graph state.
             const files = Array.from(e.dataTransfer.files ?? []).filter(
               (f) => f.type.startsWith('image/') || f.type.startsWith('video/'),
             );
             if (files.length === 0) return;
             let dx = 0;
             for (const file of files) {
-              const reader = new FileReader();
               const at = { x: cx + dx, y: cy + dx };
-              dx += 40;
-              reader.onload = () => {
-                const dataUrl = String(reader.result);
-                const isVideo = file.type.startsWith('video/');
-                dispatch({ type: 'ADD_NODE', kind: 'null-node', at });
-                queueMicrotask(() => {
-                  const g = graphRef.current;
-                  const newest = g.nodes[g.nodes.length - 1];
-                  if (!newest) return;
-                  dispatch({
-                    type: 'SET_NODE_OUTPUT',
-                    id: newest.id,
-                    output: {
-                      kind: isVideo ? 'video' : 'image',
-                      dataUrl,
-                      mime: file.type || (isVideo ? 'video/mp4' : 'image/png'),
-                      generatedAt: Date.now(),
-                    },
-                  });
+              dx += 24;
+              const isVideo = file.type.startsWith('video/');
+              // Add the Import node immediately (with empty data), then
+              // upload asynchronously and patch the node's data when done.
+              dispatch({ type: 'ADD_NODE', kind: 'import', at });
+              // Capture the newly-created node id so we can patch it later.
+              // ADD_NODE appends to the end, so the last node is ours.
+              queueMicrotask(async () => {
+                const g = graphRef.current;
+                const newest = g.nodes[g.nodes.length - 1];
+                if (!newest) return;
+                // Set filename immediately so the node shows something.
+                dispatch({
+                  type: 'UPDATE_NODE_DATA',
+                  id: newest.id,
+                  patch: {
+                    filename: file.name,
+                    mediaKind: isVideo ? 'video' : 'image',
+                  },
                 });
-              };
-              reader.readAsDataURL(file);
+                try {
+                  const rec = await uploadFile(file);
+                  if (rec) {
+                    dispatch({
+                      type: 'UPDATE_NODE_DATA',
+                      id: newest.id,
+                      patch: {
+                        mediaId: rec.id,
+                        mediaUrl: rec.url,
+                        mediaKind: isVideo ? 'video' : 'image',
+                        filename: file.name,
+                      },
+                    });
+                  } else {
+                    // Fallback — bake the data URL locally.
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                      dispatch({
+                        type: 'UPDATE_NODE_DATA',
+                        id: newest.id,
+                        patch: {
+                          mediaId: '',
+                          mediaUrl: String(reader.result),
+                          mediaKind: isVideo ? 'video' : 'image',
+                          filename: file.name,
+                        },
+                      });
+                    };
+                    reader.readAsDataURL(file);
+                  }
+                } catch (err) {
+                  // eslint-disable-next-line no-console
+                  console.warn('[import-drop] upload failed', err);
+                }
+              });
             }
           }}
         >
@@ -2089,16 +2196,35 @@ Drag empty canvas to select · Shift-click to add · ⌘X/⌘C/⌘V · Opt-drag 
         </div>
 
         {/* Inspector */}
-        {selectedNode && (
-          <InspectorPane
-            node={selectedNode}
-            inFlight={inFlight.has(selectedNode.id)}
-            onChangeData={(patch) =>
-              dispatch({ type: 'UPDATE_NODE_DATA', id: selectedNode.id, patch })
-            }
-            onGenerate={() => onGenerate(selectedNode)}
-          />
-        )}
+        {selectedNode && (() => {
+          // When multiple gen-capable nodes are selected, disable the
+          // Inspector's per-node Generate button. The top-bar's
+          // "Generate all (N)" button handles the batch; firing only the
+          // primary selection from the Inspector is almost never what
+          // Matt wants and hides the fact that the button is a no-op for
+          // the other selected nodes.
+          const genKinds = new Set(['image-gen', 'movie-gen', 'custom-fal',
+            'prompt-enhancer', 'llm-run', 'image-describer', 'video-describer']);
+          const selectedGenCount = Array.from(selectedIds)
+            .map((id) => graph.nodes.find((n) => n.id === id))
+            .filter((n): n is BaseNode => !!n && genKinds.has(n.kind))
+            .length;
+          const multiGenSelected = selectedGenCount > 1;
+          return (
+            <InspectorPane
+              node={selectedNode}
+              inFlight={inFlight.has(selectedNode.id)}
+              multiGenSelected={multiGenSelected}
+              onChangeData={(patch) =>
+                dispatch({ type: 'UPDATE_NODE_DATA', id: selectedNode.id, patch })
+              }
+              onGenerate={() => {
+                if (multiGenSelected) return; // no-op; use top-bar Generate all
+                onGenerate(selectedNode);
+              }}
+            />
+          );
+        })()}
       </div>
 
       {/* Context menu */}
@@ -2108,6 +2234,9 @@ Drag empty canvas to select · Shift-click to add · ⌘X/⌘C/⌘V · Opt-drag 
           onClose={() => setContextMenu(null)}
           onAddNode={(kind, at) => {
             dispatch({ type: 'ADD_NODE', kind, at });
+          }}
+          onAddWiredNode={(kind, at, source) => {
+            dispatch({ type: 'ADD_WIRED_NODE', kind, at, source });
           }}
           onNodeAction={(action) => {
             if (contextMenu.kind !== 'node') return;
@@ -2315,6 +2444,7 @@ Drag empty canvas to select · Shift-click to add · ⌘X/⌘C/⌘V · Opt-drag 
         );
       })()}
     </div>
+    </OutPanelContext.Provider>
     </PanelRefContext.Provider>
     </ActorRefContext.Provider>
   );
@@ -2377,22 +2507,33 @@ async function extractVideoPoster(videoUrl: string): Promise<string> {
 // a kind of image/video are kept — text frames aren't renderable full-page.
 function getFullscreenFrames(
   node: BaseNode,
-): Array<{ url: string; kind: 'image' | 'video'; label?: string; when?: number }> {
-  const frames: Array<{ url: string; kind: 'image' | 'video'; label?: string; when?: number }> = [];
+): Array<{ url: string; kind: 'image' | 'video'; label?: string; when?: number; seq?: number }> {
+  // Build the [current, ...history-newest-first] list of raw NodeOutput
+  // entries so we can resolve stable seqs across the whole set. Then
+  // project into display frames with each frame carrying its stable seq.
+  type Raw = { output: NodeOutput; kind: 'image' | 'video' };
+  const raw: Raw[] = [];
   const cur = node.output;
   if (cur && (cur.kind === 'image' || cur.kind === 'video') && cur.dataUrl) {
-    frames.push({ url: cur.dataUrl, kind: cur.kind, label: 'current', when: cur.generatedAt });
+    raw.push({ output: cur as NodeOutput, kind: cur.kind });
   }
   const hist = readNodeHistory(node).slice().reverse(); // newest first
   for (const h of hist) {
     if ((h.kind === 'image' || h.kind === 'video') && h.dataUrl) {
-      frames.push({ url: h.dataUrl, kind: h.kind, when: h.generatedAt });
+      raw.push({ output: h, kind: h.kind });
     }
   }
-  return frames;
+  const seqs = resolveFrameSeqs(raw.map((r) => r.output));
+  return raw.map((r, i) => ({
+    url: r.output.dataUrl!,
+    kind: r.kind,
+    label: i === 0 ? 'current' : undefined,
+    when: r.output.generatedAt,
+    seq: seqs[i],
+  }));
 }
 
-type FullscreenFrame = { url: string; kind: 'image' | 'video'; label?: string; when?: number };
+type FullscreenFrame = { url: string; kind: 'image' | 'video'; label?: string; when?: number; seq?: number };
 
 /** Best-fit column count for the compare grid so cells stay large.
  *  1→1col, 2→2col, 3–4→2col, 5–6→3col, 7–9→3col, 10+→4col. */
@@ -2705,6 +2846,7 @@ function FullscreenBody(props: {
                 <div className="ne-fullscreen-counter">
                   {idx + 1} / {frames.length}
                   {frame?.label ? ` · ${frame.label}` : ''}
+                  {frame?.seq ? ` · v${frame.seq}` : ''}
                   {timeStr ? ` · ${timeStr}` : ''}
                 </div>
               </>
@@ -2728,13 +2870,13 @@ function FullscreenBody(props: {
                   className={`ne-fs-grid-tile ${picked ? 'is-picked' : ''} ${i === idx ? 'is-current' : ''}`}
                   onClick={() => togglePick(i)}
                   onDoubleClick={() => { onSetIndex(() => i); onSetMode('single'); }}
-                  title={`${f.label ?? `v${frames.length - i}`}${f.when ? ' · ' + new Date(f.when).toLocaleTimeString() : ''} — click to pick, double-click to view`}
+                  title={`${f.label ?? `v${f.seq ?? (frames.length - i)}`}${f.when ? ' · ' + new Date(f.when).toLocaleTimeString() : ''} — click to pick, double-click to view`}
                 >
                   {f.kind === 'video'
                     ? <video src={f.url} muted playsInline preload="metadata" />
                     : <img src={f.url} alt="" draggable={false} />}
                   <div className="ne-fs-grid-tile-badges">
-                    <span className="ne-fs-grid-tile-num">{isCurrent ? '● current' : `v${frames.length - i}`}</span>
+                    <span className="ne-fs-grid-tile-num">{isCurrent ? `● current${f.seq ? ` · v${f.seq}` : ''}` : `v${f.seq ?? (frames.length - i)}`}</span>
                   </div>
                   {/* Heart: pin this version as the node's selection. Filled
                       when it's the pinned one; outline otherwise. Always
@@ -2773,7 +2915,7 @@ function FullscreenBody(props: {
                 <div key={i} className="ne-fs-compare-cell">
                   <ZoomableFrame frame={f} />
                   <div className="ne-fs-compare-caption">
-                    <span>{isCurrent ? '● current' : `v${frames.length - i}`}</span>
+                    <span>{isCurrent ? `● current${f.seq ? ` · v${f.seq}` : ''}` : `v${f.seq ?? (frames.length - i)}`}</span>
                     {f.when ? <span className="ne-fs-compare-time">{new Date(f.when).toLocaleTimeString()}</span> : null}
                     <button
                       className={`ne-fs-favorite ne-fs-compare-fav ${i === pinnedIdx ? 'is-pinned' : ''}`}

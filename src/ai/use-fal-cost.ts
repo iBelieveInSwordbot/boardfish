@@ -12,7 +12,26 @@
 import { useEffect, useState } from 'react';
 import { fetchFalPrice, type FalPriceInfo } from './client';
 import type { BaseNode } from '../nodes/types';
-import { getFalModel, resolveFalModelId } from './fal-models';
+import { getFalModel, resolveFalModelId, FAL_MODELS } from './fal-models';
+
+// When a model declares `pricingOverride`, use that instead of whatever
+// the fal /pricing endpoint returns (which is often opaque "units").
+// Returns null when the endpoint has no known override.
+function pricingOverrideForEndpoint(endpointId: string): FalPriceInfo | null {
+  for (const m of FAL_MODELS) {
+    if (!m.pricingOverride) continue;
+    if (m.endpoint === endpointId || m.editEndpoint === endpointId) {
+      return {
+        endpointId,
+        unit: m.pricingOverride.unit,
+        unitPrice: m.pricingOverride.unitPrice,
+        currency: 'USD',
+        fetchedAt: Date.now(),
+      } as FalPriceInfo;
+    }
+  }
+  return null;
+}
 
 export type FalCostEstimate = {
   /** Rounded to two decimals for display. */
@@ -62,6 +81,10 @@ export function useFalCostEstimate(
     setPrice(null);
     setFailed(false);
     if (!endpointId) return;
+    // Client-side override wins: skip the network entirely when a model
+    // declares its own pricing (Seedance, GPT Image 2). Otherwise fetch.
+    const override = pricingOverrideForEndpoint(endpointId);
+    if (override) { setPrice(override); return; }
     (async () => {
       const p = await fetchFalPrice(endpointId);
       if (cancelled) return;
@@ -95,7 +118,8 @@ export function useFalCostEstimate(
   }
   if (unit === 'seconds' && seconds != null && seconds > 0) {
     // For video, each variant is a separate billed job.
-    return { amount: unitPrice * seconds * variants, isTotal: true, price };
+    // resMul scales by resolution (Seedance: 720p=1x, 1080p=~2.25x).
+    return { amount: unitPrice * seconds * variants * resMul, isTotal: true, price };
   }
   // "1m tokens" and "compute seconds" can't be estimated pre-flight.
   // Multiply the unit-price hint by variants so users at least see the
@@ -152,11 +176,17 @@ function costInputsForNode(
         ? parseFloat(rawDuration.replace(/[^0-9.]/g, ''))
         : NaN;
     const variants = Math.max(1, Math.min(10, Math.floor(Number(node.data.num_videos ?? 1))));
+    // Video pricing may also scale by resolution (Seedance).
+    const resValue = String(node.data.resolution ?? '');
+    const resMul = model.pricingOverride?.resolutionMultiplier?.[resValue]
+      ?? model.resolutionCostMultiplier?.[resValue]
+      ?? 1;
     return {
       endpointId: model.endpoint,
       quantity: {
         seconds: Number.isFinite(seconds) && seconds > 0 ? seconds : undefined,
         variants,
+        resolutionMultiplier: resMul,
       },
     };
   }
@@ -195,6 +225,10 @@ export function useBulkCostEstimate(nodes: BaseNode[]): BulkCostEstimate {
     (async () => {
       const entries = await Promise.all(
         uniqueEndpoints.map(async (ep) => {
+          // Prefer client-side pricing override so Seedance/GPT Image 2
+          // resolve instantly with accurate numbers.
+          const override = pricingOverrideForEndpoint(ep);
+          if (override) return [ep, override] as const;
           const p = await fetchFalPrice(ep);
           return [ep, p] as const;
         }),
@@ -225,7 +259,7 @@ export function useBulkCostEstimate(nodes: BaseNode[]): BulkCostEstimate {
       total += unitPrice * images * resMul;
       anyExact = true;
     } else if (unit === 'seconds' && seconds != null && seconds > 0) {
-      total += unitPrice * seconds * variants;
+      total += unitPrice * seconds * variants * resMul;
       anyExact = true;
     } else {
       // Token- or compute-priced — count the per-job unit price as a floor.

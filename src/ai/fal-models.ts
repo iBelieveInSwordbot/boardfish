@@ -59,6 +59,20 @@ export type FalModelDef = {
   // Keyed on the same string that appears in the resolution `select` input.
   // Omit for models whose fal-returned price is already correct.
   resolutionCostMultiplier?: Record<string, number>;
+  // Client-side pricing override for models whose fal /models/pricing
+  // returns an opaque "units" price that doesn't match the public rate
+  // card (Seedance 2 charges per-second but the API reports 0.014/units;
+  // GPT Image 2 charges per-image but the API reports 1/units). When
+  // present, the cost estimator uses THIS instead of the fal response.
+  //   - unit: 'seconds' | 'images'
+  //   - unitPrice: base $/unit at the model's baseline resolution
+  //   - resolutionMultiplier: optional per-resolution scaling (same shape
+  //     as resolutionCostMultiplier). If both are set, this one wins.
+  pricingOverride?: {
+    unit: 'seconds' | 'images';
+    unitPrice: number;
+    resolutionMultiplier?: Record<string, number>;
+  };
   inputs: FalModelInput[];           // input schema for the Inspector
   supportsImageInput?: boolean;      // takes an existing image as reference/edit source
   supportsPrompt: boolean;           // true for text-driven models
@@ -95,17 +109,6 @@ const GPT_IMAGE_2_SIZES: { value: string; label: string }[] = [
   { value: 'landscape_16_9',label: 'Landscape 16:9'        },
   { value: 'portrait_3_4',  label: 'Portrait 3:4'          },
   { value: 'portrait_9_16', label: 'Portrait 9:16'         },
-];
-
-// Flux 2 Pro uses named size presets too.
-const FLUX_2_SIZES: { value: string; label: string }[] = [
-  { value: 'auto',           label: 'auto (match reference)' },
-  { value: 'square_hd',      label: 'Square HD'              },
-  { value: 'square',         label: 'Square'                 },
-  { value: 'portrait_4_3',   label: 'Portrait 4:3'           },
-  { value: 'portrait_16_9',  label: 'Portrait 16:9'          },
-  { value: 'landscape_4_3',  label: 'Landscape 4:3'          },
-  { value: 'landscape_16_9', label: 'Landscape 16:9'         },
 ];
 
 const VIDEO_ASPECTS_WIDE_TALL: { value: string; label: string }[] = [
@@ -344,44 +347,6 @@ export const FAL_MODELS: FalModelDef[] = [
   },
 
   {
-    id: 'nano-banana-1',
-    label: 'Nano Banana 1',
-    vendor: 'Google',
-    kind: 'image',
-    endpoint: 'fal-ai/nano-banana',
-    editEndpoint: 'fal-ai/nano-banana/edit',
-    refImageKey: 'image_urls',
-    refImageIsArray: true,
-    supportsImageInput: true,
-    supportsPrompt: true,
-    status: 'active',
-    costHint: '~$0.02/img',
-    notes: 'Gemini 2.5 Flash Image — the original.',
-    inputs: [
-      PROMPT_INPUT,
-      {
-        key: 'aspect_ratio',
-        label: 'Aspect ratio',
-        type: 'aspect',
-        default: '1:1',
-        options: IMAGE_ASPECTS,
-      },
-      {
-        key: 'num_images',
-        label: 'Number of images',
-        type: 'number',
-        default: 1,
-        min: 1,
-        max: 4,
-        step: 1,
-      },
-      OUTPUT_FORMAT_INPUT,
-      IMAGE_URL_INPUT,
-      SEED_INPUT,
-    ],
-  },
-
-  {
     id: 'gpt-image-2',
     label: 'GPT Image 2',
     vendor: 'OpenAI',
@@ -393,6 +358,14 @@ export const FAL_MODELS: FalModelDef[] = [
     supportsImageInput: true,
     supportsPrompt: true,
     status: 'active',
+    // fal /pricing returns 1/units for gpt-image-2, which is opaque.
+    // Public rate card: standard image ~$0.04 (low) / $0.08 (medium) /
+    // $0.16 (high). Show a mid-tier estimate keyed to the `quality` input.
+    // (Simpler than full quality lookup: pin to `high` since that's our default.)
+    pricingOverride: {
+      unit: 'images',
+      unitPrice: 0.16, // high quality baseline
+    },
     notes: 'OpenAI gpt-image-2 via FAL. Uses `image_size` presets (portrait/landscape/square) instead of raw aspect_ratio.',
     inputs: [
       PROMPT_INPUT,
@@ -400,7 +373,7 @@ export const FAL_MODELS: FalModelDef[] = [
         key: 'image_size',
         label: 'Image size',
         type: 'select',
-        default: 'landscape_4_3',
+        default: 'landscape_16_9',
         options: GPT_IMAGE_2_SIZES,
       },
       {
@@ -429,153 +402,10 @@ export const FAL_MODELS: FalModelDef[] = [
     ],
   },
 
-  {
-    id: 'flux-2-pro',
-    label: 'FLUX 2 Pro',
-    vendor: 'Black Forest Labs',
-    kind: 'image',
-    endpoint: 'fal-ai/flux-2-pro',
-    editEndpoint: 'fal-ai/flux-2-pro/edit',
-    refImageKey: 'image_urls',
-    refImageIsArray: true,
-    supportsImageInput: true,
-    supportsPrompt: true,
-    status: 'active',
-    notes: 'FLUX 2 Pro — Black Forest Labs\' flagship. Named size presets.',
-    inputs: [
-      PROMPT_INPUT,
-      {
-        key: 'image_size',
-        label: 'Image size',
-        type: 'select',
-        default: 'landscape_16_9',
-        options: FLUX_2_SIZES,
-      },
-      OUTPUT_FORMAT_INPUT,
-      {
-        key: 'safety_tolerance',
-        label: 'Safety tolerance',
-        type: 'select',
-        default: '2',
-        options: [
-          { value: '1', label: '1 (strict)' },
-          { value: '2', label: '2' },
-          { value: '3', label: '3' },
-          { value: '4', label: '4' },
-          { value: '5', label: '5 (loose)' },
-        ],
-      },
-      {
-        key: 'enable_safety_checker',
-        label: 'Safety checker',
-        type: 'boolean',
-        default: true,
-      },
-      IMAGE_URL_INPUT,
-      SEED_INPUT,
-    ],
-  },
-
-  {
-    id: 'flux-1-1-pro-ultra',
-    label: 'FLUX 1.1 [pro] Ultra',
-    vendor: 'Black Forest Labs',
-    kind: 'image',
-    endpoint: 'fal-ai/flux-pro/v1.1-ultra',
-    supportsImageInput: false,
-    supportsPrompt: true,
-    status: 'active',
-    notes: 'FLUX 1.1 [pro] Ultra — highest resolution (4MP), best quality.',
-    inputs: [
-      PROMPT_INPUT,
-      {
-        key: 'aspect_ratio',
-        label: 'Aspect ratio',
-        type: 'aspect',
-        default: '16:9',
-        options: [
-          { value: '21:9', label: '21:9' },
-          { value: '16:9', label: '16:9' },
-          { value: '4:3',  label: '4:3'  },
-          { value: '3:2',  label: '3:2'  },
-          { value: '1:1',  label: '1:1'  },
-          { value: '2:3',  label: '2:3'  },
-          { value: '3:4',  label: '3:4'  },
-          { value: '9:16', label: '9:16' },
-          { value: '9:21', label: '9:21' },
-        ],
-      },
-      {
-        key: 'num_images',
-        label: 'Number of images',
-        type: 'number',
-        default: 1,
-        min: 1,
-        max: 4,
-        step: 1,
-      },
-      OUTPUT_FORMAT_INPUT,
-      {
-        key: 'raw',
-        label: 'Raw mode',
-        type: 'boolean',
-        default: false,
-        help: 'Less-processed, more natural output.',
-      },
-      {
-        key: 'safety_tolerance',
-        label: 'Safety tolerance',
-        type: 'select',
-        default: '2',
-        options: [
-          { value: '1', label: '1 (strict)' },
-          { value: '2', label: '2' },
-          { value: '3', label: '3' },
-          { value: '4', label: '4' },
-          { value: '5', label: '5' },
-          { value: '6', label: '6 (loose)' },
-        ],
-      },
-      SEED_INPUT,
-    ],
-  },
-
-  {
-    id: 'seedream-v4-5',
-    label: 'Seedream V4.5',
-    vendor: 'ByteDance',
-    kind: 'image',
-    endpoint: 'fal-ai/bytedance/seedream/v4.5/text-to-image',
-    editEndpoint: 'fal-ai/bytedance/seedream/v4.5/edit',
-    refImageKey: 'image_urls',
-    refImageIsArray: true,
-    supportsImageInput: true,
-    supportsPrompt: true,
-    status: 'active',
-    notes: 'ByteDance Seedream V4.5 — strong photoreal + typography.',
-    inputs: [
-      PROMPT_INPUT,
-      {
-        key: 'aspect_ratio',
-        label: 'Aspect ratio',
-        type: 'aspect',
-        default: '16:9',
-        options: IMAGE_ASPECTS,
-      },
-      {
-        key: 'num_images',
-        label: 'Number of images',
-        type: 'number',
-        default: 1,
-        min: 1,
-        max: 4,
-        step: 1,
-      },
-      OUTPUT_FORMAT_INPUT,
-      IMAGE_URL_INPUT,
-      SEED_INPUT,
-    ],
-  },
+  // Removed 2026-07-19 per Matt: flux-2-pro, flux-1-1-pro-ultra,
+  // seedream-v4-5, nano-banana-1. Only Nano Banana 2, Nano Banana Pro,
+  // and GPT Image 2 remain for image gen. Aliases below auto-heal old
+  // persisted graphs to nano-banana-pro.
 
   // ============================================================
   // VIDEO MODELS
@@ -627,7 +457,7 @@ export const FAL_MODELS: FalModelDef[] = [
         key: 'resolution',
         label: 'Resolution',
         type: 'select',
-        default: '720p',
+        default: '1080p',
         options: [
           { value: '720p',  label: '720p'  },
           { value: '1080p', label: '1080p' },
@@ -688,7 +518,7 @@ export const FAL_MODELS: FalModelDef[] = [
         key: 'resolution',
         label: 'Resolution',
         type: 'select',
-        default: '720p',
+        default: '1080p',
         options: [
           { value: '720p',  label: '720p'  },
           { value: '1080p', label: '1080p' },
@@ -750,7 +580,7 @@ export const FAL_MODELS: FalModelDef[] = [
         key: 'resolution',
         label: 'Resolution',
         type: 'select',
-        default: '720p',
+        default: '1080p',
         options: [
           { value: '720p',  label: '720p'  },
           { value: '1080p', label: '1080p' },
@@ -814,7 +644,7 @@ export const FAL_MODELS: FalModelDef[] = [
         key: 'resolution',
         label: 'Resolution',
         type: 'select',
-        default: '720p',
+        default: '1080p',
         options: [
           { value: '720p',  label: '720p'  },
           { value: '1080p', label: '1080p' },
@@ -877,7 +707,7 @@ export const FAL_MODELS: FalModelDef[] = [
         key: 'resolution',
         label: 'Resolution',
         type: 'select',
-        default: '720p',
+        default: '1080p',
         options: [
           { value: '720p',  label: '720p'  },
           { value: '1080p', label: '1080p' },
@@ -1204,6 +1034,19 @@ export const FAL_MODELS: FalModelDef[] = [
     supportsImageInput: true,
     supportsPrompt: true,
     status: 'active',
+    // fal /pricing returns 0.014/units for Seedance which is opaque.
+    // Public rate card (docs): 720p std = $0.3034/sec, 1080p std = $0.682/sec.
+    // Baseline is 720p; 1080p is 2.248x.
+    pricingOverride: {
+      unit: 'seconds',
+      unitPrice: 0.3034,
+      resolutionMultiplier: {
+        '480p':  0.5,     // extrapolated (fal doesn't list std 480p)
+        '720p':  1.0,
+        '1080p': 2.248,   // 0.682 / 0.3034
+        '4k':    5.0,     // rough guess; Seedance 2 std 4K is not documented
+      },
+    },
     notes: 'ByteDance Seedance 2 — SOTA video with native audio + camera control.',
     inputs: [
       PROMPT_INPUT,
@@ -1227,7 +1070,7 @@ export const FAL_MODELS: FalModelDef[] = [
         key: 'resolution',
         label: 'Resolution',
         type: 'select',
-        default: '720p',
+        default: '1080p',
         options: [
           { value: '480p',  label: '480p'  },
           { value: '720p',  label: '720p'  },
@@ -1258,6 +1101,16 @@ export const FAL_MODELS: FalModelDef[] = [
     supportsImageInput: true,
     supportsPrompt: true,
     status: 'active',
+    // Fast tier: $0.2419/sec at 720p, $0.1064/sec at 480p (extrapolated
+    // from token formula). Fast tier maxes at 720p — no 1080p endpoint.
+    pricingOverride: {
+      unit: 'seconds',
+      unitPrice: 0.2419,
+      resolutionMultiplier: {
+        '480p': 0.44, // ~ half of 720p
+        '720p': 1.0,
+      },
+    },
     notes: 'Seedance 2 Fast — draft quality at lower cost.',
     inputs: [
       PROMPT_INPUT,
@@ -1285,7 +1138,6 @@ export const FAL_MODELS: FalModelDef[] = [
         options: [
           { value: '480p',  label: '480p'  },
           { value: '720p',  label: '720p'  },
-          { value: '1080p', label: '1080p' },
         ],
       },
       {
@@ -1316,6 +1168,17 @@ export const FAL_MODELS: FalModelDef[] = [
     supportsPrompt: true,
     status: 'active',
     costHint: '~$0.30/sec (720p)',
+    // Reference-to-video is billed the same as standard Seedance 2.
+    pricingOverride: {
+      unit: 'seconds',
+      unitPrice: 0.3034,
+      resolutionMultiplier: {
+        '480p':  0.5,
+        '720p':  1.0,
+        '1080p': 2.248,
+        '4k':    5.0,
+      },
+    },
     notes: 'Seedance 2 Reference-to-Video — multi-reference i2v (up to 9 image refs). SOTA quality.',
     inputs: [
       PROMPT_INPUT,
@@ -1339,7 +1202,7 @@ export const FAL_MODELS: FalModelDef[] = [
         key: 'resolution',
         label: 'Resolution',
         type: 'select',
-        default: '720p',
+        default: '1080p',
         options: [
           { value: '480p',  label: '480p'  },
           { value: '720p',  label: '720p'  },
@@ -1369,6 +1232,15 @@ export const FAL_MODELS: FalModelDef[] = [
     supportsImageInput: true,
     supportsPrompt: true,
     status: 'active',
+    // Mini tier: docs say $0.0721/sec (480p), $0.1547/sec (720p). Baseline 720p.
+    pricingOverride: {
+      unit: 'seconds',
+      unitPrice: 0.1547,
+      resolutionMultiplier: {
+        '480p': 0.466, // 0.0721 / 0.1547
+        '720p': 1.0,
+      },
+    },
     notes: 'Seedance 2 Mini — cheapest Seedance 2 tier.',
     inputs: [
       PROMPT_INPUT,
@@ -1432,6 +1304,12 @@ const MODEL_ID_ALIASES: Record<string, string> = {
   'gpt-image-1':      'gpt-image-2',       // Matt's 2026-07-15 correction
   'veo-3-fast':       'veo-3-1-fast',      // Removed per spec; fall back to 3.1 Fast
   'seedance-2-pro':   'seedance-2',        // Renamed and unified
+  // 2026-07-19: image roster trimmed to nano-banana-2, nano-banana-pro,
+  // gpt-image-2. Old persisted graphs auto-heal to nano-banana-pro.
+  'nano-banana-1':    'nano-banana-pro',
+  'flux-2-pro':       'nano-banana-pro',
+  'flux-1-1-pro-ultra':'nano-banana-pro',
+  'seedream-v4-5':    'nano-banana-pro',
 };
 
 export function resolveFalModelId(id: string | undefined | null): string | null {

@@ -42,6 +42,7 @@ function framesFor(panel: Panel): PanelImageVersion[] {
       kind: 'video',
       prompt: panel.aiPrompt ?? '',
       generatedAt: 0,
+      seq: panel.currentImageSeq,
     });
   } else if (panel.imageDataUrl) {
     out.push({
@@ -50,6 +51,7 @@ function framesFor(panel: Panel): PanelImageVersion[] {
       kind: 'image',
       prompt: panel.aiPrompt ?? '',
       generatedAt: 0,
+      seq: panel.currentImageSeq,
     });
   }
   const hist = Array.isArray(panel.imageHistory) ? panel.imageHistory : [];
@@ -57,6 +59,44 @@ function framesFor(panel: Panel): PanelImageVersion[] {
   const sorted = [...hist].sort((a, b) => b.generatedAt - a.generatedAt);
   out.push(...sorted);
   return out;
+}
+
+/**
+ * Resolve a stable version number for each frame. If a frame already has
+ * `seq`, use it. Otherwise backfill unsequenced entries by their
+ * `generatedAt` order so legacy panels get consistent v1..vN labels. The
+ * synthetic `current` frame's `generatedAt` is 0; we treat it as the
+ * newest for backfill purposes so it always lands on the highest number.
+ */
+function resolveVersionSeqs(frames: PanelImageVersion[]): number[] {
+  const taken = new Set<number>();
+  for (const f of frames) {
+    if (typeof f.seq === 'number' && Number.isFinite(f.seq)) taken.add(f.seq);
+  }
+  // Sort unsequenced entries by generatedAt ascending so the oldest gets
+  // the lowest backfill number.
+  const unseqIdx = frames
+    .map((f, i) => ({ f, i }))
+    .filter(({ f }) => !(typeof f.seq === 'number' && Number.isFinite(f.seq)))
+    .sort((a, b) => {
+      // Treat id === 'current' as "newest" (higher ts) for backfill purposes
+      // so it doesn't collide with a real history entry's timestamp of 0.
+      const at = a.f.id === 'current' ? Number.POSITIVE_INFINITY : a.f.generatedAt;
+      const bt = b.f.id === 'current' ? Number.POSITIVE_INFINITY : b.f.generatedAt;
+      return at - bt;
+    });
+  const backfill = new Map<number, number>();
+  let next = 1;
+  for (const { i } of unseqIdx) {
+    while (taken.has(next)) next += 1;
+    backfill.set(i, next);
+    taken.add(next);
+    next += 1;
+  }
+  return frames.map((f, i) => {
+    if (typeof f.seq === 'number' && Number.isFinite(f.seq)) return f.seq;
+    return backfill.get(i) ?? i + 1;
+  });
 }
 
 function compareColsFor(n: number): number {
@@ -202,6 +242,7 @@ export function PanelLightbox({
   }, [panel.id]);
 
   const frames = useMemo(() => framesFor(panel), [panel]);
+  const frameSeqs = useMemo(() => resolveVersionSeqs(frames), [frames]);
   const canCompare = frames.length >= 2;
 
   // Arrow keys ALWAYS move between panels (never between variations). C toggles
@@ -532,7 +573,7 @@ export function PanelLightbox({
                   key={f.id}
                   className={`ne-fs-grid-tile ${picked ? 'is-picked' : ''} ${isCurrent ? 'is-current' : ''}`}
                   onClick={() => togglePick(f.id)}
-                  title={`${isCurrent ? '● current' : `v${frames.length - i}`}${f.generatedAt ? ' · ' + new Date(f.generatedAt).toLocaleString() : ''} — click to pick`}
+                  title={`${isCurrent ? `● current${frameSeqs[i] ? ` · v${frameSeqs[i]}` : ''}` : `v${frameSeqs[i]}`}${f.generatedAt ? ' · ' + new Date(f.generatedAt).toLocaleString() : ''} — click to pick`}
                 >
                   {f.kind === 'video' && f.videoDataUrl ? (
                     <video
@@ -547,7 +588,7 @@ export function PanelLightbox({
                   )}
                   <div className="ne-fs-grid-tile-badges">
                     <span className="ne-fs-grid-tile-num">
-                      {isCurrent ? '● current' : `v${frames.length - i}`}
+                      {isCurrent ? `● current${frameSeqs[i] ? ` · v${frameSeqs[i]}` : ''}` : `v${frameSeqs[i]}`}
                       {f.kind === 'video' ? ' ▶' : ''}
                     </span>
                   </div>
@@ -578,7 +619,7 @@ export function PanelLightbox({
                 <div key={f.id} className="ne-fs-compare-cell">
                   <ZoomableImage url={f.dataUrl} videoUrl={f.kind === 'video' ? f.videoDataUrl : undefined} />
                   <div className="ne-fs-compare-caption">
-                    <span>{isCurrent ? '● current' : `v${frames.length - idx}`}{f.kind === 'video' ? ' ▶' : ''}</span>
+                    <span>{isCurrent ? `● current${frameSeqs[idx] ? ` · v${frameSeqs[idx]}` : ''}` : `v${frameSeqs[idx]}`}{f.kind === 'video' ? ' ▶' : ''}</span>
                     {f.generatedAt ? (
                       <span className="ne-fs-compare-time">
                         {new Date(f.generatedAt).toLocaleTimeString()}

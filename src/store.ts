@@ -8,6 +8,7 @@ import {
   newDefaultTextBox,
   newSlideItem,
   newStoryboardItem,
+  nextSeqForPanel,
   themeColors,
 } from './types';
 
@@ -39,6 +40,7 @@ function normalizePanel(p: Partial<Panel>): Panel {
     fields: (p.fields ?? []).map((f) => ({ id: f.id, label: f.label, value: f.value })),
     aiPrompt: p.aiPrompt,
     imageHistory: p.imageHistory ? p.imageHistory.map((v) => ({ ...v })) : undefined,
+    currentImageSeq: p.currentImageSeq,
     styleMode: p.styleMode,
     nodeGraph: p.nodeGraph,
   };
@@ -532,6 +534,7 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
             kind: 'video',
             prompt: p.aiPrompt ?? '',
             generatedAt: Date.now(),
+            seq: p.currentImageSeq,
           });
         } else if (p.imageDataUrl) {
           archived.push({
@@ -540,15 +543,23 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
             kind: 'image',
             prompt: p.aiPrompt ?? '',
             generatedAt: Date.now(),
+            seq: p.currentImageSeq,
           });
         }
         const prior = [...(p.imageHistory ?? []), ...archived];
+        // Reserve the next seq for the incoming new current image. Compute
+        // AFTER archiving so the archived entry's seq is already counted.
+        const nextSeq = nextSeqForPanel({
+          currentImageSeq: undefined,
+          imageHistory: prior,
+        });
         return {
           ...p,
           imageDataUrl: action.dataUrl,
           imageName: action.imageName,
           aiPrompt: action.prompt,
           imageHistory: prior,
+          currentImageSeq: nextSeq,
         };
       });
       return { ...state, items: updateStoryboardPanels(state.items, loc.itemIdx, nextPanels) };
@@ -569,6 +580,7 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
             kind: 'video',
             prompt: p.aiPrompt ?? '',
             generatedAt: Date.now(),
+            seq: p.currentImageSeq,
           });
         } else if (p.imageDataUrl) {
           archived.push({
@@ -577,15 +589,21 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
             kind: 'image',
             prompt: p.aiPrompt ?? '',
             generatedAt: Date.now(),
+            seq: p.currentImageSeq,
           });
         }
         const prior = [...(p.imageHistory ?? []), ...archived];
+        const nextSeq = nextSeqForPanel({
+          currentImageSeq: undefined,
+          imageHistory: prior,
+        });
         return {
           ...p,
           videoDataUrl: action.videoDataUrl,
           imageDataUrl: action.posterDataUrl,
           aiPrompt: action.prompt,
           imageHistory: prior,
+          currentImageSeq: nextSeq,
         };
       });
       return { ...state, items: updateStoryboardPanels(state.items, loc.itemIdx, nextPanels) };
@@ -610,6 +628,8 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
             kind: 'video',
             prompt: p.aiPrompt ?? '',
             generatedAt: Date.now(),
+            // Preserve the demoted current's seq so its label doesn't renumber.
+            seq: p.currentImageSeq,
           });
         } else if (p.imageDataUrl) {
           archived.push({
@@ -618,11 +638,14 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
             kind: 'image',
             prompt: p.aiPrompt ?? '',
             generatedAt: Date.now(),
+            seq: p.currentImageSeq,
           });
         }
         const archivedCurrent = [...withoutTarget, ...archived];
         // Restoring: if the target is a video, restore both video+poster.
         // Otherwise clear the current video and just swap in the image.
+        // Promote the target's seq to be the new currentImageSeq so its
+        // label survives the swap.
         if (target.kind === 'video' && target.videoDataUrl) {
           return {
             ...p,
@@ -630,6 +653,7 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
             videoDataUrl: target.videoDataUrl,
             aiPrompt: target.prompt || p.aiPrompt,
             imageHistory: archivedCurrent,
+            currentImageSeq: target.seq,
           };
         }
         return {
@@ -638,6 +662,7 @@ function reducer(state: BoardfishState, action: Action): BoardfishState {
           videoDataUrl: null,
           aiPrompt: target.prompt || p.aiPrompt,
           imageHistory: archivedCurrent,
+          currentImageSeq: target.seq,
         };
       });
       return { ...state, items: updateStoryboardPanels(state.items, loc.itemIdx, nextPanels) };

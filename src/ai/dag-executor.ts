@@ -26,11 +26,13 @@ import {
   runLlmText,
   describeImage,
   describeVideo,
+  runFrameFix as runFrameFixApi,
 } from './client';
 import { getFalModel, resolveFalModelId } from './fal-models';
 import type { FalModelDef } from './fal-models';
 import type { NodeGraph, BaseNode, NodeId, Edge } from '../nodes/types';
 import { concatFields, type PromptField } from '../nodes/text-prompt-fields';
+import { nextSeqForNode } from '../nodes/graph-utils';
 
 // The stored per-node output shape used by the executor. This is a superset of
 // what BaseNode.output declares in nodes/types.ts (which has kind/dataUrl/text/
@@ -126,6 +128,11 @@ export async function executeGraph(
     'null-node',
     'switch',
     'out',
+    // Import just re-emits its stored mediaUrl; Export just passes through.
+    // Frame Fix is EXPENSIVE (spawns Python + ffmpeg) so it stays out of
+    // this set — users click Generate on the node explicitly.
+    'import',
+    'export',
   ]);
   const toExecute = new Set<NodeId>();
   if (startAt) {
@@ -174,7 +181,14 @@ export async function executeGraph(
           onEvent?.({ kind: 'progress', nodeId, message }),
         signal,
       });
-      node.output = mergeOutput(output, Date.now());
+      // Stamp a stable seq on the new primary output. The current
+      // `node.output` (about to be demoted to history via the React-side
+      // useHistoryMirror hook) already has its own seq from a prior run.
+      // We reserve the NEXT seq for the fresh output, and any extras get
+      // subsequent seqs.
+      const baseSeq = nextSeqForNode(node);
+      const merged = mergeOutput(output, Date.now());
+      node.output = merged ? { ...merged, seq: baseSeq } : merged;
       // If runImageGen (or similar) staged multi-image extras during the
       // run, forward them as a DELTA (`__historyExtras`) rather than the
       // full `__history` array. The reducer appends to live __history so
@@ -182,7 +196,14 @@ export async function executeGraph(
       const dataPatch: Record<string, unknown> = {};
       const extras = (node.data as Record<string, unknown>).__historyExtras;
       if (Array.isArray(extras) && extras.length > 0) {
-        dataPatch.__historyExtras = extras;
+        // Stamp seqs on extras — baseSeq+1, baseSeq+2, … — so each
+        // variant gets a stable, monotonically increasing generation
+        // number that survives future heart-promotes.
+        const stamped = (extras as NodeOutput[]).map((e, i) => {
+          if (typeof (e as { seq?: unknown }).seq === 'number') return e;
+          return { ...e, seq: baseSeq + 1 + i };
+        });
+        dataPatch.__historyExtras = stamped;
         // Clear on the executor's snapshot so a subsequent run in the same
         // pass doesn't double-forward stale extras.
         node.data = { ...(node.data as Record<string, unknown>), __historyExtras: [] };
@@ -215,7 +236,7 @@ export async function executeGraph(
 }
 
 // Narrow the executor's rich NodeOutput to the persisted BaseNode.output shape.
-// The persisted type only allows kind/dataUrl/text/mime/generatedAt.
+// The persisted type allows kind/dataUrl/text/mime/generatedAt/seq.
 function mergeOutput(out: NodeOutput, generatedAt: number): BaseNode['output'] {
   return {
     kind: (out.kind === 'unknown' || !out.kind) ? 'text' : out.kind,
@@ -395,6 +416,9 @@ async function runNode(
     case 'blur':              return runEditTool(node, inputs, ctx, 'blur');
     case 'invert':           return runEditTool(node, inputs, ctx, 'invert');
     case 'extract-frame':    return runEditTool(node, inputs, ctx, 'extract-frame');
+    case 'frame-fix':        return runFrameFix(node, inputs, ctx);
+    case 'import':           return runImport(node);
+    case 'export':           return runExport(node, inputs);
     default: {
       // Exhaustiveness guard without using `never` (keeps things loose in case
       // the parallel subagent introduces new node kinds).
@@ -912,6 +936,10 @@ function buildFalInput(
 
   // Copy everything from `data` except meta and any ref-image key we'll set below.
   const out: Record<string, unknown> = {};
+  // Track which keys the model DECLARES (schema-known). Anything else gets
+  // forwarded verbatim if it survives the filters, but declared keys get
+  // per-type coercion + snap-to-default rescue below.
+  const declaredKeys = new Set(Object.keys(inputTypeByKey));
   for (const [k, v] of Object.entries(node.data)) {
     if (k === 'modelId') continue;
     if (k === '__runtime' || k.startsWith('__')) continue;
@@ -922,6 +950,16 @@ function buildFalInput(
     if (k === 'num_videos') continue;
     // refCount is a UI-only stepper for how many ref ports to render.
     if (k === 'refCount') continue;
+    // Schema-driven pruning: if the model DECLARES a schema (we have any
+    // declared inputs at all) and this key isn't declared, don't forward
+    // it. Prevents stale keys from a prior model (Veo's `resolution`,
+    // `generate_audio`, `auto_fix` on a swapped-in Kling node) from
+    // leaking through and causing 422s. Only applies when the model has
+    // a schema; if declaredKeys is empty, forward everything (legacy).
+    if (declaredKeys.size > 0 && !declaredKeys.has(k)) {
+      // Always allow `prompt` (added below) and `seed` (universal) through.
+      if (k !== 'prompt' && k !== 'seed') continue;
+    }
     if (v === undefined || v === null) continue;
     if (typeof v === 'string' && v.trim() === '') continue;
     // Per-model coercion. If the model schema says this key is 'select', it
@@ -930,7 +968,11 @@ function buildFalInput(
     const declared = inputTypeByKey[k];
     if (declared === 'select' && typeof v === 'number') out[k] = String(v);
     else if (declared === 'number' && typeof v === 'string' && v.trim() !== '') {
-      const n = Number(v);
+      // Strip trailing non-numeric chars like "8s" → 8 to rescue stale
+      // Veo-style enum values landing on a number-typed input (Seedance
+      // duration). If still not finite, fall through to default rescue.
+      const stripped = v.replace(/[^\d.\-]/g, '');
+      const n = Number(stripped !== '' ? stripped : v);
       out[k] = Number.isFinite(n) ? n : v;
     } else {
       out[k] = v;
@@ -944,6 +986,36 @@ function buildFalInput(
         if (inputDefaultByKey[k] !== undefined) out[k] = inputDefaultByKey[k];
         else out[k] = Array.from(inputOptionsByKey[k])[0];
       }
+    }
+    // Snap number values that are NaN or out of [min,max] to the declared
+    // default. This rescues Seedance-style number-typed duration when the
+    // node still carries a stale Veo string like `"8s"` (which Number()
+    // returns NaN for after the strip above didn't help).
+    if (declared === 'number') {
+      const inpSpec = model?.inputs.find((i) => i.key === k);
+      const asNum = typeof out[k] === 'number' ? (out[k] as number) : Number(out[k]);
+      let needsSnap = !Number.isFinite(asNum);
+      if (!needsSnap && inpSpec) {
+        if (inpSpec.min !== undefined && asNum < inpSpec.min) needsSnap = true;
+        if (inpSpec.max !== undefined && asNum > inpSpec.max) needsSnap = true;
+      }
+      if (needsSnap && inputDefaultByKey[k] !== undefined) {
+        out[k] = inputDefaultByKey[k];
+      }
+    }
+  }
+
+  // Backfill declared defaults for any keys the user never set. This
+  // ensures a fresh Seedance node with only `modelId` on `node.data` still
+  // sends `duration`, `aspect_ratio`, `resolution` etc. Skip keys already
+  // populated. Skip 'prompt' + 'seed' + ref-image keys — those are handled
+  // downstream.
+  if (model) {
+    for (const inp of model.inputs) {
+      if (inp.key === 'prompt' || inp.key === 'seed') continue;
+      if (inp.type === 'image-url') continue;
+      if (out[inp.key] !== undefined) continue;
+      if (inp.default !== undefined) out[inp.key] = inp.default;
     }
   }
 
@@ -1058,4 +1130,74 @@ async function runEditTool(
     return { kind: 'video', dataUrl: json.dataUrl, mime: json.mime ?? 'video/mp4' };
   }
   return { kind: 'image', dataUrl: json.dataUrl, mime: json.mime ?? 'image/png' };
+}
+
+// ---------- Frame Fix / Import / Export (v1.1.0) ----------
+
+async function runImport(node: BaseNode): Promise<NodeOutput> {
+  const url = String((node.data as { mediaUrl?: unknown }).mediaUrl ?? '');
+  const kind = String((node.data as { mediaKind?: unknown }).mediaKind ?? '');
+  if (!url) {
+    throw new Error('Import: no file loaded. Open the Inspector and choose a file (or drop one onto the canvas).');
+  }
+  if (kind === 'image') {
+    return { kind: 'image', dataUrl: url, mime: 'image/*' };
+  }
+  if (kind === 'video') {
+    return { kind: 'video', dataUrl: url, mime: 'video/mp4' };
+  }
+  throw new Error(`Import: unknown media kind "${kind}".`);
+}
+
+async function runExport(_node: BaseNode, inputs: ResolvedInputs): Promise<NodeOutput> {
+  // Passthrough. Actual download happens client-side via the Inspector button.
+  const inPort = inputs.byPort['in'];
+  if (inPort?.dataUrl) {
+    const isVideo = inPort.kind === 'video' || (inPort.mime ?? '').startsWith('video/');
+    return isVideo
+      ? { kind: 'video', dataUrl: inPort.dataUrl, mime: inPort.mime ?? 'video/mp4' }
+      : { kind: 'image', dataUrl: inPort.dataUrl, mime: inPort.mime ?? 'image/png' };
+  }
+  if (inputs.videos[0]) return { kind: 'video', dataUrl: inputs.videos[0], mime: 'video/mp4' };
+  if (inputs.images[0]) return { kind: 'image', dataUrl: inputs.images[0], mime: 'image/png' };
+  throw new Error('Export: no upstream media. Wire an image or video into the input port.');
+}
+
+async function runFrameFix(
+  node: BaseNode,
+  inputs: ResolvedInputs,
+  ctx: RunCtx,
+): Promise<NodeOutput> {
+  // Prefer the port-scoped input so we never grab an unrelated video.
+  const inPort = inputs.byPort['in'];
+  const videoUrl = (inPort?.kind === 'video' ? inPort.dataUrl : undefined)
+    ?? inPort?.dataUrl
+    ?? inputs.videos[0];
+  if (!videoUrl) {
+    throw new Error('Frame Fix: no upstream video. Wire a video into the input port.');
+  }
+  const d = node.data as Record<string, unknown>;
+  const dupModeRaw = String(d.dupMode ?? 'exact');
+  const dupMode: 'exact' | 'near' = dupModeRaw === 'near' ? 'near' : 'exact';
+  const framerateModes = Array.isArray(d.framerateModes)
+    ? (d.framerateModes as unknown[]).filter((x) => typeof x === 'string') as string[]
+    : [];
+
+  ctx.onProgress('Preparing frame-fix job\u2026');
+  const res = await runFrameFixApi({
+    videoDataUrl: videoUrl.startsWith('data:') ? videoUrl : undefined,
+    mediaId: videoUrl.startsWith('/api/media/') ? videoUrl.replace('/api/media/', '') : undefined,
+    detectMissing: Boolean(d.detectMissing ?? true),
+    detectDuplicates: Boolean(d.detectDuplicates ?? true),
+    dupMode,
+    dupSensitivity: Math.max(1, Math.min(10, Math.round(Number(d.dupSensitivity ?? 5)))),
+    dupesDropInterpolate: Boolean(d.dupesDropInterpolate ?? false),
+    framerateModes,
+    posterizeEnabled: Boolean(d.posterizeEnabled ?? false),
+    posterizeN: Math.max(2, Math.min(100, Math.round(Number(d.posterizeN ?? 2)))),
+    interpModel: String(d.interpModel ?? 'rife-v4.6'),
+    crf: Math.max(10, Math.min(30, Math.round(Number(d.crf ?? 18)))),
+  }, ctx.signal);
+  ctx.onProgress('Frame Fix complete.');
+  return { kind: 'video', dataUrl: res.dataUrl, mime: res.mime || 'video/mp4' };
 }
