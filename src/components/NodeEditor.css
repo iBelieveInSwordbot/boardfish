@@ -513,9 +513,12 @@
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
-/* Gap between category groups in the canvas context menu (headerless). */
+/* Gap + divider between category groups in the canvas context menu
+ * (headerless). One-pixel line centered in an 8px block. */
 .ne-context-gap {
-  height: 8px;
+  height: 9px;
+  margin: 4px 8px;
+  border-top: 1px solid #2c2c34;
 }
 
 /* --- Inspector drawer --- */

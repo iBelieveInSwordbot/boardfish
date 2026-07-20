@@ -188,13 +188,20 @@ function reducer(state: State, action: Action): State {
       if (action.kind === 'out' && state.graph.nodes.some((n) => n.kind === 'out')) {
         return state;
       }
-      // Center on the click point (see ADD_NODE for rationale).
+      // Position the new node so it sits BESIDE the port, not centered on
+      // it. Ctrl-click on an output → new node goes to the RIGHT (its
+      // input port lands near the source dot). Ctrl-click on an input →
+      // new node goes to the LEFT (its output lands near the source dot).
+      // A little gap (24px) keeps the wire visible instead of piling the
+      // two dots on top of each other.
       const meta = NODE_KINDS_META[action.kind];
-      const centered = {
-        x: action.at.x - (meta?.defaultWidth ?? 220) / 2,
-        y: action.at.y - (meta?.defaultHeight ?? 140) / 2,
-      };
-      const g1 = addNode(state.graph, action.kind, centered);
+      const nw = meta?.defaultWidth ?? 220;
+      const nh = meta?.defaultHeight ?? 140;
+      const GAP = 24;
+      const placed = action.source.side === 'out'
+        ? { x: action.at.x + GAP,          y: action.at.y - nh / 2 } // to the right
+        : { x: action.at.x - GAP - nw,     y: action.at.y - nh / 2 }; // to the left
+      const g1 = addNode(state.graph, action.kind, placed);
       const newNode = g1.nodes[g1.nodes.length - 1];
       // Find the source port so we know the source dataType.
       const srcNode = g1.nodes.find((n) => n.id === action.source.nodeId);
