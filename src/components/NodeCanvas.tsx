@@ -15,6 +15,7 @@ import {
   NODE_MAX_HEIGHT,
 } from '../nodes/graph-utils';
 import { NODE_KINDS } from '../nodes/registry';
+import { NODE_KINDS_META } from '../nodes/registry-meta';
 
 // ---------------------------------------------------------------------------
 // NodeView — one node in the world layer
@@ -138,12 +139,16 @@ export function NodeView(p: NodeViewProps) {
       const zoom = graph.zoom || 1;
       const dx = (e.clientX - state.startClientX) / zoom;
       const dy = (e.clientY - state.startClientY) / zoom;
+      // Per-kind minimums win over the global floor (e.g. null-node = 40x40).
+      const kindMeta = NODE_KINDS_META[node.kind];
+      const minW = kindMeta?.minWidth ?? NODE_MIN_WIDTH;
+      const minH = kindMeta?.minHeight ?? NODE_MIN_HEIGHT;
       let nextW = Math.max(
-        NODE_MIN_WIDTH,
+        minW,
         Math.min(NODE_MAX_WIDTH, Math.round(state.startW + dx)),
       );
       let nextH = Math.max(
-        NODE_MIN_HEIGHT,
+        minH,
         Math.min(NODE_MAX_HEIGHT, Math.round(state.startH + dy)),
       );
       // Media nodes (image-gen / movie-gen / out / panel-ref) lock the media
@@ -155,21 +160,22 @@ export function NodeView(p: NodeViewProps) {
         if (wideDrive) {
           // Width is authoritative; height follows.
           nextH = Math.max(
-            NODE_MIN_HEIGHT,
+            minH,
             Math.min(NODE_MAX_HEIGHT, Math.round(nextW / mediaAspect) + NODE_CHROME_V),
           );
         } else {
           // Height is authoritative; width follows.
           const mediaH = Math.max(1, nextH - NODE_CHROME_V);
           nextW = Math.max(
-            NODE_MIN_WIDTH,
+            minW,
             Math.min(NODE_MAX_WIDTH, Math.round(mediaH * mediaAspect)),
           );
         }
       }
       onChangeData({ __size: { width: nextW, height: nextH } });
     },
-    [graph.zoom, onChangeData, mediaAspect],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [graph.zoom, onChangeData, mediaAspect, node.kind],
   );
 
   const onResizePointerUp = useCallback(
@@ -186,7 +192,7 @@ export function NodeView(p: NodeViewProps) {
 
   return (
     <div
-      className={`ne-node ${selected ? 'is-selected' : ''}`}
+      className={`ne-node ne-node--${node.kind} ${selected ? 'is-selected' : ''}`}
       style={{ left: node.x, top: node.y, width: w, height: h }}
       onClick={onClick}
       onContextMenu={onContextMenu}

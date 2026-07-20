@@ -33,17 +33,20 @@ export function readNodeSize(node: BaseNode): { width: number; height: number } 
   const meta = NODE_KINDS_META[node.kind];
   const defW = meta?.defaultWidth ?? 220;
   const defH = meta?.defaultHeight ?? 140;
+  // Per-kind minimums win over the global floor when set (e.g. null-node).
+  const minW = meta?.minWidth ?? NODE_MIN_WIDTH;
+  const minH = meta?.minHeight ?? NODE_MIN_HEIGHT;
   const size = (node.data as Record<string, unknown>).__size as
     | { width?: number; height?: number }
     | undefined;
   const width = clamp(
     Number(size?.width ?? node.width ?? defW),
-    NODE_MIN_WIDTH,
+    minW,
     NODE_MAX_WIDTH,
   );
   const height = clamp(
     Number(size?.height ?? node.height ?? defH),
-    NODE_MIN_HEIGHT,
+    minH,
     NODE_MAX_HEIGHT,
   );
   return { width, height };

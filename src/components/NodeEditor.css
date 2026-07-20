@@ -1591,3 +1591,55 @@
 .fal-credits-pill.low .fal-credits-brand { color: #ff5252; }
 .fal-credits-balance { font-weight: 600; }
 .fal-credits-rate { color: #7f7f88; font-size: 10.5px; }
+
+/* -------------------------------------------------------------------------
+ * Null / passthrough node — rendered as a small circle. It has one input +
+ * one output port but no header/body content worth showing. Hide the header
+ * + preview text; keep the ports positioned as usual.
+ * ------------------------------------------------------------------------- */
+.ne-node--null-node {
+  border-radius: 50%;
+  background: #26262e;
+  border-color: #3a3a44;
+  overflow: visible;
+}
+.ne-node--null-node.is-selected {
+  box-shadow: 0 0 0 1px #4a9eff, 0 0 0 4px rgba(74, 158, 255, 0.18);
+}
+.ne-node--null-node .ne-node-header {
+  display: none;
+}
+.ne-node--null-node .ne-node-body {
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ne-node--null-node .ne-node-preview,
+.ne-node--null-node .ne-node-preview--null {
+  padding: 0;
+  background: transparent;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+.ne-node--null-node .ne-node-preview-caption {
+  display: none;
+}
+/* Hide the port text labels on the null node — the two dots at the
+   equator are self-explanatory and would visually blow out the circle. */
+.ne-node--null-node .ne-port-label {
+  display: none;
+}
+/* Center the port dots vertically on the equator of the circle. */
+.ne-node--null-node .ne-ports-in,
+.ne-node--null-node .ne-ports-out {
+  top: 50%;
+  transform: translateY(-50%);
+  height: auto;
+  padding: 0;
+  gap: 0;
+}

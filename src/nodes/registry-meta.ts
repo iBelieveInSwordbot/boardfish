@@ -12,6 +12,12 @@ import type { NodeKind } from './types';
 export type NodeKindMeta = {
   defaultWidth: number;
   defaultHeight: number;
+  /** Optional per-kind minimum size overrides. Falls back to the global
+   *  NODE_MIN_WIDTH / NODE_MIN_HEIGHT constants when omitted. Used by the
+   *  null-node so it can render as a small circle (well below the normal
+   *  120px floor). */
+  minWidth?: number;
+  minHeight?: number;
 };
 
 export const NODE_KINDS_META: Record<NodeKind, NodeKindMeta> = {
@@ -20,7 +26,7 @@ export const NODE_KINDS_META: Record<NodeKind, NodeKindMeta> = {
   'movie-gen':       { defaultWidth: 220, defaultHeight: 160 },
   'out':             { defaultWidth: 200, defaultHeight: 160 },
   'switch':          { defaultWidth: 200, defaultHeight: 140 },
-  'null-node':       { defaultWidth: 160, defaultHeight: 100 },
+  'null-node':       { defaultWidth: 50,  defaultHeight: 50, minWidth: 40, minHeight: 40 },
   'prompt-concat':   { defaultWidth: 200, defaultHeight: 140 },
   'prompt-enhancer': { defaultWidth: 220, defaultHeight: 160 },
   'llm-run':         { defaultWidth: 220, defaultHeight: 160 },
