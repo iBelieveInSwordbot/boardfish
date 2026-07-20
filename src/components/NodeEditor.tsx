@@ -1427,10 +1427,15 @@ export function NodeEditor(props: NodeEditorProps) {
       } else if (cr.ripEdgeId) {
         // Dropped on empty canvas while ripping -> delete the edge.
         dispatch({ type: 'REMOVE_EDGE', edgeId: cr.ripEdgeId });
-      } else if (cr.altDrag) {
-        // Alt-drag dropped on empty canvas → open the contextual menu.
-        // User picks a node kind; we create it and auto-wire from the
-        // source port to a compatible port on the new node.
+      } else if (cr.altDrag || e.altKey) {
+        // Alt-drag (option key held at either drag-start OR release)
+        // dropped on empty canvas → open the contextual menu. User picks
+        // a node kind; we create it and auto-wire from the source port
+        // to a compatible port on the new node.
+        //
+        // We accept either the drag-start OR the release altKey so users
+        // don't have to hold Option the entire time (matches how Figma
+        // handles alt-modifier releases).
         const c = screenToCanvas(e.clientX, e.clientY);
         setContextMenu({
           kind: 'wire-from-port',
@@ -1798,13 +1803,15 @@ export function NodeEditor(props: NodeEditorProps) {
       return;
     }
 
-    // Fresh drag: only allow initiating from OUTPUT ports (spec).
-    if (port.side !== 'out') return;
+    // Fresh drag: allow initiating from EITHER side. Dragging from an
+    // output creates an out→in wire; dragging from an input creates an
+    // in←out wire (rubber-band anchored at the input, we look for an
+    // output on release). Matches Weavy/Comfy/ThreeJS-editor conventions.
     const pos = portCanvasPos(node, portId);
     if (!pos) return;
     const cur = screenToCanvas(e.clientX, e.clientY);
     connectRef.current = {
-      from: { nodeId: node.id, portId, side: 'out' },
+      from: { nodeId: node.id, portId, side: port.side },
       startX: pos.x,
       startY: pos.y,
       curX: cur.x,
