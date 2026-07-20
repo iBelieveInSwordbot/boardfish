@@ -179,14 +179,24 @@ function reducer(state: State, action: Action): State {
       }
       const g1 = addNode(state.graph, action.kind, action.at);
       const newNode = g1.nodes[g1.nodes.length - 1];
-      // Pick a port on the new node whose side is the OPPOSITE of the
-      // source's side (out→in / in→out). Prefer the first candidate.
+      // Find the source port so we know the source dataType.
+      const srcNode = g1.nodes.find((n) => n.id === action.source.nodeId);
+      const srcPort = srcNode?.ports.find((p) => p.id === action.source.portId);
+      if (!srcNode || !srcPort) return { graph: g1, dirty: true };
+      // Pick a port on the new node whose side is opposite of source's
+      // side AND whose dataType is compatible (or 'any'). Prefer exact
+      // type match over 'any' so an image → image-gen wires to the
+      // ref-image port, not the text "prompt" input. Iterate ports in
+      // declaration order; take the first exact match, else the first
+      // 'any' match, else give up (add the node without a wire).
       const targetSide: 'in' | 'out' = action.source.side === 'out' ? 'in' : 'out';
-      const targetPort = newNode.ports.find((p) => p.side === targetSide);
-      if (!targetPort) {
-        // No compatible port on this kind — still add the node, just don't wire it.
-        return { graph: g1, dirty: true };
-      }
+      const candidates = newNode.ports.filter((p) => p.side === targetSide);
+      const typeMatch = (a: string, b: string) =>
+        a === 'any' || b === 'any' || a === b;
+      const exact = candidates.find((p) => p.dataType === srcPort.dataType);
+      const any   = candidates.find((p) => typeMatch(p.dataType, srcPort.dataType));
+      const targetPort = exact ?? any;
+      if (!targetPort) return { graph: g1, dirty: true };
       const from = action.source.side === 'out'
         ? { nodeId: action.source.nodeId, portId: action.source.portId }
         : { nodeId: newNode.id, portId: targetPort.id };
