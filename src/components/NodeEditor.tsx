@@ -1558,16 +1558,30 @@ export function NodeEditor(props: NodeEditorProps) {
   }, [graph.panOffset.x, graph.panOffset.y, graph.zoom]);
 
   function onCanvasWheel(e: ReactWheelEvent<HTMLDivElement>) {
-    // Wheel behavior mirrors Figma / Weavy:
-    //   - plain wheel / 2-finger trackpad scroll → PAN
-    //   - ⌘ (macOS) or Ctrl (elsewhere) + wheel → ZOOM centered on cursor
-    //   - pinch-zoom (deltaY with ctrlKey=true synthesized by macOS) → ZOOM
+    // Wheel behavior (2026-07-20, per Matt):
+    //   - mouse wheel / ⌘ (mac) / Ctrl (win) / pinch-zoom → ZOOM at cursor
+    //   - trackpad 2-finger scroll (both axes) → PAN
+    //   - shift + any scroll → PAN horizontally (Figma escape hatch)
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
 
-    // Note: macOS trackpad pinch fires wheel events with ctrlKey=true even
-    // though no key is pressed. Treat metaKey OR ctrlKey as zoom.
-    if (e.metaKey || e.ctrlKey) {
+    // Trackpad detection heuristic:
+    //  - trackpad scrolls are pixel-mode (deltaMode === 0) with small,
+    //    fractional deltas AND usually carry non-zero deltaX (two-axis).
+    //  - mouse wheels tick in integer chunks (|deltaY| ≥ ~40 in Chrome,
+    //    single-axis; deltaX is 0).
+    //  - macOS pinch-zoom fires with ctrlKey=true synthesized.
+    // We treat the event as MOUSE WHEEL (zoom) when ANY of:
+    //   * meta/ctrl is held explicitly (or synthesized pinch)
+    //   * deltaX === 0 AND |deltaY| >= 40 AND deltaY is an integer
+    //     (pure vertical, chunky → mouse wheel)
+    const isPinchOrModifier = e.metaKey || e.ctrlKey;
+    const dY = e.deltaY;
+    const isMouseWheelLike =
+      e.deltaX === 0 && Math.abs(dY) >= 40 && Number.isInteger(dY);
+    const shouldZoom = isPinchOrModifier || (isMouseWheelLike && !e.shiftKey);
+
+    if (shouldZoom) {
       const factor = 1 + (-e.deltaY / 200);
       const nextZoom = clamp(graph.zoom * factor, MIN_ZOOM, MAX_ZOOM);
       const cx = e.clientX - rect.left;
@@ -1582,10 +1596,13 @@ export function NodeEditor(props: NodeEditorProps) {
       return;
     }
 
-    // Plain scroll: pan the canvas. Positive deltaY moves content up.
+    // Plain trackpad scroll: pan the canvas. Positive deltaY moves content up.
+    // Shift+wheel on a mouse pans horizontally (Figma convention).
+    const dx = e.shiftKey && e.deltaX === 0 ? e.deltaY : e.deltaX;
+    const dy = e.shiftKey && e.deltaX === 0 ? 0            : e.deltaY;
     const nextPan = {
-      x: graph.panOffset.x - e.deltaX,
-      y: graph.panOffset.y - e.deltaY,
+      x: graph.panOffset.x - dx,
+      y: graph.panOffset.y - dy,
     };
     dispatch({ type: 'SET_VIEWPORT', panOffset: nextPan, zoom: graph.zoom });
   }
