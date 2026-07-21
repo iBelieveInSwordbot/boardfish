@@ -880,17 +880,18 @@
   border-top: 1px dashed #26262d;
 }
 
-/* Out node visualized as a mini storyboard-page icon. */
+/* Out node body — just the framed image + storyboard overlay. Header,
+ * page numbering, and caption strips were removed 2026-07-20 per Matt;
+ * the node's own dark ne-node-header carries the label + refresh now. */
 .ne-node-preview--out-page {
   display: flex;
   flex-direction: column;
   gap: 0;
   padding: 0;
-  background: #f4f1ea;   /* paper */
-  color: #222;
-  border-radius: 4px;
-  overflow: hidden;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35), inset 0 0 0 1px #d6d0c1;
+  background: transparent;
+  border-radius: 0;
+  overflow: visible;
+  position: relative;
 }
 
 /* Differentiate the whole Out node from other node kinds — paper-tinted
@@ -909,19 +910,12 @@
   border-bottom-color: #3a3626;
 }
 .ne-node--out .ne-node-header-cat { color: #8a7f5f; }
-.ne-out-page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 4px 8px;
-  background: #e9e3d3;
-  border-bottom: 1px solid #d6d0c1;
-  font-family: 'Menlo', 'Courier New', monospace;
-  font-size: 10px;
-  color: #4d4636;
-}
-.ne-out-page-num { font-weight: 700; letter-spacing: 0.04em; }
-.ne-out-page-corner { opacity: 0.7; }
+/* Legacy header/num/corner selectors kept as no-ops so any stray DOM
+ * (from older builds still in browser cache) doesn't produce visual
+ * artifacts. Actual header + numbering removed 2026-07-20. */
+.ne-out-page-header { display: none; }
+.ne-out-page-num,
+.ne-out-page-corner { display: none; }
 .ne-out-page-frame {
   aspect-ratio: 16 / 9;
   background: #0d0d10;
@@ -955,15 +949,8 @@
   opacity: 0.35;
 }
 .ne-out-page-empty { color: #7a7a80; font-size: 11px; font-style: italic; }
-.ne-out-page-caption {
-  padding: 5px 8px 7px;
-  font-size: 10px;
-  color: #4d4636;
-  background: #f4f1ea;
-  border-top: 1px solid #d6d0c1;
-  text-align: center;
-  letter-spacing: 0.02em;
-}
+/* Caption strip removed 2026-07-20; kept as no-op for legacy DOM. */
+.ne-out-page-caption { display: none; }
 
 /* ---------- Fullscreen preview (Space toggles on selected node) ---------- */
 .ne-fullscreen-backdrop {
@@ -1059,25 +1046,31 @@
   z-index: 20;
 }
 
-/* Out-node refresh button (inside the header strip) */
+/* Out-node refresh button — pinned absolute to the top-right of the node,
+ * visually docked inside the node's dark ne-node-header bar. The preview
+ * itself sits below the header in ne-node-body; using negative top pushes
+ * the button up into the header row. */
 .ne-out-page-refresh {
-  margin-left: auto;
-  width: 20px;
-  height: 20px;
+  position: absolute;
+  top: -22px;      /* into the header row (header is ~26px tall) */
+  right: 6px;
+  width: 18px;
+  height: 18px;
   border-radius: 999px;
-  border: 1px solid #c4bda7;
-  background: #f4f1ea;
-  color: #4d4636;
+  border: 1px solid #3a3626;
+  background: #2c281f;
+  color: #d8bd6e;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 0;
+  z-index: 5;
 }
-.ne-out-page-refresh:hover { background: #e9e3d3; }
-.ne-out-page-refresh:active { background: #ddd6c1; }
+.ne-out-page-refresh:hover { background: #3a3626; color: #f0d78a; }
+.ne-out-page-refresh:active { background: #24221c; }
 
 /* ---------- Big Text-Prompt editor (Space-tap on text-prompt node) ---------- */
 .ne-prompt-editor-backdrop {

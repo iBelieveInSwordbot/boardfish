@@ -702,45 +702,33 @@ const OutPreview: FC<PreviewProps> = ({ node, onRun, onPromoteFrame, onChangeDat
   const history = readNodeHistory(node);
   const panelInfo = useContext(OutPanelContext);
 
-  const numPrefix = (panelInfo?.panelNumberPrefix ?? '').trim();
-  const numText = panelInfo
-    ? `${numPrefix ? numPrefix.toUpperCase() + ' ' : ''}${String(panelInfo.panelIndex).padStart(2, '0')}`.trim()
-    : '01';
-  const cornerText = panelInfo
-    ? (panelInfo.cornerNote?.trim() || `S${String(panelInfo.panelIndex).padStart(2, '0')}`)
-    : 'OUT';
   const aspect = panelInfo?.panelAspectRatio && panelInfo.panelAspectRatio > 0
     ? panelInfo.panelAspectRatio
     : 16 / 9;
-  const fieldsToShow = (panelInfo?.fields ?? []).filter((f) => (f.value ?? '').trim() !== '');
 
   return createElement(
     'div',
     { className: 'ne-node-preview ne-node-preview--out-page' + (url ? '' : ' is-empty') },
-    createElement(
-      'div',
-      { className: 'ne-out-page-header' },
-      createElement('span', { className: 'ne-out-page-num' }, numText),
-      createElement('span', { className: 'ne-out-page-corner' }, cornerText),
-      onRun
-        ? createElement(
-            'button',
-            {
-              className: 'ne-out-page-refresh',
-              type: 'button',
-              title: 'Refresh from upstream',
-              onClick: (e: React.MouseEvent) => {
-                e.stopPropagation();
-                onRun();
-              },
-              onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
-              onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
+    // Refresh button — pinned absolute to the top-right of the node,
+    // visually sitting inside the node's dark header bar (styled in CSS).
+    onRun
+      ? createElement(
+          'button',
+          {
+            className: 'ne-out-page-refresh',
+            type: 'button',
+            title: 'Refresh from upstream',
+            onClick: (e: React.MouseEvent) => {
+              e.stopPropagation();
+              onRun();
             },
-            '\u21bb',
-          )
-        : null,
-    ),
-    // Image frame with real project aspect ratio.
+            onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+            onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
+          },
+          '\u21bb',
+        )
+      : null,
+    // Image frame with real project aspect ratio + storyboard overlay.
     createElement(
       'div',
       {
@@ -767,20 +755,6 @@ const OutPreview: FC<PreviewProps> = ({ node, onRun, onPromoteFrame, onChangeDat
         alt: '',
         draggable: false,
       }),
-    ),
-    // Caption strip: render each non-empty panel field as its own line.
-    createElement(
-      'div',
-      { className: 'ne-out-page-caption' },
-      panelInfo && fieldsToShow.length > 0
-        ? fieldsToShow.map((f, i) =>
-            createElement(
-              'div',
-              { key: f.id ?? i, className: 'ne-out-page-caption-line' },
-              f.value.trim(),
-            ),
-          )
-        : (url ? 'panel image \u2192 storyboard' : 'wire something to me'),
     ),
   );
 };
