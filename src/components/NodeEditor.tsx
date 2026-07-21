@@ -414,6 +414,9 @@ export function NodeEditor(props: NodeEditorProps) {
   // Distinguishes a plain Space tap (→ fullscreen) from a Space+drag pan.
   // Flipped true the moment a pan starts while Space is held.
   const spacePannedRef = useRef(false);
+  // Mirror of `spaceDown` for synchronous reads inside native wheel listeners
+  // (which can fire before React commits the state update).
+  const spaceDownRef = useRef(false);
 
   // Fullscreen preview of the currently-selected node's output.
   const [fullscreenNodeId, setFullscreenNodeId] = useState<NodeId | null>(null);
@@ -1145,6 +1148,7 @@ export function NodeEditor(props: NodeEditorProps) {
         // text-prompt nodes.
         if (!spaceDown) {
           spacePannedRef.current = false;
+          spaceDownRef.current = true;
           setSpaceDown(true);
         }
         e.preventDefault();
@@ -1228,6 +1232,7 @@ export function NodeEditor(props: NodeEditorProps) {
         if (inField) {
           // Reset any stale pan flag but don't fire the tap action.
           spacePannedRef.current = false;
+          spaceDownRef.current = false;
           setSpaceDown(false);
           return;
         }
@@ -1268,6 +1273,7 @@ export function NodeEditor(props: NodeEditorProps) {
           }
         }
         spacePannedRef.current = false;
+        spaceDownRef.current = false;
         setSpaceDown(false);
       }
     }
@@ -1558,31 +1564,24 @@ export function NodeEditor(props: NodeEditorProps) {
   }, [graph.panOffset.x, graph.panOffset.y, graph.zoom]);
 
   function onCanvasWheel(e: ReactWheelEvent<HTMLDivElement>) {
-    // Wheel behavior (2026-07-20, per Matt):
-    //   - mouse wheel / ⌘ (mac) / Ctrl (win) / pinch-zoom → ZOOM at cursor
-    //   - trackpad 2-finger scroll (both axes) → PAN
-    //   - shift + any scroll → PAN horizontally (Figma escape hatch)
+    // Wheel behavior (2026-07-21, per Matt):
+    //   - all scroll events (mouse wheel, trackpad 2-finger, pinch) → ZOOM at cursor
+    //   - hold SPACEBAR while scrolling → PAN
+    //   - hold SPACEBAR + drag with any pointer button → PAN (Figma-style)
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
 
-    // Trackpad detection heuristic:
-    //  - trackpad scrolls are pixel-mode (deltaMode === 0) with small,
-    //    fractional deltas AND usually carry non-zero deltaX (two-axis).
-    //  - mouse wheels tick in integer chunks (|deltaY| ≥ ~40 in Chrome,
-    //    single-axis; deltaX is 0).
-    //  - macOS pinch-zoom fires with ctrlKey=true synthesized.
-    // We treat the event as MOUSE WHEEL (zoom) when ANY of:
-    //   * meta/ctrl is held explicitly (or synthesized pinch)
-    //   * deltaX === 0 AND |deltaY| >= 40 AND deltaY is an integer
-    //     (pure vertical, chunky → mouse wheel)
-    const isPinchOrModifier = e.metaKey || e.ctrlKey;
-    const dY = e.deltaY;
-    const isMouseWheelLike =
-      e.deltaX === 0 && Math.abs(dY) >= 40 && Number.isInteger(dY);
-    const shouldZoom = isPinchOrModifier || (isMouseWheelLike && !e.shiftKey);
+    // Space-hold OR shift-hold flips scroll from zoom to pan. Everything
+    // else — mouse wheel, trackpad two-finger scroll, macOS pinch-zoom —
+    // maps to zoom centered on the cursor.
+    const shouldPan = spaceDownRef.current || e.shiftKey;
 
-    if (shouldZoom) {
-      const factor = 1 + (-e.deltaY / 200);
+    if (!shouldPan) {
+      // Trackpad two-axis deltas can be small and noisy; combine both axes
+      // so a diagonal swipe still zooms consistently. Use the dominant axis
+      // for direction so horizontal-only pinches on some hardware still work.
+      const rawDelta = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+      const factor = 1 + (-rawDelta / 200);
       const nextZoom = clamp(graph.zoom * factor, MIN_ZOOM, MAX_ZOOM);
       const cx = e.clientX - rect.left;
       const cy = e.clientY - rect.top;
@@ -1596,13 +1595,10 @@ export function NodeEditor(props: NodeEditorProps) {
       return;
     }
 
-    // Plain trackpad scroll: pan the canvas. Positive deltaY moves content up.
-    // Shift+wheel on a mouse pans horizontally (Figma convention).
-    const dx = e.shiftKey && e.deltaX === 0 ? e.deltaY : e.deltaX;
-    const dy = e.shiftKey && e.deltaX === 0 ? 0            : e.deltaY;
+    // Space-hold / shift-hold: pan.
     const nextPan = {
-      x: graph.panOffset.x - dx,
-      y: graph.panOffset.y - dy,
+      x: graph.panOffset.x - e.deltaX,
+      y: graph.panOffset.y - e.deltaY,
     };
     dispatch({ type: 'SET_VIEWPORT', panOffset: nextPan, zoom: graph.zoom });
   }
