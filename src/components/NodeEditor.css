@@ -928,10 +928,11 @@
 .ne-out-page-frame img,
 .ne-out-page-frame video { width: 100%; height: 100%; object-fit: cover; display: block; }
 
-/* Translucent storyboard-sheet overlay laid on top of the generated media.
-   Stretches to fill the frame; ignores pointer events so promote/click UI
-   on the media below still works. Blend + opacity keep the panel art visible
-   underneath while showing the sheet lines/labels on top. */
+/* Storyboard-sheet overlay laid on top of the generated media. The PNG
+ * already carries its own alpha (Matt exported it at the target opacity)
+ * so we render it 1:1 with no CSS opacity multiplier or blend mode.
+ * Stretches to fill the frame; ignores pointer events so promote/click UI
+ * on the media below still works. */
 .ne-out-page-overlay {
   position: absolute;
   inset: 0;
@@ -939,14 +940,7 @@
   height: 100%;
   object-fit: cover;
   pointer-events: none;
-  opacity: 0.65;
-  mix-blend-mode: multiply;
   user-select: none;
-}
-/* Fade the overlay a bit further when the frame is empty (no media yet) so
-   it doesn't dominate the "wire something to me" hint. */
-.ne-node-preview--out-page.is-empty .ne-out-page-overlay {
-  opacity: 0.35;
 }
 .ne-out-page-empty { color: #7a7a80; font-size: 11px; font-style: italic; }
 /* Caption strip removed 2026-07-20; kept as no-op for legacy DOM. */
