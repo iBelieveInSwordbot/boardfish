@@ -1875,6 +1875,11 @@ export function NodeEditor(props: NodeEditorProps) {
 
   function onPortPointerDown(e: ReactPointerEvent<HTMLDivElement>, node: BaseNode, portId: PortId) {
     if (e.button !== 0) return;
+    // Ctrl-click on macOS synthesizes a right-click and also fires pointerdown
+    // (button 0) with ctrlKey=true. Bail out so the follow-up `contextmenu`
+    // event can open the wire-from-port menu instead of us starting a rubber-band
+    // wire drag. Same for meta-click as an escape hatch on non-Mac hardware.
+    if (e.ctrlKey || e.metaKey) return;
     e.stopPropagation();
     const port = node.ports.find((p) => p.id === portId);
     if (!port) return;
