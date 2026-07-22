@@ -399,6 +399,216 @@ app.get('/api/media/:id', (req, res) => {
   }
 });
 
+// ---------- Projects store ----------
+// Server-side project catalog. Each project = one JSON file at
+//   <PROJECTS_DIR>/<uuid>.json
+// The JSON contains the same { settings, items } payload the client
+// already uses for LOAD_PROJECT, plus a small meta block (name, created,
+// modified, thumbnailMediaUrl, id).
+//
+// Media (base64 data URLs) is expected to be lifted into the /api/media
+// content-addressed store by the client BEFORE PUT, so project files
+// stay small (kilobytes, not megabytes). The server does not enforce
+// this — it's a client contract — but the client's `liftInlineMedia`
+// helper handles it on every save.
+
+const PROJECTS_DIR = process.env.PROJECTS_DIR
+  ? path.resolve(process.env.PROJECTS_DIR)
+  : path.resolve(__dirname, '..', 'data', 'projects');
+
+try { mkdirSync(PROJECTS_DIR, { recursive: true }); }
+catch (err) { console.warn(`[projects] cannot create PROJECTS_DIR (${PROJECTS_DIR}):`, err.message); }
+
+function isSafeProjectId(id) {
+  return typeof id === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(id);
+}
+
+function projectPath(id) {
+  return path.join(PROJECTS_DIR, `${id}.json`);
+}
+
+function readProjectFile(id) {
+  const fp = projectPath(id);
+  if (!existsSync(fp)) return null;
+  try {
+    const raw = readFileSync(fp, 'utf8');
+    const parsed = JSON.parse(raw);
+    return parsed;
+  } catch (err) {
+    console.warn(`[projects] failed to read ${id}:`, err.message);
+    return null;
+  }
+}
+
+function projectSummary(id) {
+  const proj = readProjectFile(id);
+  if (!proj || typeof proj !== 'object') return null;
+  const meta = proj.meta || {};
+  const stat = (() => { try { return statSync(projectPath(id)); } catch { return null; } })();
+  return {
+    id,
+    name: meta.name || 'Untitled Project',
+    created: meta.created || (stat ? stat.birthtimeMs : Date.now()),
+    modified: meta.modified || (stat ? stat.mtimeMs : Date.now()),
+    thumbnailMediaUrl: meta.thumbnailMediaUrl || null,
+    bytes: stat ? stat.size : 0,
+  };
+}
+
+function newProjectId() {
+  // 22-char base36 id (random 128 bits). Not a UUID but same collision
+  // domain and URL-safe.
+  const rand = createHash('sha256').update(String(Date.now()) + Math.random() + Math.random()).digest('hex');
+  return rand.slice(0, 22);
+}
+
+// List projects.
+app.get('/api/projects', (_req, res) => {
+  try {
+    const files = existsSync(PROJECTS_DIR) ? readdirSync(PROJECTS_DIR) : [];
+    const projects = files
+      .filter((f) => f.endsWith('.json'))
+      .map((f) => f.replace(/\.json$/, ''))
+      .filter(isSafeProjectId)
+      .map((id) => projectSummary(id))
+      .filter((p) => p !== null)
+      .sort((a, b) => (b.modified || 0) - (a.modified || 0));
+    res.json({ ok: true, projects });
+  } catch (err) {
+    console.error('[projects/list] error', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Read one project (full payload).
+app.get('/api/projects/:id', (req, res) => {
+  const id = String(req.params.id || '');
+  if (!isSafeProjectId(id)) return res.status(400).json({ error: 'invalid project id' });
+  const proj = readProjectFile(id);
+  if (!proj) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true, project: proj });
+});
+
+// Create a project. Body: { name?, settings, items, meta? }.
+app.post('/api/projects', (req, res) => {
+  try {
+    const body = req.body || {};
+    if (!body.settings || !Array.isArray(body.items)) {
+      return res.status(400).json({ error: 'settings + items required' });
+    }
+    const id = isSafeProjectId(body.id) ? body.id : newProjectId();
+    if (existsSync(projectPath(id))) {
+      return res.status(409).json({ error: 'project id already exists' });
+    }
+    const now = Date.now();
+    const meta = {
+      name: body.name || body.meta?.name || 'Untitled Project',
+      created: now,
+      modified: now,
+      thumbnailMediaUrl: body.meta?.thumbnailMediaUrl || null,
+      ...(body.meta || {}),
+      // pin id/times regardless of what client sent
+      id,
+      created: now,
+      modified: now,
+    };
+    const settingsForSave =
+      body.settings && typeof body.settings === 'object' && !body.settings.projectName
+        ? { ...body.settings, projectName: meta.name }
+        : body.settings;
+    const payload = { meta, settings: settingsForSave, items: body.items };
+    writeFileSync(projectPath(id), JSON.stringify(payload));
+    res.json({ ok: true, id, meta });
+  } catch (err) {
+    console.error('[projects/create] error', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update a project. Body: { name?, settings, items, meta? }.
+app.put('/api/projects/:id', (req, res) => {
+  try {
+    const id = String(req.params.id || '');
+    if (!isSafeProjectId(id)) return res.status(400).json({ error: 'invalid project id' });
+    const body = req.body || {};
+    if (!body.settings || !Array.isArray(body.items)) {
+      return res.status(400).json({ error: 'settings + items required' });
+    }
+    const prev = readProjectFile(id);
+    const prevMeta = prev?.meta || {};
+    const now = Date.now();
+    const meta = {
+      ...prevMeta,
+      ...(body.meta || {}),
+      name: body.name || body.meta?.name || prevMeta.name || 'Untitled Project',
+      created: prevMeta.created || now,
+      id,
+      modified: now,
+      thumbnailMediaUrl:
+        body.meta?.thumbnailMediaUrl !== undefined
+          ? body.meta.thumbnailMediaUrl
+          : prevMeta.thumbnailMediaUrl || null,
+    };
+    const payload = { meta, settings: body.settings, items: body.items };
+    writeFileSync(projectPath(id), JSON.stringify(payload));
+    res.json({ ok: true, id, meta });
+  } catch (err) {
+    console.error('[projects/update] error', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Rename (patch just the name/thumbnail without rewriting the whole payload).
+// When body.name is provided we also mirror it into settings.projectName so
+// the next LOAD_PROJECT on the client picks up the rename (otherwise the
+// old in-document name would autosave right back over the meta.name).
+app.patch('/api/projects/:id', (req, res) => {
+  try {
+    const id = String(req.params.id || '');
+    if (!isSafeProjectId(id)) return res.status(400).json({ error: 'invalid project id' });
+    const proj = readProjectFile(id);
+    if (!proj) return res.status(404).json({ error: 'not found' });
+    const body = req.body || {};
+    const prevMeta = proj.meta || {};
+    const meta = {
+      ...prevMeta,
+      ...(typeof body.name === 'string' ? { name: body.name } : {}),
+      ...(body.thumbnailMediaUrl !== undefined ? { thumbnailMediaUrl: body.thumbnailMediaUrl } : {}),
+      id,
+      created: prevMeta.created || Date.now(),
+      modified: Date.now(),
+    };
+    const nextSettings =
+      typeof body.name === 'string' && proj.settings && typeof proj.settings === 'object'
+        ? { ...proj.settings, projectName: body.name }
+        : proj.settings;
+    const next = { ...proj, meta, settings: nextSettings };
+    writeFileSync(projectPath(id), JSON.stringify(next));
+    res.json({ ok: true, id, meta });
+  } catch (err) {
+    console.error('[projects/patch] error', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete a project.
+app.delete('/api/projects/:id', (req, res) => {
+  try {
+    const id = String(req.params.id || '');
+    if (!isSafeProjectId(id)) return res.status(400).json({ error: 'invalid project id' });
+    if (!existsSync(projectPath(id))) return res.status(404).json({ error: 'not found' });
+    unlinkSync(projectPath(id));
+    res.json({ ok: true, id });
+  } catch (err) {
+    console.error('[projects/delete] error', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/projects-health', (_req, res) => {
+  res.json({ ok: true, dir: PROJECTS_DIR, exists: existsSync(PROJECTS_DIR) });
+});
+
 // ---------- Routes ----------
 
 app.get('/api/styles', (_req, res) => {

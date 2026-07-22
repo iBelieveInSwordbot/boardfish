@@ -1,0 +1,333 @@
+/* Projects dashboard — Boardfish AI landing view */
+
+.projects-dash {
+  position: fixed;
+  inset: 0;
+  background: #0f0f10;
+  color: #eaeaea;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 40;
+}
+
+.projects-dash-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 24px;
+  border-bottom: 1px solid #23232a;
+  background: #131317;
+  flex: 0 0 auto;
+}
+
+.projects-dash-brand { display: flex; align-items: baseline; gap: 12px; }
+.projects-dash-title { font-size: 18px; font-weight: 600; color: #f5f5f7; letter-spacing: 0.2px; }
+.projects-dash-subtitle { font-size: 13px; color: #8a8a92; letter-spacing: 0.4px; text-transform: uppercase; }
+
+.projects-dash-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.projects-dash-search {
+  background: #1c1c22;
+  color: #eaeaea;
+  border: 1px solid #2b2b33;
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 13px;
+  width: 220px;
+}
+.projects-dash-search:focus { outline: none; border-color: #3d3d47; }
+
+.projects-dash-view-toggle {
+  display: inline-flex;
+  border: 1px solid #2b2b33;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.projects-dash-view-toggle button {
+  background: #1c1c22;
+  color: #a5a5ad;
+  border: 0;
+  padding: 6px 10px;
+  font-size: 14px;
+}
+.projects-dash-view-toggle button.active { background: #2c2c34; color: #eee; }
+.projects-dash-view-toggle button + button { border-left: 1px solid #2b2b33; }
+
+.projects-dash-sort {
+  background: #1c1c22;
+  color: #eaeaea;
+  border: 1px solid #2b2b33;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.projects-dash-btn {
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.projects-dash-btn.ghost {
+  background: #1c1c22;
+  color: #eaeaea;
+  border-color: #2b2b33;
+}
+.projects-dash-btn.ghost:hover { background: #26262e; }
+.projects-dash-btn.primary {
+  background: #4a7cff;
+  color: #fff;
+  border-color: #4a7cff;
+}
+.projects-dash-btn.primary:hover { background: #3a6df0; }
+.projects-dash-btn:disabled { opacity: 0.55; cursor: default; }
+
+.projects-dash-empty {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #8a8a92;
+  font-size: 15px;
+  padding: 40px;
+  text-align: center;
+}
+
+.projects-dash-error {
+  background: #3a1919;
+  color: #ffb4b4;
+  padding: 10px 20px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.projects-dash-error button {
+  background: transparent;
+  border: 1px solid #ffb4b4;
+  color: #ffb4b4;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* --- Grid view --- */
+
+.projects-dash-grid {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 24px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 20px;
+  align-content: start;
+}
+
+.project-tile {
+  background: #17171b;
+  border: 1px solid #23232a;
+  border-radius: 12px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+.project-tile:hover { border-color: #3d3d47; }
+
+.project-tile-thumb {
+  aspect-ratio: 16 / 10;
+  background: #0f0f13;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  position: relative;
+  display: block;
+  width: 100%;
+}
+.project-tile-thumb img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.project-tile-thumb-empty {
+  width: 100%; height: 100%;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  color: #4a4a52;
+  font-size: 36px;
+  gap: 6px;
+}
+.project-tile-thumb-empty .hint { font-size: 12px; color: #5a5a62; }
+.project-tile-busy {
+  position: absolute; inset: 0;
+  background: rgba(0,0,0,0.4);
+  border-top: 2px solid #4a7cff;
+  animation: dash-busy 1s linear infinite;
+}
+@keyframes dash-busy { from { opacity: 0.6; } to { opacity: 1; } }
+
+.project-tile-meta {
+  padding: 10px 12px 4px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.project-tile-name {
+  background: transparent; border: 0; padding: 0;
+  color: #eaeaea; font-size: 14px; font-weight: 500;
+  text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: pointer;
+}
+.project-tile-name:hover { color: #fff; }
+.project-tile-sub {
+  font-size: 12px; color: #8a8a92;
+  display: flex; gap: 6px; align-items: center;
+}
+.project-tile-sub .dot { color: #4a4a52; }
+
+.project-tile-actions {
+  display: flex;
+  gap: 6px;
+  padding: 6px 12px 10px 12px;
+  align-items: center;
+}
+.project-tile-actions button {
+  background: #22222a;
+  border: 1px solid #2b2b33;
+  color: #eaeaea;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+.project-tile-actions button:hover { background: #2c2c34; }
+
+.project-tile-menu {
+  margin-left: auto;
+  position: relative;
+}
+.project-tile-menu summary {
+  list-style: none;
+  cursor: pointer;
+  background: #22222a;
+  border: 1px solid #2b2b33;
+  color: #eaeaea;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 14px;
+  line-height: 1;
+  user-select: none;
+}
+.project-tile-menu summary::-webkit-details-marker { display: none; }
+.project-tile-menu[open] summary { background: #2c2c34; }
+.project-tile-menu-body {
+  position: absolute;
+  right: 0; top: calc(100% + 4px);
+  background: #1e1e24;
+  border: 1px solid #2b2b33;
+  border-radius: 8px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  z-index: 4;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+}
+.project-tile-menu-body button {
+  background: transparent;
+  border: 0;
+  color: #eaeaea;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.project-tile-menu-body button:hover { background: #2c2c34; }
+.project-tile-menu-body button.danger { color: #ff8080; }
+.project-tile-menu-body button.danger:hover { background: #3a1919; color: #ff9a9a; }
+
+/* --- List view --- */
+
+.projects-dash-list {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 12px 24px 24px 24px;
+}
+.projects-dash-list-header,
+.projects-dash-row {
+  display: grid;
+  grid-template-columns: 44px 1fr 140px 100px 320px;
+  gap: 16px;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid #1e1e24;
+}
+.projects-dash-list-header {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: #6a6a72;
+  letter-spacing: 0.5px;
+  border-bottom-color: #2b2b33;
+  padding-top: 12px;
+  padding-bottom: 12px;
+  position: sticky;
+  top: 0;
+  background: #0f0f10;
+  z-index: 2;
+}
+.projects-dash-row { color: #eaeaea; }
+.projects-dash-row:hover { background: #17171b; }
+
+.projects-dash-row .col-thumb.thumb-btn {
+  width: 44px; height: 28px;
+  background: #0f0f13;
+  border: 1px solid #23232a;
+  border-radius: 4px;
+  overflow: hidden;
+  padding: 0;
+  cursor: pointer;
+}
+.projects-dash-row .col-thumb img {
+  width: 100%; height: 100%;
+  object-fit: cover; display: block;
+}
+.projects-dash-row .thumb-empty {
+  width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  color: #4a4a52; font-size: 14px;
+}
+.projects-dash-row .col-name.name-btn {
+  background: transparent; border: 0;
+  color: #eaeaea; font-size: 14px; text-align: left;
+  padding: 0;
+  cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.projects-dash-row .col-name.name-btn:hover { color: #fff; }
+.projects-dash-row .col-modified,
+.projects-dash-row .col-size { font-size: 12px; color: #8a8a92; }
+.projects-dash-row .col-actions {
+  display: flex; gap: 6px; justify-content: flex-end;
+}
+.projects-dash-row .col-actions button {
+  background: #22222a;
+  border: 1px solid #2b2b33;
+  color: #eaeaea;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+.projects-dash-row .col-actions button:hover { background: #2c2c34; }
+.projects-dash-row .col-actions button.danger { color: #ff8080; }
+.projects-dash-row .col-actions button.danger:hover { background: #3a1919; color: #ff9a9a; }
+.projects-dash-row .col-actions button:disabled { opacity: 0.5; cursor: default; }

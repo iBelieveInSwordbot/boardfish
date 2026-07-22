@@ -908,6 +908,9 @@
   background: #2c281f;
   color: #d8bd6e;
   border-bottom-color: #3a3626;
+  /* Reserve room on the left for the refresh button so the "Output"
+   * title text starts after it and never sits under the icon. */
+  padding-left: 34px;
 }
 .ne-node--out .ne-node-header-cat { color: #8a7f5f; }
 /* Legacy header/num/corner selectors kept as no-ops so any stray DOM
@@ -1040,14 +1043,15 @@
   z-index: 20;
 }
 
-/* Out-node refresh button — pinned absolute to the top-right of the node,
- * visually docked inside the node's dark ne-node-header bar. The preview
- * itself sits below the header in ne-node-body; using negative top pushes
- * the button up into the header row. */
+/* Out-node refresh button — pinned absolute into the node's dark
+ * ne-node-header bar, sitting to the LEFT of the "Output" title text
+ * (which lives on the header's left side). The preview itself sits below
+ * the header in ne-node-body; using negative top pushes the button up
+ * into the header row. */
 .ne-out-page-refresh {
   position: absolute;
   top: -22px;      /* into the header row (header is ~26px tall) */
-  right: 6px;
+  left: 8px;
   width: 18px;
   height: 18px;
   border-radius: 999px;

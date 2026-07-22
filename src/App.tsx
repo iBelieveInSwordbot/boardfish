@@ -6,16 +6,75 @@ import { Toolbar } from './components/Toolbar';
 import { PanelLightbox } from './components/PanelLightbox';
 import { AIDrawer } from './components/AIDrawer';
 import { NodeEditor } from './components/NodeEditor';
+import { ProjectsDashboard } from './components/ProjectsDashboard';
 import { seedDefaultGraph } from './nodes/types';
 import type { NodeGraph } from './nodes/types';
 import { ratioToLabel } from './ai/client';
 import { allStoryboardPanels, primarySelectedPanelId, resolveStoryboardSettings, useBoardfish } from './store';
 import { styleSuffix } from './types';
+import {
+  getCurrentProjectId,
+  maybeMigrateLegacyAutosave,
+  setCurrentProjectId,
+} from './app-shell';
+import { useProjectPersistence } from './project-persistence';
 import './App.css';
 import './components/NodeEditor.css';
 
 function App() {
   const { state, dispatch } = useBoardfish();
+
+  // Currently open project id (server-backed). null means "show the
+  // projects dashboard". Persisted in localStorage so a page refresh
+  // stays in whatever project the user was editing.
+  const [currentProjectId, setCurrentProjectIdState] = useState<string | null>(() =>
+    getCurrentProjectId(),
+  );
+  const [bootReady, setBootReady] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<
+    { kind: 'idle' } | { kind: 'saved'; at: number } | { kind: 'error'; message: string }
+  >({ kind: 'idle' });
+
+  // One-time boot: if we don't have a current project id, migrate the
+  // legacy IDB autosave into the server store (if there's anything worth
+  // saving) and auto-open the migrated project.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (currentProjectId) {
+        setBootReady(true);
+        return;
+      }
+      const migratedId = await maybeMigrateLegacyAutosave();
+      if (cancelled) return;
+      if (migratedId) {
+        setCurrentProjectId(migratedId);
+        setCurrentProjectIdState(migratedId);
+      }
+      setBootReady(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Intentionally empty deps — runs once at mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useProjectPersistence(currentProjectId, state, dispatch, {
+    onSaved: (info) => setSaveStatus({ kind: 'saved', at: info.modified }),
+    onError: (err) => setSaveStatus({ kind: 'error', message: err.message }),
+  });
+
+  function openProject(id: string) {
+    setCurrentProjectId(id);
+    setCurrentProjectIdState(id);
+    setSaveStatus({ kind: 'idle' });
+  }
+
+  function backToProjects() {
+    setCurrentProjectId(null);
+    setCurrentProjectIdState(null);
+  }
 
   const [inspectorOpen, setInspectorOpen] = useState<boolean>(() => {
     try {
@@ -206,6 +265,24 @@ function App() {
     fullscreen ? 'fullscreen' : '',
   ].filter(Boolean).join(' ');
 
+  // Boot gate: don't flash the editor while we're doing the one-time
+  // migration check. Once ready, show the dashboard OR the editor.
+  if (!bootReady) {
+    return (
+      <div className="app-boot" style={{
+        position: 'fixed', inset: 0, background: '#0f0f10',
+        color: '#8a8a92', display: 'flex', alignItems: 'center',
+        justifyContent: 'center', fontSize: 14,
+      }}>
+        Loading Boardfish AI…
+      </div>
+    );
+  }
+
+  if (!currentProjectId) {
+    return <ProjectsDashboard onOpen={openProject} />;
+  }
+
   return (
     <div className={`app-root ${bodyClasses}`}>
       {!fullscreen && (
@@ -215,6 +292,8 @@ function App() {
           inspectorOpen={inspectorOpen}
           onToggleInspector={() => setInspectorOpen((v) => !v)}
           onOpenAI={() => setAiOpen(true)}
+          onBackToProjects={backToProjects}
+          saveStatus={saveStatus}
         />
       )}
       <div className="app-body">

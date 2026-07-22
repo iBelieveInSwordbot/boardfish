@@ -770,6 +770,7 @@ input, textarea, select {
 .toolbar-brand {
   display: flex;
   align-items: center;
+  gap: 10px;
   font-weight: 600;
 }
 .brand-name {
@@ -779,6 +780,29 @@ input, textarea, select {
   padding-right: 16px;
   border-right: 1px solid #262629;
 }
+.toolbar-back-btn {
+  background: #22222a;
+  border: 1px solid #2b2b33;
+  color: #eaeaea;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.toolbar-back-btn:hover { background: #2c2c34; }
+.toolbar-save-status {
+  font-size: 11px;
+  font-weight: 400;
+  color: #8a8a92;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #1c1c22;
+  border: 1px solid #23232a;
+  letter-spacing: 0.02em;
+}
+.toolbar-save-status.saved { color: #7ac96a; border-color: #2a3a24; background: #172014; }
+.toolbar-save-status.error { color: #ff9a9a; border-color: #3a1919; background: #201414; cursor: help; }
 
 .toolbar-project { display: flex; }
 .project-name-input {

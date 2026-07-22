@@ -3,23 +3,72 @@ import type { Action, BoardfishState } from '../store';
 import { exportPdf, loadProject, saveProject } from '../project-io';
 import type { DocItem } from '../types';
 
+type SaveStatus =
+  | { kind: 'idle' }
+  | { kind: 'saved'; at: number }
+  | { kind: 'error'; message: string };
+
 type Props = {
   state: BoardfishState;
   dispatch: React.Dispatch<Action>;
   inspectorOpen: boolean;
   onToggleInspector: () => void;
   onOpenAI: () => void;
+  onBackToProjects?: () => void;
+  saveStatus?: SaveStatus;
 };
 
-export function Toolbar({ state, dispatch, inspectorOpen, onToggleInspector, onOpenAI }: Props) {
+function formatSavedAgo(at: number): string {
+  const delta = Date.now() - at;
+  if (delta < 5000) return 'Saved just now';
+  if (delta < 60_000) return `Saved ${Math.floor(delta / 1000)}s ago`;
+  if (delta < 3600_000) return `Saved ${Math.floor(delta / 60_000)}m ago`;
+  return 'Saved';
+}
+
+export function Toolbar({
+  state,
+  dispatch,
+  inspectorOpen,
+  onToggleInspector,
+  onOpenAI,
+  onBackToProjects,
+  saveStatus,
+}: Props) {
   const openRef = useRef<HTMLInputElement>(null);
   const addImagesRef = useRef<HTMLInputElement>(null);
   const [exporting, setExporting] = useState(false);
 
+  // Re-render every 15s so the "Saved Ns ago" pill stays honest.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    if (saveStatus?.kind !== 'saved') return;
+    const t = window.setInterval(() => forceTick((n) => n + 1), 15000);
+    return () => window.clearInterval(t);
+  }, [saveStatus?.kind]);
+
   return (
     <header className="toolbar">
       <div className="toolbar-brand">
+        {onBackToProjects && (
+          <button
+            type="button"
+            className="toolbar-back-btn"
+            onClick={onBackToProjects}
+            title="Back to Projects"
+          >
+            ‹ Projects
+          </button>
+        )}
         <span className="brand-name">Boardfish AI <span style={{ opacity: 0.55, fontSize: '0.75em', fontWeight: 500 }}>v1.0</span></span>
+        {saveStatus && saveStatus.kind !== 'idle' && (
+          <span
+            className={`toolbar-save-status ${saveStatus.kind}`}
+            title={saveStatus.kind === 'error' ? saveStatus.message : undefined}
+          >
+            {saveStatus.kind === 'saved' ? formatSavedAgo(saveStatus.at) : `Save failed — ${saveStatus.message}`}
+          </span>
+        )}
       </div>
       <div className="toolbar-project">
         <input
