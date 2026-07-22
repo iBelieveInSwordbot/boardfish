@@ -4,6 +4,7 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Panel, PanelImageVersion, ProjectSettings } from '../types';
 import { styleSuffix, PANEL_STYLE_ORDER, STYLE_PRESET_LABELS, STYLE_PRESET_TAGS } from '../types';
+import { StyleTagsPopup } from './StyleTagsPopup';
 import type { Action } from '../store';
 import { generatePanelImage, ratioToLabel } from '../ai/client';
 
@@ -297,22 +298,17 @@ export function PanelView({ panel, index, selected, settings, dispatch, onOpenNo
           />
           <div className="panel-ai-style">
             <div className="panel-ai-style-label">Style</div>
-            <div className="panel-ai-style-chips">
-              {PANEL_STYLE_ORDER.map((mode) => {
-                const active = (panel.styleMode ?? 'pencil-sketch') === mode;
-                return (
-                  <button
-                    key={mode}
-                    type="button"
-                    className={`panel-ai-style-chip ${active ? 'active' : ''}`}
-                    title={STYLE_PRESET_TAGS[mode] || 'No style directive appended'}
-                    onClick={() => dispatch({ type: 'UPDATE_PANEL', id: panel.id, patch: { styleMode: mode } })}
-                  >
-                    {STYLE_PRESET_LABELS[mode]}
-                  </button>
-                );
-              })}
-            </div>
+            <StyleTagsPopup
+              compact
+              styles={PANEL_STYLE_ORDER.map((mode) => ({
+                key: mode,
+                label: STYLE_PRESET_LABELS[mode],
+                tag: STYLE_PRESET_TAGS[mode],
+              }))}
+              value={panel.styleMode ?? 'pencil-sketch'}
+              onChange={(next) => dispatch({ type: 'UPDATE_PANEL', id: panel.id, patch: { styleMode: next as typeof panel.styleMode } })}
+              ariaLabel="Style"
+            />
           </div>
           <div className="panel-ai-variants" title="How many variants to generate concurrently. Each result is saved to this panel's history.">
             <span className="panel-ai-variants-label">Variants:</span>

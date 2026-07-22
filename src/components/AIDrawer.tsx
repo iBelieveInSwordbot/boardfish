@@ -35,8 +35,14 @@ import {
   urlToDataUrl,
 } from '../ai/client';
 import type { StylePreset } from '../ai/client';
+import { StyleTagsPopup } from './StyleTagsPopup';
 import type { AssetSpec, Shot, ShotList } from '../ai/types';
-import { seedFinalStoryboardGraph } from '../ai/scripted-flow';
+import {
+  seedFinalStoryboardGraph,
+  seedAssetPanelGraph,
+  buildShotPromptFields,
+  buildAssetPromptFields,
+} from '../ai/scripted-flow';
 import { LogoLoader } from './LogoLoader';
 
 type Props = {
@@ -60,13 +66,19 @@ const DEFAULT_STYLE_FALLBACK: StylePreset[] = [
 // blocks. These correspond exactly to the layout Matt specified. `aspect` is a
 // panel aspect ratio (width/height); the storyboard override applies it to
 // every panel in that section.
+//
+// `fieldLabels` was previously [Name, Description] — per Matt's 2026-07-22
+// request the storyboard-view caption is now just the single Description
+// line. The asset's name lives on the panel's cornerNote instead so it's
+// still visible at a glance. The full name+description round-trip through
+// the node view for editing.
 const SECTION_CONFIG = {
   actors: {
     title: 'Actors',
     grid: { h: 6, v: 2 },
     aspect: 2 / 3,
     aspectLabel: '2:3',
-    fieldLabels: ['Name', 'Description'],
+    fieldLabels: ['Description'],
     // Actor gens: full-body character studies against light grey.
     styleSuffix: ', full-body character reference on a light grey (#e5e5e5) seamless studio background, neutral flat lighting, entire figure visible head to toe, standing pose, no props',
   },
@@ -75,7 +87,7 @@ const SECTION_CONFIG = {
     grid: { h: 3, v: 2 },
     aspect: 16 / 9,
     aspectLabel: '16:9',
-    fieldLabels: ['Name', 'Description'],
+    fieldLabels: ['Description'],
     styleSuffix: ', establishing shot of the location, no people, wide angle',
   },
   props: {
@@ -83,7 +95,7 @@ const SECTION_CONFIG = {
     grid: { h: 5, v: 2 },
     aspect: 1,
     aspectLabel: '1:1',
-    fieldLabels: ['Prop', 'Description'],
+    fieldLabels: ['Description'],
     styleSuffix: ', product-style close-up of the object on a clean neutral background, no people, sharp focus',
   },
 } as const;
@@ -121,11 +133,13 @@ const ASPECT_OPTIONS: string[] = [
 // Panel builders
 // -----------------------------------------------------------------------
 
-/** Build a panel for an asset (actor / location / prop). Two captions:
- *  the asset's field labels (from SECTION_CONFIG) filled with name +
- *  description. `aiPrompt` is the concrete text-to-image prompt.
- *  `styleMode: 'none'` because Ronan has already baked the global style tag
- *  into the description; we just add the section-specific framing suffix.
+/** Build a panel for an asset (actor / location / prop). One caption
+ *  (Description). The asset's name goes on the panel's cornerNote so it's
+ *  visible at a glance without cluttering the caption row. `aiPrompt` is
+ *  the concrete text-to-image prompt (description + section framing).
+ *  `styleMode: 'none'` because Ronan has already baked the global style
+ *  tag into the description; we just add the section-specific framing
+ *  suffix.
  */
 function assetToPanel(asset: AssetSpec, section: SectionKey): Panel {
   const cfg = SECTION_CONFIG[section];
@@ -134,31 +148,33 @@ function assetToPanel(asset: AssetSpec, section: SectionKey): Panel {
     id: cryptoRandomId(),
     imageDataUrl: null,
     imageName: null,
-    cornerNote: '',
+    cornerNote: asset.name || '',
     fields: [
-      { id: cryptoRandomId(), label: cfg.fieldLabels[0], value: asset.name || '' },
-      { id: cryptoRandomId(), label: cfg.fieldLabels[1], value: asset.description || '' },
+      { id: cryptoRandomId(), label: 'Description', value: asset.description || '' },
     ],
     aiPrompt: prompt,
     styleMode: 'none',
   };
 }
 
+/** Build a panel for a shot (final storyboard). Two captions:
+ *  Description (the shot's visual beat) + VO (any voice-over line for this
+ *  beat, from Ronan). All the cinematography metadata (slug, camera type,
+ *  director note) lives in the node view's MultiPrompt fields — the
+ *  storyboard caption row stays terse per Matt's 2026-07-22 request. */
 function shotToPanel(shot: Shot): Panel {
+  // Description = the shot's action beat if present, else the image prompt
+  // without the style directive. Falling back to imagePrompt lets shot lists
+  // that only produce prompts still show something meaningful.
+  const description = (shot.action || shot.imagePrompt || '').trim();
   return {
     id: cryptoRandomId(),
     imageDataUrl: null,
     imageName: null,
     cornerNote: `S${String(shot.shotNumber).padStart(2, '0')}`,
     fields: [
-      { id: cryptoRandomId(), label: 'Slug', value: shot.slug || '' },
-      { id: cryptoRandomId(), label: 'Action', value: shot.action || '' },
-      {
-        id: cryptoRandomId(),
-        label: 'Camera',
-        value: [shot.shotType, shot.cameraMove, shot.angle].filter(Boolean).join(' · '),
-      },
-      { id: cryptoRandomId(), label: 'Director Note', value: shot.directorNote || '' },
+      { id: cryptoRandomId(), label: 'Description', value: description },
+      { id: cryptoRandomId(), label: 'VO', value: (shot.vo || '').trim() },
     ],
     aiPrompt: shot.imagePrompt,
     styleMode: 'none',
@@ -391,19 +407,60 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
     if (locPanels.length > 0) items.push(locSlide, locSb);
     if (propPanels.length > 0) items.push(propSlide, propSb);
 
-    dispatch({ type: 'APPEND_ITEMS', items, selectItemId: finalSb.id });
+    // Per Matt (2026-07-22): auto-scroll to the FIRST section that will
+    // start generating (Actors first, then Locations, then Props, then
+    // final storyboards). Falls through to finalSb when the script has no
+    // assets. This puts the user's eye on the storyboard that's about to
+    // render first so they see progress as it lands.
+    const firstGenSectionId = actorPanels.length > 0
+      ? actorSb.id
+      : locPanels.length > 0
+        ? locSb.id
+        : propPanels.length > 0
+          ? propSb.id
+          : finalSb.id;
+    dispatch({ type: 'APPEND_ITEMS', items, selectItemId: firstGenSectionId });
+
+    // Look up the style tag by styleKey so the MultiPrompt Style field
+    // gets the same directive Ronan appended to each description. Falls
+    // back to '' when the picked style has no tag (e.g. "none").
+    const styleTag = (styles.find((s) => s.key === styleKey)?.tag || '').trim();
 
     // 2) Now generate images. Assets first (so refs are ready), then finals.
-    const assetJobs: { panelId: string; prompt: string; aspect: string }[] = [];
-    for (const p of actorPanels) {
-      if (p.aiPrompt) assetJobs.push({ panelId: p.id, prompt: p.aiPrompt, aspect: SECTION_CONFIG.actors.aspectLabel });
-    }
-    for (const p of locPanels) {
-      if (p.aiPrompt) assetJobs.push({ panelId: p.id, prompt: p.aiPrompt, aspect: SECTION_CONFIG.locations.aspectLabel });
-    }
-    for (const p of propPanels) {
-      if (p.aiPrompt) assetJobs.push({ panelId: p.id, prompt: p.aiPrompt, aspect: SECTION_CONFIG.props.aspectLabel });
-    }
+    // Each job carries its section (so we can pick the right framing suffix
+    // when seeding the MultiPrompt fields for its node graph later).
+    type AssetJob = { panelId: string; prompt: string; aspect: string; section: SectionKey; description: string };
+    const assetJobs: AssetJob[] = [];
+    actorPanels.forEach((p, i) => {
+      if (!p.aiPrompt) return;
+      assetJobs.push({
+        panelId: p.id,
+        prompt: p.aiPrompt,
+        aspect: SECTION_CONFIG.actors.aspectLabel,
+        section: 'actors',
+        description: draft.actors[i]?.description || '',
+      });
+    });
+    locPanels.forEach((p, i) => {
+      if (!p.aiPrompt) return;
+      assetJobs.push({
+        panelId: p.id,
+        prompt: p.aiPrompt,
+        aspect: SECTION_CONFIG.locations.aspectLabel,
+        section: 'locations',
+        description: draft.locations[i]?.description || '',
+      });
+    });
+    propPanels.forEach((p, i) => {
+      if (!p.aiPrompt) return;
+      assetJobs.push({
+        panelId: p.id,
+        prompt: p.aiPrompt,
+        aspect: SECTION_CONFIG.props.aspectLabel,
+        section: 'props',
+        description: draft.props[i]?.description || '',
+      });
+    });
 
     // Track produced asset dataUrls so we can wire them into final storyboard
     // Nano Banana calls. Keyed by asset NAME (normalized) so shot.refs entries
@@ -450,6 +507,23 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
               kind: meta.kind,
             });
           }
+          // Seed the node graph with MultiPrompt fields so double-click
+          // into the node view shows a structured prompt (Description /
+          // Framing / Style) instead of the raw single-textarea legacy.
+          const framingSuffix = SECTION_CONFIG[job.section].styleSuffix;
+          const fields = buildAssetPromptFields({
+            description: job.description,
+            framingSuffix,
+            styleTag,
+          });
+          const graph = seedAssetPanelGraph({
+            legacyPrompt: job.prompt,
+            fields,
+            aspectRatio: job.aspect,
+            generatedImageDataUrl: img.dataUrl,
+            generatedMime: img.mime,
+          });
+          dispatch({ type: 'SET_PANEL_NODE_GRAPH', panelId: job.panelId, graph });
         } catch (err) {
           console.warn('[ai] asset image gen failed', job.panelId, err);
         } finally {
@@ -514,13 +588,24 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
           // Seed the node graph AFTER generation so we can bake the produced
           // image into the ImageGen + Out node outputs. Double-clicking the
           // panel then shows the wiring AND the rendered image, matching
-          // the ad-hoc panel-gen behavior.
+          // the ad-hoc panel-gen behavior. MultiPrompt fields are populated
+          // from the shot's structured metadata so the node view exposes
+          // Description / Camera / Style as separate editable sections.
+          const shotFields = buildShotPromptFields({
+            imagePrompt: panel.aiPrompt!,
+            shotType: shot.shotType,
+            cameraMove: shot.cameraMove,
+            angle: shot.angle,
+            styleTag,
+          });
           const graph = seedFinalStoryboardGraph({
             prompt: panel.aiPrompt!,
             aspectRatio: effectiveAspect,
             refs: refs.map((r) => ({ panelId: r.panelId, imageDataUrl: r.dataUrl, label: r.name })),
             generatedImageDataUrl: dataUrl,
             generatedMime: mime,
+            promptFields: shotFields,
+            promptPresetName: 'Multi Prompt',
           });
           dispatch({ type: 'SET_PANEL_NODE_GRAPH', panelId: panel.id, graph });
         } catch (err) {
@@ -653,20 +738,17 @@ export function AIDrawer({ state, dispatch, onClose }: Props) {
               value={directorRefs}
               onChange={(e) => setDirectorRefs(e.target.value)}
             />
-            <label className="ai-label">Visual style</label>
-            <div className="ai-style-picker">
-              {(styles.length > 0 ? styles : DEFAULT_STYLE_FALLBACK).map((s) => (
-                <button
-                  key={s.key}
-                  type="button"
-                  className={`ai-style-btn ${styleKey === s.key ? 'active' : ''}`}
-                  title={s.tag || 'No style directive appended'}
-                  onClick={() => setStyleKey(s.key)}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
+            <StyleTagsPopup
+              label="Visual style"
+              styles={(styles.length > 0 ? styles : DEFAULT_STYLE_FALLBACK).map((s) => ({
+                key: s.key,
+                label: s.label,
+                tag: s.tag,
+              }))}
+              value={styleKey}
+              onChange={setStyleKey}
+              ariaLabel="Visual style"
+            />
             <p className="ai-muted small" style={{ marginTop: -4 }}>
               The same style is applied to actors, locations, props, AND the final storyboards. Change it later per-panel from the AI editor.
             </p>
@@ -894,7 +976,7 @@ function AssetEditor({
             <input
               className="ai-input"
               type="text"
-              placeholder={cfg.fieldLabels[0]}
+              placeholder="Name"
               value={a.name}
               onChange={(e) => onChange(i, { name: e.target.value })}
               style={{ maxWidth: 200 }}
@@ -902,7 +984,7 @@ function AssetEditor({
             <textarea
               className="ai-textarea small"
               rows={2}
-              placeholder={cfg.fieldLabels[1]}
+              placeholder={cfg.fieldLabels[0]}
               value={a.description}
               onChange={(e) => onChange(i, { description: e.target.value })}
             />
