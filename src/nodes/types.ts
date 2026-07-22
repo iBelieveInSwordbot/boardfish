@@ -12,6 +12,7 @@
 // happens once in NodeEditor via the (panOffset, zoom) transform.
 
 import { getFalModel, resolveFalModelId } from '../ai/fal-models';
+import { defaultTextPromptFields } from './text-prompt-fields';
 
 export type NodeId = string;
 export type PortId = string;
@@ -341,7 +342,11 @@ function clampInt(n: number, lo: number, hi: number): number {
 export function defaultDataFor(kind: NodeKind): Record<string, unknown> {
   switch (kind) {
     case 'text-prompt':
-      return { text: '' };
+      // 2026-07-22: default text-prompt node now ships as Multi Prompt with
+      // Description + Style Tags fields (not the legacy single-textarea).
+      // Kept `text: ''` alongside so the concat helper's legacy fallback
+      // stays a no-op if `fields` is ever cleared to [].
+      return { text: '', fields: defaultTextPromptFields(), presetName: 'Multi Prompt' };
     case 'image-gen':
       return {
         // Field names align with dag-executor: modelId + aspect_ratio + num_images.

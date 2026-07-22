@@ -130,12 +130,7 @@ export const PRESET_GROUPS: Record<PresetGroupId, { label: string; options: Pres
       {
         label: 'Leica M',
         prompt:
-          'Cinematic editorial street photography, shot on Leica M with 85mm f/1.4 prime lens at open aperture, shallow depth of field with creamy bokeh dissolving the background into soft painterly shapes, subject sharply rendered in center frame with tack-sharp eye focus, filmic color grade reminiscent of Kodak Portra 400 crossed with a modern digital cinema LUT, lifted shadows with slight milky matte black point, gentle roll-off in highlights, fine organic film grain overlay, subtle chromatic aberration and lens breathing at edges, hazy atmospheric depth, documentary realism with a melancholic contemplative mood, high dynamic range but low contrast, natural skin tones with preserved texture and micro-detail, cover-worthy magazine composition, National Geographic meets Vogue Homme aesthetic, ultra-detailed, photorealistic 8K quality.',
-      },
-      {
-        label: 'Leica Q',
-        prompt:
-          'Shot on a full-frame Leica M camera, 28mm lens, f/1.4, photorealistic, very shallow depth of field with creamy bokeh, soft background separation, Leica color science, natural color grading, high resolution, crisp focus on eyes and face, ultra-detailed skin and fabric texture. Realistic documentary style with premium editorial fashion photography feel, moody, introspective, grounded, slightly gritty atmosphere.',
+          'Cinematic editorial street photography, shot on Leica M with 85mm f/1.4 prime lens at open aperture, shallow depth of field with creamy bokeh dissolving the background into soft painterly shapes, subjects sharply rendered with tack-sharp eye focus, filmic color grade reminiscent of Kodak Portra 400 crossed with a modern digital cinema LUT, lifted shadows with slight milky matte black point, gentle roll-off in highlights, fine organic film grain overlay, subtle chromatic aberration and lens breathing at edges, hazy atmospheric depth, documentary realism, high dynamic range but low contrast, natural skin tones with preserved texture and micro-detail, cover-worthy magazine composition, National Geographic meets Vogue Homme aesthetic, ultra-detailed, photorealistic 8K quality.',
       },
       {
         label: '16mm Indie Film Look',
@@ -446,9 +441,14 @@ const IMAGE_PROMPT_TEMPLATE: PromptField[] = [
   { id: '__t__', kind: 'text', label: 'Color Palette', value: '', join: 'inline' },
 ];
 
+// Default template for a fresh text-prompt node. Matt's 2026-07-22 spec:
+// two text fields, "Description" (block join) and "Style" (block join).
+// The Style field's label matches the FIXED_FIELD_LABELS "Style Tags"
+// entry so its Presets popup surfaces the curated Photorealistic /
+// Cineon / Leica M / etc. list.
 const MULTI_PROMPT_TEMPLATE: PromptField[] = [
-  { id: '__t__', kind: 'text', label: 'Prompt 1', value: '', join: 'block' },
-  { id: '__t__', kind: 'text', label: 'Prompt 2', value: '', join: 'block' },
+  { id: '__t__', kind: 'text', label: 'Description', value: '', join: 'block' },
+  { id: '__t__', kind: 'text', label: 'Style Tags', value: '', join: 'block' },
 ];
 
 const MOVIE_PROMPT_TEMPLATE: PromptField[] = [
@@ -498,4 +498,18 @@ export function cloneBuiltInPreset(id: string): PromptField[] {
 /** Copy an array of fields, assigning a fresh id to every entry. */
 export function cloneFieldsFresh(fields: PromptField[]): PromptField[] {
   return fields.map((f) => ({ ...f, id: makeFieldId() }) as PromptField);
+}
+
+/**
+ * Fields a fresh text-prompt node should start with.
+ *
+ * Matt's 2026-07-22 spec:
+ *   Default new text-prompt = Multi Prompt with "Description" + "Style Tags".
+ *
+ * Kept as a dedicated helper (rather than baking the array into
+ * defaultDataFor) so tests / seeders / import-fallbacks can share the
+ * same shape without cross-importing types.ts.
+ */
+export function defaultTextPromptFields(): PromptField[] {
+  return cloneFieldsFresh(MULTI_PROMPT_TEMPLATE);
 }

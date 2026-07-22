@@ -10,6 +10,10 @@ export type Shot = {
   aspectRatio?: string;
   imagePrompt: string;
   directorNote?: string;
+  /** Voice-over line delivered during this beat, if any. Extracted from
+   *  "VO:" or "NARRATOR:" markers in the script. Empty string when a shot
+   *  has no VO (e.g. music-only montage or pre-VO establishing shot). */
+  vo?: string;
   /** Names (from the assets section) referenced by this shot. Filled by Ronan
    *  in v6 so we can wire matching Panel Ref nodes into the final storyboard
    *  Nano-Banana Pro gens without doing fuzzy text matching. */

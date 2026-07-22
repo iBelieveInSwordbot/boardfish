@@ -2498,6 +2498,194 @@ input, textarea, select {
   border-color: rgba(100,180,255,0.4);
 }
 .tpv2-preset-picker { width: 100%; margin-bottom: 4px; }
+
+/* ---------- FieldLabelPopup ---------- */
+.tpv2-field-label-btn {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  color: inherit;
+  border: 1px solid transparent;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+}
+.tpv2-field-label-btn:hover,
+.tpv2-field-label-btn.is-open {
+  border-color: rgba(255,255,255,0.15);
+  background: rgba(0,0,0,0.2);
+}
+.tpv2-field-label-btn-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tpv2-field-label-btn-caret {
+  font-size: 10px;
+  opacity: 0.6;
+}
+.tpv2-label-menu {
+  background: #1a1a1f;
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.55);
+  max-height: 380px;
+  overflow-y: auto;
+  z-index: 4000;
+  font-family: inherit;
+}
+.tpv2-label-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  color: #ddd;
+  border: none;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 5px;
+}
+.tpv2-label-menu-item:hover { background: #23232a; }
+.tpv2-label-menu-item.active { background: #3a76c9; color: #fff; }
+.tpv2-label-menu-check {
+  display: inline-block;
+  width: 12px;
+  text-align: center;
+  font-size: 11px;
+  opacity: 0.9;
+}
+.tpv2-label-menu-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tpv2-label-menu-badge {
+  font-size: 10px;
+  opacity: 0.5;
+}
+.tpv2-label-menu-sep {
+  height: 1px;
+  background: rgba(255,255,255,0.08);
+  margin: 4px 6px;
+}
+.tpv2-label-menu-custom {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 4px;
+}
+.tpv2-label-menu-custom-input {
+  background: #0d0d10;
+  color: #eee;
+  border: 1px solid rgba(255,255,255,0.15);
+  padding: 5px 8px;
+  border-radius: 5px;
+  font-family: inherit;
+  font-size: 12px;
+}
+.tpv2-label-menu-custom-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.tpv2-label-menu-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-family: inherit;
+  border: 1px solid rgba(255,255,255,0.2);
+  background: transparent;
+  color: #ddd;
+}
+.tpv2-label-menu-btn.primary {
+  background: #3a76c9;
+  border-color: #3a76c9;
+  color: #fff;
+}
+.tpv2-label-menu-btn.primary:hover { background: #4383d8; }
+.tpv2-label-menu-btn.secondary:hover { background: rgba(255,255,255,0.06); }
+
+/* ---------- FieldPresetPopup ---------- */
+.tpv2-preset-btn {
+  background: rgba(100,180,255,0.12);
+  border: 1px solid rgba(100,180,255,0.35);
+  color: #b6d6ff;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 10px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.tpv2-preset-btn:hover,
+.tpv2-preset-btn.is-open {
+  background: rgba(100,180,255,0.22);
+  border-color: rgba(100,180,255,0.55);
+}
+.tpv2-preset-menu {
+  background: #1a1a1f;
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.55);
+  max-height: 420px;
+  overflow-y: auto;
+  z-index: 4000;
+  font-family: inherit;
+}
+.tpv2-preset-menu-heading {
+  font-size: 10px;
+  font-weight: 600;
+  color: #8a8a92;
+  padding: 6px 8px 2px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.tpv2-preset-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  color: #ddd;
+  border: none;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 5px;
+}
+.tpv2-preset-menu-item:hover { background: #23232a; }
+.tpv2-preset-menu-item.active { background: #3a76c9; color: #fff; }
+.tpv2-preset-menu-check {
+  display: inline-block;
+  width: 12px;
+  text-align: center;
+  font-size: 11px;
+  opacity: 0.9;
+}
+.tpv2-preset-menu-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .tpv2-add-btn {
   width: 100%;
   margin-top: 8px;

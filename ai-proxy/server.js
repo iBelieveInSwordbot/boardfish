@@ -254,6 +254,8 @@ For each asset, write a "description" that is a visually concrete prompt the sam
 
 For each shot, also fill in a "refs" object listing which of those asset names actually appear in that shot (subset of the asset names you produced above). This lets the storyboard tool wire the asset images in as visual references.
 
+For each shot, ALSO extract the voice-over line delivered during that beat as "vo". Read the script for "VO:" / "NARRATOR:" / "V.O." markers (or any equivalent narration convention). Assign the correct VO line to the shot whose action it accompanies. When a single VO line spans multiple shots, put the WHOLE line on the first shot of that beat and use an empty string on the following shots. Music-only or dialogue-only shots without narration get vo: "". Do NOT invent narration that isn't in the script.
+
 RESPOND WITH ONE JSON OBJECT AND NOTHING ELSE. No markdown fences, no commentary before or after. Schema:
 
 {
@@ -273,6 +275,7 @@ RESPOND WITH ONE JSON OBJECT AND NOTHING ELSE. No markdown fences, no commentary
       "aspectRatio": "16:9",
       "imagePrompt": "visually concrete text-to-image prompt: subject, action, lighting, mood, camera language. Append the style directive verbatim at the end if one is provided above.",
       "directorNote": "why this shot at this beat, referencing the named directors when relevant. One line.",
+      "vo": "Voice-over line delivered during this beat, or empty string if no narration.",
       "refs": { "actors": ["JOE"], "locations": ["Diner"], "props": [] }
     }
   ]
@@ -419,6 +422,42 @@ const PROJECTS_DIR = process.env.PROJECTS_DIR
 try { mkdirSync(PROJECTS_DIR, { recursive: true }); }
 catch (err) { console.warn(`[projects] cannot create PROJECTS_DIR (${PROJECTS_DIR}):`, err.message); }
 
+// ---------- Folders store ----------
+// Small standalone catalog of user-created folders. Persisted as a single
+// JSON file so empty folders can exist independently of projects. Projects
+// reference a folder by name (see meta.folder). Renaming a folder here
+// cascades to all projects currently in it.
+//
+// Shape: { folders: [{ id, name, created, modified }] }
+const FOLDERS_FILE = path.resolve(PROJECTS_DIR, '..', 'folders.json');
+
+function readFoldersFile() {
+  if (!existsSync(FOLDERS_FILE)) return { folders: [] };
+  try {
+    const raw = readFileSync(FOLDERS_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && Array.isArray(parsed.folders)) return parsed;
+  } catch (err) {
+    console.warn('[folders] read failed:', err.message);
+  }
+  return { folders: [] };
+}
+
+function writeFoldersFile(state) {
+  try {
+    writeFileSync(FOLDERS_FILE, JSON.stringify(state, null, 2));
+    return true;
+  } catch (err) {
+    console.warn('[folders] write failed:', err.message);
+    return false;
+  }
+}
+
+function newFolderId() {
+  const rand = createHash('sha256').update(String(Date.now()) + Math.random() + Math.random()).digest('hex');
+  return `f_${rand.slice(0, 16)}`;
+}
+
 function isSafeProjectId(id) {
   return typeof id === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(id);
 }
@@ -440,17 +479,56 @@ function readProjectFile(id) {
   }
 }
 
+function normalizeFolder(v) {
+  if (v === null) return null;
+  if (typeof v !== 'string') return null;
+  const trimmed = v.trim();
+  if (!trimmed) return null;
+  // Cap length to keep the sidebar sane; slashes allowed for nested UI
+  // (nesting is not implemented server-side; the client can render "a/b"
+  // however it wants).
+  return trimmed.slice(0, 80);
+}
+
+// A project may belong to multiple folders (User-folder aliases).
+// Legacy meta.folder (string|null) is normalized on read into meta.folders
+// (string[]). Writes always emit both for backward compat (folder = first
+// item or null).
+function normalizeFolderList(v) {
+  if (!Array.isArray(v)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const item of v) {
+    const n = normalizeFolder(item);
+    if (n && !seen.has(n)) { seen.add(n); out.push(n); }
+  }
+  return out;
+}
+
+function readMetaFolders(meta) {
+  if (!meta || typeof meta !== 'object') return [];
+  // Prefer new-style array if present, else fall back to legacy single-name.
+  if (Array.isArray(meta.folders)) return normalizeFolderList(meta.folders);
+  const single = normalizeFolder(meta.folder);
+  return single ? [single] : [];
+}
+
 function projectSummary(id) {
   const proj = readProjectFile(id);
   if (!proj || typeof proj !== 'object') return null;
   const meta = proj.meta || {};
   const stat = (() => { try { return statSync(projectPath(id)); } catch { return null; } })();
+  const folders = readMetaFolders(meta);
   return {
     id,
     name: meta.name || 'Untitled Project',
     created: meta.created || (stat ? stat.birthtimeMs : Date.now()),
     modified: meta.modified || (stat ? stat.mtimeMs : Date.now()),
     thumbnailMediaUrl: meta.thumbnailMediaUrl || null,
+    // Backward compat: keep single `folder` = first alias, plus new
+    // multi-membership `folders: string[]`.
+    folder: folders[0] || null,
+    folders,
     bytes: stat ? stat.size : 0,
   };
 }
@@ -501,12 +579,19 @@ app.post('/api/projects', (req, res) => {
       return res.status(409).json({ error: 'project id already exists' });
     }
     const now = Date.now();
+    // Build a normalized folders[] from either body.meta.folders (new) or
+    // body.meta.folder (legacy). Both accepted for backward-compat.
+    const seededFolders = readMetaFolders(body.meta || {});
     const meta = {
       name: body.name || body.meta?.name || 'Untitled Project',
       created: now,
       modified: now,
       thumbnailMediaUrl: body.meta?.thumbnailMediaUrl || null,
       ...(body.meta || {}),
+      // Multi-folder membership. Also mirror the first alias to legacy
+      // `folder` for older UIs.
+      folders: seededFolders,
+      folder: seededFolders[0] || null,
       // pin id/times regardless of what client sent
       id,
       created: now,
@@ -570,10 +655,36 @@ app.patch('/api/projects/:id', (req, res) => {
     if (!proj) return res.status(404).json({ error: 'not found' });
     const body = req.body || {};
     const prevMeta = proj.meta || {};
+    // Compute the next folders[] based on the patch operations.
+    // Priority: explicit `folders` array > legacy `folder` scalar > add/remove ops.
+    // - body.folders: replace whole list
+    // - body.folder: legacy scalar; null clears, string sets sole membership
+    // - body.addFolder / body.removeFolder: incremental multi-membership edits
+    let nextFolders = readMetaFolders(prevMeta);
+    if (Array.isArray(body.folders)) {
+      nextFolders = normalizeFolderList(body.folders);
+    } else if (body.folder !== undefined) {
+      const n = normalizeFolder(body.folder);
+      nextFolders = n ? [n] : [];
+    }
+    if (typeof body.addFolder === 'string') {
+      const n = normalizeFolder(body.addFolder);
+      if (n && !nextFolders.includes(n)) nextFolders = [...nextFolders, n];
+    }
+    if (typeof body.removeFolder === 'string') {
+      const n = normalizeFolder(body.removeFolder);
+      if (n) nextFolders = nextFolders.filter((f) => f !== n);
+    }
+    const foldersChanged =
+      body.folders !== undefined ||
+      body.folder !== undefined ||
+      body.addFolder !== undefined ||
+      body.removeFolder !== undefined;
     const meta = {
       ...prevMeta,
       ...(typeof body.name === 'string' ? { name: body.name } : {}),
       ...(body.thumbnailMediaUrl !== undefined ? { thumbnailMediaUrl: body.thumbnailMediaUrl } : {}),
+      ...(foldersChanged ? { folders: nextFolders, folder: nextFolders[0] || null } : {}),
       id,
       created: prevMeta.created || Date.now(),
       modified: Date.now(),
@@ -607,6 +718,204 @@ app.delete('/api/projects/:id', (req, res) => {
 
 app.get('/api/projects-health', (_req, res) => {
   res.json({ ok: true, dir: PROJECTS_DIR, exists: existsSync(PROJECTS_DIR) });
+});
+
+// ---------- Folders CRUD ----------
+// A folder is just { id, name, created, modified }. Projects reference
+// folders by NAME (meta.folder). Renaming a folder rewrites the folder
+// name on every project currently in it so the sidebar stays consistent.
+
+function listAllProjects() {
+  try {
+    const files = existsSync(PROJECTS_DIR) ? readdirSync(PROJECTS_DIR) : [];
+    return files
+      .filter((f) => f.endsWith('.json'))
+      .map((f) => f.replace(/\.json$/, ''))
+      .filter(isSafeProjectId);
+  } catch { return []; }
+}
+
+app.get('/api/folders', (_req, res) => {
+  try {
+    const state = readFoldersFile();
+    // Also union in any folder NAMES referenced by projects but missing
+    // from folders.json (e.g. projects created before the store existed,
+    // or imported from JSON). These get a synthetic id derived from name
+    // so the client can address them uniformly.
+    const known = new Set(state.folders.map((f) => f.name));
+    const referenced = new Set();
+    for (const id of listAllProjects()) {
+      const proj = readProjectFile(id);
+      for (const name of readMetaFolders(proj?.meta)) {
+        if (!known.has(name)) referenced.add(name);
+      }
+    }
+    const merged = [...state.folders];
+    for (const name of referenced) {
+      merged.push({
+        id: `legacy_${Buffer.from(name).toString('base64url').slice(0, 20)}`,
+        name,
+        created: Date.now(),
+        modified: Date.now(),
+        legacy: true,
+      });
+    }
+    // Counts per folder — a project can be in multiple folders now.
+    const counts = new Map();
+    for (const id of listAllProjects()) {
+      const proj = readProjectFile(id);
+      for (const name of readMetaFolders(proj?.meta)) {
+        counts.set(name, (counts.get(name) || 0) + 1);
+      }
+    }
+    const withCounts = merged.map((f) => ({ ...f, count: counts.get(f.name) || 0 }));
+    withCounts.sort((a, b) => a.name.localeCompare(b.name));
+    res.json({ ok: true, folders: withCounts });
+  } catch (err) {
+    console.error('[folders/list] error', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/folders', (req, res) => {
+  try {
+    const body = req.body || {};
+    const name = normalizeFolder(body.name) || 'New Folder';
+    const state = readFoldersFile();
+    // Ensure the folder name is unique; append " (2)", " (3)", ... if needed.
+    let uniqueName = name;
+    let n = 2;
+    const existingNames = new Set(state.folders.map((f) => f.name));
+    while (existingNames.has(uniqueName)) {
+      uniqueName = `${name} (${n})`;
+      n += 1;
+    }
+    const now = Date.now();
+    const folder = { id: newFolderId(), name: uniqueName, created: now, modified: now };
+    state.folders.push(folder);
+    writeFoldersFile(state);
+    res.json({ ok: true, folder });
+  } catch (err) {
+    console.error('[folders/create] error', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/folders/:id', (req, res) => {
+  try {
+    const id = String(req.params.id || '');
+    const state = readFoldersFile();
+    const idx = state.folders.findIndex((f) => f.id === id);
+
+    // Handle legacy synthetic ids (folder name only in project meta).
+    // Decode the legacy id back to its name and promote it into folders.json.
+    let currentName = null;
+    if (idx === -1) {
+      if (!id.startsWith('legacy_')) return res.status(404).json({ error: 'folder not found' });
+      try {
+        const encoded = id.slice('legacy_'.length);
+        currentName = Buffer.from(encoded, 'base64url').toString('utf8');
+      } catch {
+        return res.status(400).json({ error: 'bad legacy folder id' });
+      }
+      if (!currentName) return res.status(404).json({ error: 'folder not found' });
+    } else {
+      currentName = state.folders[idx].name;
+    }
+
+    const desiredName = normalizeFolder(req.body?.name);
+    if (!desiredName) return res.status(400).json({ error: 'name required' });
+
+    // Uniqueness check (exclude self if promoting from legacy).
+    const existingNames = new Set(state.folders.filter((f, i) => i !== idx).map((f) => f.name));
+    if (existingNames.has(desiredName) && desiredName !== currentName) {
+      return res.status(409).json({ error: 'a folder with that name already exists' });
+    }
+
+    const now = Date.now();
+    if (idx === -1) {
+      // Promote legacy into folders.json
+      state.folders.push({
+        id: newFolderId(),
+        name: desiredName,
+        created: now,
+        modified: now,
+      });
+    } else {
+      state.folders[idx] = { ...state.folders[idx], name: desiredName, modified: now };
+    }
+    writeFoldersFile(state);
+
+    // Cascade rename: rewrite every project that has `currentName` in its
+    // folders[] list (or legacy meta.folder), replacing with desiredName.
+    if (currentName !== desiredName) {
+      for (const projId of listAllProjects()) {
+        const proj = readProjectFile(projId);
+        if (!proj) continue;
+        const meta = proj.meta || {};
+        const currentList = readMetaFolders(meta);
+        if (!currentList.includes(currentName)) continue;
+        const nextList = currentList.map((n) => (n === currentName ? desiredName : n));
+        // De-dupe in case the project already had desiredName too.
+        const dedup = [];
+        const seen = new Set();
+        for (const n of nextList) if (!seen.has(n)) { seen.add(n); dedup.push(n); }
+        const next = {
+          ...proj,
+          meta: { ...meta, folders: dedup, folder: dedup[0] || null, modified: now },
+        };
+        try { writeFileSync(projectPath(projId), JSON.stringify(next)); } catch { /* ignore */ }
+      }
+    }
+
+    res.json({ ok: true, folder: { id: idx === -1 ? state.folders[state.folders.length - 1].id : id, name: desiredName } });
+  } catch (err) {
+    console.error('[folders/rename] error', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/folders/:id', (req, res) => {
+  try {
+    const id = String(req.params.id || '');
+    const state = readFoldersFile();
+    const idx = state.folders.findIndex((f) => f.id === id);
+    let folderName = null;
+    if (idx !== -1) {
+      folderName = state.folders[idx].name;
+      state.folders.splice(idx, 1);
+      writeFoldersFile(state);
+    } else if (id.startsWith('legacy_')) {
+      try {
+        folderName = Buffer.from(id.slice('legacy_'.length), 'base64url').toString('utf8');
+      } catch { /* ignore */ }
+    } else {
+      return res.status(404).json({ error: 'folder not found' });
+    }
+
+    // Remove this folder from every project's folders[] list.
+    if (folderName) {
+      const now = Date.now();
+      for (const projId of listAllProjects()) {
+        const proj = readProjectFile(projId);
+        if (!proj) continue;
+        const meta = proj.meta || {};
+        const currentList = readMetaFolders(meta);
+        if (!currentList.includes(folderName)) continue;
+        const nextList = currentList.filter((n) => n !== folderName);
+        const next = {
+          ...proj,
+          meta: { ...meta, folders: nextList, folder: nextList[0] || null, modified: now },
+        };
+        try { writeFileSync(projectPath(projId), JSON.stringify(next)); } catch { /* ignore */ }
+      }
+    }
+
+    res.json({ ok: true, id });
+  } catch (err) {
+    console.error('[folders/delete] error', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ---------- Routes ----------
@@ -776,6 +1085,7 @@ app.post('/api/fal/run', async (req, res) => {
     });
     if (!submit.ok) {
       const body = await submit.text();
+      console.error(`[fal/run] SUBMIT failed ${submit.status} on ${path}: ${body.slice(0, 500)}`);
       return res.status(submit.status).json({ error: `FAL submit failed: ${submit.status}`, body });
     }
     const submitJson = await submit.json();
@@ -843,6 +1153,17 @@ app.post('/api/ronan/shot-list', async (req, res) => {
   try {
     const prompt = buildShotListPrompt({ script, defaultAspect, constraints, directorRefs, styleKey });
     const { text, sessionId: nextSessionId } = await callRonan({ message: prompt, sessionId });
+    // Empty text usually means the CLI child was interrupted (e.g. the
+    // ai-proxy was restarted mid-request, or an HTTP timeout killed the
+    // parent). Ronan actually did produce a shot list — it just never
+    // made it back to us. Tell the client to retry rather than showing
+    // "invalid JSON".
+    if (!text || !text.trim()) {
+      console.error('[shot-list] Ronan returned empty text (likely interrupted). Prompt length:', prompt.length);
+      return res.status(502).json({
+        error: 'Ronan returned an empty reply. This usually means the request was interrupted mid-flight (try again in a few seconds).',
+      });
+    }
     // Strip any accidental markdown fences or preambles.
     const cleaned = extractJson(text);
     if (!cleaned) {

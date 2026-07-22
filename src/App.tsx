@@ -478,8 +478,14 @@ function App() {
                   : 1;
                 it.panels.forEach((p, i) => {
                   if (p.id === editing!.id) return;
-                  const promptSnippet = p.fields[0]?.value
-                    ? ` — ${p.fields[0].value.slice(0, 40)}`
+                  // Snippet after "Panel N — ...": prefer the panel's
+                  // cornerNote (for AI Director asset panels this is the
+                  // actor / location / prop name), fall back to the first
+                  // caption field.
+                  const snippetSource =
+                    (p.cornerNote || '').trim() || p.fields[0]?.value || '';
+                  const promptSnippet = snippetSource
+                    ? ` — ${snippetSource.slice(0, 40)}`
                     : '';
                   opts.push({
                     id: p.id,
@@ -490,6 +496,7 @@ function App() {
                     storyboardLabel: sbLabel,
                     panelIndex: i + 1,
                     aspectRatio: ar,
+                    cornerNote: (p.cornerNote || '').trim() || undefined,
                   });
                 });
               }
@@ -507,12 +514,24 @@ function App() {
                 const name = (it.overrides?.name || '').trim().toLowerCase();
                 if (name !== 'actors') continue;
                 for (const p of it.panels) {
-                  const actorName = (p.fields[0]?.value || '').trim();
+                  // Prefer cornerNote (where AI Director stores the actor
+                  // name post-2026-07-22 caption collapse). Fall back to
+                  // fields[0]?.value for hand-authored actors and older
+                  // AI Director docs. Description now lives in fields[0]
+                  // when cornerNote holds the name; keep fields[1] as a
+                  // second-slot fallback so legacy [Name, Description]
+                  // panels still work.
+                  const cornerName = (p.cornerNote || '').trim();
+                  const legacyName = (p.fields[0]?.value || '').trim();
+                  const actorName = cornerName || legacyName;
                   if (!actorName) continue;
+                  const description = cornerName
+                    ? (p.fields[0]?.value || '').trim() || undefined
+                    : (p.fields[1]?.value || '').trim() || undefined;
                   acts.push({
                     id: p.id,
                     name: actorName,
-                    description: (p.fields[1]?.value || '').trim() || undefined,
+                    description,
                     thumbUrl: p.imageDataUrl ?? undefined,
                   });
                 }

@@ -44,6 +44,8 @@ import {
   type PromptField,
   type PresetGroupId,
 } from './text-prompt-fields';
+import { nextPromptLabel, presetGroupForLabel } from './prompt-field-labels';
+import { FieldLabelPopup, FieldPresetPopup } from '../components/FieldLabelPopup';
 
 // ---------------------------------------------------------------------------
 // Panel-ref lookup context. NodeEditor provides the list of available
@@ -59,6 +61,12 @@ export type PanelRefOption = {
   storyboardLabel: string;   // display name of the parent storyboard (from overrides.name or fallback)
   panelIndex: number;        // 1-based index within its storyboard
   aspectRatio: number;       // width / height, resolved from storyboard override or project default
+  /** The panel's cornerNote (top-right badge text). For AI-Director-
+   *  generated asset panels this is the asset's Name ("Tech Exec",
+   *  "Diner", etc.) — useful as a friendly picker label above the
+   *  generic "Storyboard · Panel N" address. Empty string when the
+   *  panel has no cornerNote. */
+  cornerNote?: string;
 };
 
 export const PanelRefContext = createContext<{
@@ -1319,7 +1327,9 @@ const TextPromptInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) =
   const [managingPresets, setManagingPresets] = useState(false);
   const [openMenuFieldId, setOpenMenuFieldId] = useState<string | null>(null);
   const [openAddMenu, setOpenAddMenu] = useState(false);
-  const [openPresetSubmenu, setOpenPresetSubmenu] = useState(false);
+  // Retained setter for legacy addField() paths; no longer displayed as a
+  // submenu since Matt collapsed preset picking into the per-field label.
+  const [, setOpenPresetSubmenu] = useState(false);
 
   // Refresh preset list on mount. Falls back to cached localStorage if the
   // server call fails so power-users on an offline dev box aren't stuck.
@@ -1467,6 +1477,10 @@ const TextPromptInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) =
     } else if (kind === 'dialogue') {
       f = { id: makeFieldId(), kind: 'dialogue', label: 'Dialogue', value: '', join: 'block' };
     } else if (kind === 'preset-text') {
+      // Legacy path kept for graphs loaded from disk that still contain a
+      // preset-text field; the Add menu no longer exposes this kind
+      // (Matt 2026-07-22). Passing `presetGroup` still constructs one
+      // programmatically if callers ever need to.
       f = {
         id: makeFieldId(),
         kind: 'preset-text',
@@ -1476,7 +1490,9 @@ const TextPromptInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) =
         join: 'inline',
       };
     } else {
-      f = { id: makeFieldId(), kind: 'text', label: 'Text', value: '', join: 'block' };
+      // Auto-increment label so successive Adds land as Prompt 1, Prompt 2…
+      const label = nextPromptLabel(fields.map((x) => x.label));
+      f = { id: makeFieldId(), kind: 'text', label, value: '', join: 'block' };
     }
     setFields([...fields, f]);
     setOpenAddMenu(false);
@@ -1742,28 +1758,36 @@ const TextPromptInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) =
     );
 
     if (f.kind === 'text') {
+      const presetGroup = presetGroupForLabel(f.label);
+      const textField = f;
       return createElement(
         'div',
         { key: f.id, className: 'tpv2-field' },
         createElement(
           'div',
           { className: 'tpv2-field-header' },
-          createElement('input', {
-            className: 'tpv2-field-label-input',
+          createElement(FieldLabelPopup, {
             value: f.label,
-            onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
-              updateField(f.id, { label: e.target.value }),
+            onChange: (next: string) => updateField(textField.id, { label: next }),
           }),
+          presetGroup
+            ? createElement(FieldPresetPopup, {
+                presetGroup,
+                currentValue: f.value,
+                onPick: (next: string) =>
+                  updateField(textField.id, { value: next } as Partial<PromptField>),
+              })
+            : null,
           joinPill,
           menu,
         ),
         createElement('textarea', {
           className: 'ne-inspect-textarea',
-          rows: 3,
+          rows: (f.value && f.value.length > 120) ? 6 : 3,
           value: f.value,
           placeholder: f.label,
           onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) =>
-            updateField(f.id, { value: e.target.value } as Partial<PromptField>),
+            updateField(textField.id, { value: e.target.value } as Partial<PromptField>),
         }),
       );
     }
@@ -1948,35 +1972,8 @@ const TextPromptInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) =
               },
               'Text field',
             ),
-            createElement(
-              'button',
-              {
-                type: 'button',
-                className: 'tpv2-field-menu-btn',
-                style: { display: 'block', width: '100%', textAlign: 'left', padding: '4px 8px' },
-                onClick: () => setOpenPresetSubmenu((v) => !v),
-              },
-              'Preset field ▸',
-            ),
-            openPresetSubmenu
-              ? createElement(
-                  'div',
-                  { style: { paddingLeft: 12 } },
-                  ...(Object.keys(PRESET_GROUPS) as PresetGroupId[]).map((g) =>
-                    createElement(
-                      'button',
-                      {
-                        key: g,
-                        type: 'button',
-                        className: 'tpv2-field-menu-btn',
-                        style: { display: 'block', width: '100%', textAlign: 'left', padding: '3px 8px' },
-                        onClick: () => addField('preset-text', g),
-                      },
-                      PRESET_GROUPS[g].label,
-                    ),
-                  ),
-                )
-              : null,
+            // 2026-07-22: Preset field submenu retired. Text fields now
+            // carry an inline Presets popup driven by the field's label.
             createElement(
               'button',
               {
@@ -2968,8 +2965,23 @@ const PanelRefInspector: NodeKindDef['Inspector'] = ({ node, onChangeData }) => 
     panelLabel
       ? createElement(
           'div',
-          { className: 'ne-inspect-note' },
-          `Bound to: ${panelLabel}`,
+          { className: 'ne-panelref-binding' },
+          // Top field — the picked panel's cornerNote (asset name for AI
+          // Director assets: "Tech Exec", "Diner", "Letter"). Falls back
+          // to a placeholder when the panel has no cornerNote.
+          createElement(
+            'div',
+            { className: 'ne-panelref-binding-title' },
+            (selectedPanel?.cornerNote || '').trim() || '(no corner note)',
+          ),
+          // Second field — the full "Storyboard · Panel N — snippet"
+          // address, prefixed with "Bound to:" so users know it's the
+          // technical binding.
+          createElement(
+            'div',
+            { className: 'ne-panelref-binding-sub' },
+            `Bound to: ${panelLabel}`,
+          ),
         )
       : null,
   );
@@ -4406,41 +4418,73 @@ async function triggerDownload(url: string, filename: string): Promise<void> {
   if (cleanup) setTimeout(cleanup, 5_000);
 }
 
-const ExportPreview: FC<PreviewProps> = ({ node }) => {
+const ExportPreview: FC<PreviewProps> = ({ node, graph, onRun }) => {
   const outKind = node.output?.kind;
   const outUrl = node.output?.dataUrl;
   const filename = String((node.data as { filename?: unknown }).filename ?? 'export');
+
+  // Compute upstream media directly from the wired edge so the download
+  // button appears the moment something is wired — no need to wait for a
+  // separate "run" pass to materialize node.output.
+  const upstreamMedia = (() => {
+    if (outUrl) return { url: outUrl, kind: outKind ?? 'image' as 'image' | 'video' };
+    if (!graph) return null;
+    const edge = graph.edges.find((e) => e.to.nodeId === node.id && e.to.portId === 'in');
+    if (!edge) return null;
+    const src = graph.nodes.find((n) => n.id === edge.from.nodeId);
+    const u = src?.output?.dataUrl;
+    if (!u) return null;
+    const k = src?.output?.kind === 'video' ? 'video' : 'image';
+    return { url: u, kind: k as 'image' | 'video' };
+  })();
+
+  const kind = upstreamMedia?.kind ?? outKind;
+  const previewUrl = upstreamMedia?.url;
+  const canDownload = Boolean(previewUrl);
+
   return createElement(
     'div',
-    { className: 'ne-node-preview' + (outUrl ? '' : ' is-empty') },
-    outUrl
-      ? createElement(
-          Fragment,
-          null,
-          outKind === 'video'
-            ? createElement('video', { src: outUrl, muted: true, loop: true, autoPlay: true, playsInline: true, style: { width: '100%', height: 'auto' } })
-            : createElement('img', { src: outUrl, alt: filename, style: { width: '100%', height: 'auto' } }),
-          createElement(
-            'button',
-            {
-              className: 'ne-export-download-btn',
-              type: 'button',
-              onClick: (e: React.MouseEvent) => {
-                e.stopPropagation();
-                const ext = outKind === 'video' ? 'mp4' : 'png';
-                const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-                triggerDownload(outUrl, `${filename}-${stamp}.${ext}`).catch((err) => {
-                  // eslint-disable-next-line no-console
-                  console.error('[export] download error', err);
-                });
-              },
-              onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
-              onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
-            },
-            `⬇ Download ${outKind ?? 'media'}`,
-          ),
-        )
+    { className: 'ne-node-preview' + (previewUrl ? '' : ' is-empty') },
+    previewUrl
+      ? (kind === 'video'
+          ? createElement('video', { src: previewUrl, muted: true, loop: true, autoPlay: true, playsInline: true, style: { width: '100%', height: 'auto' } })
+          : createElement('img', { src: previewUrl, alt: filename, style: { width: '100%', height: 'auto' } }))
       : createElement('div', { className: 'ne-node-preview-caption' }, '(wire media to export)'),
+    // Download button is always rendered when we have something to download,
+    // or as a disabled hint when we don't. Also offers Refresh when the
+    // downstream output is stale (upstream media exists but node.output is
+    // empty — e.g. after a fresh wire before any run).
+    createElement(
+      'button',
+      {
+        className: 'ne-export-download-btn' + (canDownload ? '' : ' is-disabled'),
+        type: 'button',
+        disabled: !canDownload,
+        onClick: (e: React.MouseEvent) => {
+          e.stopPropagation();
+          if (!previewUrl) return;
+          // If node.output isn't populated yet (upstream just wired,
+          // never ran through this node), still let the user download the
+          // upstream media directly — that's what they want.
+          const ext = kind === 'video' ? 'mp4' : 'png';
+          const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+          triggerDownload(previewUrl, `${filename}-${stamp}.${ext}`).catch((err) => {
+            // eslint-disable-next-line no-console
+            console.error('[export] download error', err);
+          });
+          // Best-effort: also kick a run so node.output reflects the
+          // exported media. Fire-and-forget; download already happened.
+          if (!outUrl && onRun) {
+            try { onRun(); } catch { /* ignore */ }
+          }
+        },
+        onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+        onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
+      },
+      canDownload
+        ? `⬇ Download ${kind ?? 'media'}`
+        : '⬇ Download (wire media)',
+    ),
   );
 };
 

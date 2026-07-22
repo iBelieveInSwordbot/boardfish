@@ -601,7 +601,10 @@ async function runImageGen(
   }
 
   // Collect all upstream image refs (Nano Banana Pro accepts multiple).
-  const refImages = collectRefImages(node, inputs);
+  // Refs may come in as /api/media/... paths (from autosave media lift);
+  // collectRefImages materializes those back into base64 so FAL can fetch
+  // them (FAL cannot reach our local media proxy).
+  const refImages = await collectRefImages(node, inputs);
   const payload = buildFalInput(node, inputs, model, refImages);
   // Same guard as movie-gen: better a clear message than a FAL 422.
   if (model.supportsPrompt && (!payload.prompt || String(payload.prompt).trim() === '')) {
@@ -701,17 +704,44 @@ async function runImageGen(
 //      `node.data.image_urls` (current) — the seedDefaultGraph bakes the
 //      panel's current image into data.image_url so a fresh editor open
 //      round-trips through image-to-image without needing a wired ref node.
-function collectRefImages(node: BaseNode, inputs: ResolvedInputs): string[] {
-  const out: string[] = [];
-  for (const img of inputs.images) if (img) out.push(img);
+//
+// FAL requires either public URLs or base64 data URLs. Our media store
+// serves refs under `/api/media/...`, which is a relative path FAL can't
+// reach. Materialize any non-data URL into a base64 data URL BEFORE ship
+// so upstream image-gen outputs (autosave-lifted into media-store) still
+// work as refs on the next generation.
+async function collectRefImages(node: BaseNode, inputs: ResolvedInputs): Promise<string[]> {
+  const raw: string[] = [];
+  for (const img of inputs.images) if (img) raw.push(img);
   const dataUrl = (node.data as { image_url?: unknown }).image_url;
   const dataUrls = (node.data as { image_urls?: unknown }).image_urls;
-  if (typeof dataUrl === 'string' && dataUrl) out.push(dataUrl);
+  if (typeof dataUrl === 'string' && dataUrl) raw.push(dataUrl);
   if (Array.isArray(dataUrls)) {
-    for (const u of dataUrls) if (typeof u === 'string' && u) out.push(u);
+    for (const u of dataUrls) if (typeof u === 'string' && u) raw.push(u);
   }
   // De-dupe while preserving order.
-  return Array.from(new Set(out));
+  const deduped = Array.from(new Set(raw));
+  // Materialize any non-data URL (relative media-store paths, http(s)
+  // sourceUrl fallbacks, etc.) so FAL always sees inline base64.
+  const out: string[] = [];
+  for (const u of deduped) {
+    if (u.startsWith('data:')) {
+      out.push(u);
+      continue;
+    }
+    try {
+      const { dataUrl: d } = await urlToDataUrl(u);
+      out.push(d);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[collectRefImages] failed to materialize', u.slice(0, 80), err);
+      // Best-effort: fall through with the raw URL. If FAL can reach it
+      // (unlikely for /api/media/...) it still works; if not, the FAL
+      // error surfaces with the malformed URL as evidence.
+      out.push(u);
+    }
+  }
+  return out;
 }
 
 async function runMovieGen(
@@ -733,8 +763,10 @@ async function runMovieGen(
 
   // Collect all upstream image refs. For video models we typically pass the
   // first-frame image as `image_url` (singular), which each video model
-  // declares via refImageKey / refImageIsArray.
-  const refImages = collectRefImages(node, inputs);
+  // declares via refImageKey / refImageIsArray. Any refs coming back as
+  // /api/media/... URLs are materialized into base64 data URLs so FAL can
+  // fetch them (FAL cannot reach our local media proxy).
+  const refImages = await collectRefImages(node, inputs);
   // Use the new-signature buildFalInput (pass `model`) so per-model type
   // coercion runs (Kling duration as string, Seedance duration as number, etc.)
   // and refImages land under the model's declared refImageKey.

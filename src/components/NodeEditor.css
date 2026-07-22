@@ -661,6 +661,33 @@
   border-radius: 6px;
 }
 
+/* --- Panel Reference "Bound to" two-line binding display ---
+ * Top line = the picked panel's cornerNote (e.g. an actor's name).
+ * Sub line = the technical "Bound to: <storyboard> · Panel N" address.
+ */
+.ne-panelref-binding {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  background: #0f0f12;
+  border: 1px solid #26262b;
+  border-radius: 6px;
+}
+.ne-panelref-binding-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #eaeaea;
+  line-height: 1.3;
+  word-break: break-word;
+}
+.ne-panelref-binding-sub {
+  font-size: 11px;
+  color: #8a8a92;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
 /* --- Panel Reference picker --- */
 .ne-panelref-picker {
   display: flex;
